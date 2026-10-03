@@ -1,0 +1,10 @@
+.env
+config.php
+logs/
+storage/
+data/
+re/rx/*/.compiled.php
+re/rx/*/.compiled.map
+*.bak*
+vendor/
+node_modules/
