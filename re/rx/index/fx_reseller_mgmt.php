@@ -10,9 +10,10 @@
  *
  * Loaded via require_once OUTSIDE the .compiled.php bundle (like agent_bot_creator.php).
  */
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_debt.php'; // FX-DEBT helpers (2026-10-03)
 
 function fx_reseller_db_credit(int $uid, int $amount, string $method = 'reseller_credit', ?string $bottype = null): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     try {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare("UPDATE user SET Balance = Balance + :amt WHERE id = :id");
@@ -31,7 +32,7 @@ function fx_reseller_db_credit(int $uid, int $amount, string $method = 'reseller
 }
 
 function fx_reseller_db_debit(int $uid, int $amount, string $method = 'reseller_debit', ?string $bottype = null): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     try {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare("UPDATE user SET Balance = Balance - :amt WHERE id = :id AND Balance >= :amt2");
@@ -54,7 +55,7 @@ function fx_reseller_db_debit(int $uid, int $amount, string $method = 'reseller_
 }
 
 function fx_reseller_db_balance(int $uid): int {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $stmt = $pdo->prepare("SELECT Balance FROM user WHERE id = :id");
     $stmt->execute([':id' => $uid]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -62,27 +63,27 @@ function fx_reseller_db_balance(int $uid): int {
 }
 
 function fx_reseller_get_all(): array {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $stmt = $pdo->query("SELECT b.id_user, b.username, b.bot_token, u.Balance, u.agent, u.username AS u_username FROM botsaz b LEFT JOIN user u ON u.id = b.id_user");
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 function fx_reseller_assign_product_agent(int $productId, string $agentId): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $stmt = $pdo->prepare("UPDATE product SET agent = :agent WHERE id = :id");
     $stmt->execute([':agent' => $agentId, ':id' => $productId]);
     return $stmt->rowCount() > 0;
 }
 
 function fx_reseller_assign_panel_agent(int $panelId, string $agentId): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $stmt = $pdo->prepare("UPDATE marzban_panel SET agent = :agent WHERE id = :id");
     $stmt->execute([':agent' => $agentId, ':id' => $panelId]);
     return $stmt->rowCount() > 0;
 }
 
 function fx_reseller_set_pasargad_creds(int $panelId, string $username, string $password, string $authMode = 'password'): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $stmt = $pdo->prepare("UPDATE marzban_panel SET username_panel = :u, password_panel = :p, pasarguard_auth_mode = :m WHERE id = :id");
     $stmt->execute([':u' => $username, ':p' => $password, ':m' => $authMode, ':id' => $panelId]);
     return $stmt->rowCount() > 0;
@@ -92,7 +93,7 @@ function fx_reseller_set_pasargad_creds(int $panelId, string $username, string $
  * Central reseller bot creation (admin-driven only).
  */
 function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $tokenRaw = trim($tokenRaw);
     if (!preg_match('/^\d+:[A-Za-z0-9_-]{20,}$/', $tokenRaw)) {
         return [false, '❌ توکن نامعتبر است. فرمت: 123456789:AAxxx'];
@@ -165,7 +166,7 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
  * Central reseller bot deletion.
  */
 function fx_reseller_delete_bot(int $targetUid): array {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $contentbto = select("botsaz", "*", "id_user", $targetUid, "select", ['cache' => false]);
     if (!$contentbto) return [false, '❌ رباتی برای این نماینده یافت نشد.'];
     $root = REFACTORED_LEGACY_ROOT;
@@ -217,7 +218,7 @@ function fx_res_list_rows(array $resellers): array {
 }
 
 function fx_res_product_rows(string $rid): array {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $rows = [];
     try {
         $stmt = $pdo->query("SELECT id, name_product, agent FROM product LIMIT 30");
@@ -234,7 +235,7 @@ function fx_res_product_rows(string $rid): array {
 }
 
 function fx_res_panel_rows(string $rid): array {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     $rows = [];
     try {
         $stmt = $pdo->query("SELECT id, name_panel, agent FROM marzban_panel LIMIT 30");
@@ -248,6 +249,102 @@ function fx_res_panel_rows(string $rid): array {
     } catch (\Throwable $e) {}
     $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
     return $rows;
+}
+
+// =====================================================================
+// FX-BUYERS-SECTION (2026-10-04): per-reseller buyer/service list with
+// live remaining volume + admin-driven extend/remove. Step 1 of the
+// reseller buyer-management feature.
+// =====================================================================
+
+function fx_res_buyer_services(string $rid, int $limit = 15): array {
+    global $pdo;
+    $out = [];
+    try {
+        $st = $pdo->prepare("SELECT i.id_invoice, i.id_user, i.username, i.name_product, i.Service_location, i.Service_time, i.Volume, i.Status FROM invoice i JOIN user u ON u.id = i.id_user WHERE u.agent = :rid AND i.Status IN ('active','end_of_time','end_of_volume','sendedwarn','send_on_hold') ORDER BY i.time_sell DESC LIMIT " . max(1, (int)$limit));
+        $st->execute([':rid' => (string)$rid]);
+        $out = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (\Throwable $e) {
+        $out = [];
+    }
+    return $out;
+}
+
+/**
+ * Live service stats from the panel. Returns null when the panel is
+ * unreachable (callers should then stop probing to avoid N x timeout).
+ */
+function fx_res_live_service_stat(string $panelName, string $svcUsername): ?array {
+    global $ManagePanel;
+    if (!($ManagePanel instanceof ManagePanel)) return null;
+    try {
+        $d = $ManagePanel->DataUser($panelName, $svcUsername);
+        if (!is_array($d) || ($d['status'] ?? '') === 'Unsuccessful') return null;
+        $rem = null;
+        if (is_numeric($d['data_limit'] ?? null) && (float)$d['data_limit'] > 0.0) {
+            $rem = max(0.0, (float)$d['data_limit'] - (float)($d['used_traffic'] ?? 0));
+        }
+        return [
+            'remaining' => $rem,
+            'expire' => is_numeric($d['expire'] ?? null) ? (int)$d['expire'] : 0,
+        ];
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
+
+function fx_res_fmt_volume(?float $remBytes): string {
+    if ($remBytes === null) return 'نامحدود';
+    if (function_exists('formatBytes')) return formatBytes($remBytes);
+    return round($remBytes / 1073741824, 1) . ' گیگ';
+}
+
+/**
+ * Render the buyer/service list for a reseller (edit-in-place, glass UI).
+ */
+function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
+    step('fx_res_buyers', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    $svcs = fx_res_buyer_services($rid);
+    $rows = [];
+    $txt = "👥 <b>سرویس‌های خریداران نماینده {$rid}</b>\n";
+    $liveOk = true;
+    if (empty($svcs)) {
+        $txt .= "📭 هنوز سرویس فعالی ثبت نشده است.";
+    } else {
+        foreach ($svcs as $s) {
+            $stat = null;
+            if ($liveOk) {
+                $stat = fx_res_live_service_stat((string)$s['Service_location'], (string)$s['username']);
+                if ($stat === null) $liveOk = false;
+            }
+            $vol = $stat === null ? '—' : fx_res_fmt_volume($stat['remaining']);
+            if ($stat === null) {
+                $exp = '—';
+            } elseif ($stat['expire'] > 0) {
+                $exp = function_exists('jdate') ? jdate('Y/m/d', $stat['expire']) : date('Y/m/d', $stat['expire']);
+            } else {
+                $exp = 'نامحدود';
+            }
+            $txt .= "\n🔹 <code>" . $s['username'] . "</code> | {$s['name_product']}\n📥 باقی‌مانده: {$vol} | 📅 اتمام: {$exp}\n👤 خریدار: " . $s['id_user'];
+            $rows[] = [
+                ['text' => "⏳ تمدید " . $s['username'], 'callback_data' => "fx_res_bext_" . $s['id_invoice']],
+                ['text' => "🗑 حذف " . $s['username'], 'callback_data' => "fx_res_bdel_" . $s['id_invoice']],
+            ];
+        }
+        if (!$liveOk) $txt .= "\n⚠️ استعلام زنده حجم از پنل ممکن نبود (پنل در دسترس نیست).";
+        $txt .= "\n\n" . count($svcs) . " سرویس فعال نمایش داده شد.";
+    }
+    $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
+    Editmessagetext($from_id, $message_id, $txt, fx_res_inline_kb($rows), 'HTML');
+}
+
+/** Resolve the reseller id (user.agent) that owns a given invoice. */
+function fx_res_buyer_rid($iid): int {
+    $nameloc = select("invoice", "*", "id_invoice", $iid, "select");
+    if (!is_array($nameloc)) return 0;
+    $bu = select("user", "*", "id", $nameloc['id_user'], "select");
+    return is_array($bu) ? intval($bu['agent'] ?? 0) : 0;
 }
 
 /**
@@ -370,13 +467,20 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
              ['text' => '➖ کسر موجودی', 'callback_data' => "fx_res_debit_{$rid}"]],
             [['text' => '📦 اختصاص محصول', 'callback_data' => "fx_res_asgn_prod_{$rid}"],
              ['text' => '🔌 اختصاص پنل', 'callback_data' => "fx_res_asgn_panel_{$rid}"]],
-            [['text' => '🔑 اعتبار پاسارگاد', 'callback_data' => "fx_res_pasargad_{$rid}"],
-             ['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"]],
-            [['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
+            [['text' => '💳 اعتباری (بدهی)', 'callback_data' => "fx_res_debt_{$rid}"],
+             ['text' => '🔑 اعتبار پاسارگاد', 'callback_data' => "fx_res_pasargad_{$rid}"]],
+            [['text' => '👥 خریداران (سرویس‌ها)', 'callback_data' => "fx_res_buyers_{$rid}"],
+             ['text' => '🏷️ قیمت عمده‌فروشی', 'callback_data' => "fx_res_whprice_{$rid}"]],
+            [['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"],
+             ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
             [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
         ]);
+        $__fxDebtSt = fx_debt_state($rid);
+        $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
+            ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
+            : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
         $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
-        $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان\n🏷️ نوع: {$rUser['agent']}";
+        $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان\n🏷️ نوع: {$rUser['agent']}" . $__fxDebtLine;
         Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
         fx_res_answer_cb();
         return true;
@@ -401,14 +505,30 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
     // --- product list / selection ---
     if (preg_match('/^fx_res_asgn_prod_(\d+)$/', $datain, $m)) {
         $rid = $m[1];
+        $__fxResProductMode = 'assign';
         step('fx_res_prod_list', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
+        update("user", "Processing_value_one", 'assign', "id", $from_id);
         Editmessagetext($from_id, $message_id, "📦 محصول را برای اختصاص به نماینده {$rid} انتخاب کنید:", fx_res_inline_kb(fx_res_product_rows($rid)), 'HTML');
         fx_res_answer_cb();
         return true;
     }
     if (preg_match('/^fx_res_set_prod_(\d+)_(\d+)$/', $datain, $m)) {
         $rid = $m[1]; $pid = $m[2];
+        // Shared product list: if the current step is the wholesale-price screen,
+        // the same row click sets the wholesale price instead of assigning.
+        if ((string)($user['step'] ?? '') === 'fx_res_whprice_list') {
+            $pidI = intval($pid);
+            $st = $pdo->prepare("SELECT price_product FROM product WHERE id = :pid LIMIT 1");
+            $st->execute([':pid' => $pidI]);
+            $retail = $st->fetchColumn();
+            step('fx_res_do_whprice_val', $from_id);
+            update("user", "Processing_value", $rid, "id", $from_id);
+            update("user", "Processing_value_one", $pidI, "id", $from_id);
+            Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای این محصول وارد کنید:\n💵 قیمت فروش مشتری: " . number_format((float)($retail ?: 0)) . " تومان\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel", null, 'html');
+            fx_res_answer_cb();
+            return true;
+        }
         $ok = fx_reseller_assign_product_agent(intval($pid), $rid);
         step('fx_res_view', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
@@ -447,6 +567,88 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         return true;
     }
 
+    // --- credit sales (debt mode): toggle + ceiling setting ---
+    if (preg_match('/^fx_res_debt_(\d+)$/', $datain, $m)) {
+        $rid = intval($m[1]);
+        $st = fx_debt_state($rid);
+        if ($st['mode'] === 'debt') {
+            $kb = fx_res_inline_kb([
+                [['text' => '✏️ سقف اعتبار', 'callback_data' => "fx_res_debt_ceiling_{$rid}"]],
+                [['text' => '🚫 غیرفعال‌کردن حالت اعتباری', 'callback_data' => "fx_res_debt_off_{$rid}"]],
+                [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]],
+            ]);
+            $txt = "🏦 نماینده {$rid} در حالت <b>اعتباری (فروش به‌حساب)</b> است.\n"
+                . "💵 بدهی فعلی: " . number_format($st['current']) . " تومان\n"
+                . "🏦 سقف اعتبار: " . number_format($st['ceiling']) . " تومان\n"
+                . "مشتری‌ها با کیف پول خود می‌خرند و هزینه عمده‌فروشی سرویس‌ها به‌حساب نماینده ثبت می‌شود.\n"
+                . "📥 تسویه: از «➕ شارژ موجودی» استفاده کنید (به بدهی تعلق می‌گیرد).";
+        } else {
+            $kb = fx_res_inline_kb([
+                [['text' => '✅ فعال‌کردن حالت اعتباری', 'callback_data' => "fx_res_debt_on_{$rid}"]],
+                [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]],
+            ]);
+            $txt = "🏦 نماینده {$rid} فعلاً در حالت <b>پیش‌پرداخت</b> است.\n"
+                . "با فعال‌کردن حالت اعتباری، نماینده می‌تواند بدون موجودی سرویس بفروشد و هزینه عمده‌فروشی به‌حساب او ثبت شود (تا سقفی که تعیین کنید).\n"
+                . "مشتری‌های ربات او همچنان از کیف پول خود پرداخت می‌کنند.";
+        }
+        Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_debt_on_(\d+)$/', $datain, $m)) {
+        $rid = intval($m[1]);
+        @update("botsaz", "debt_mode", "debt", "id_user", $rid);
+        @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+        @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+        step('fx_res_do_debt_ceiling', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار (به تومان) را وارد کنید:\nمثال: 50000000\n(هر خرید تا این سقف به‌حساب ثبت می‌شود)", null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_debt_off_(\d+)$/', $datain, $m)) {
+        $rid = intval($m[1]);
+        @update("botsaz", "debt_mode", "balance", "id_user", $rid);
+        @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+        @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+        $st = fx_debt_state($rid);
+        $msg = "✅ حالت اعتباری غیرفعال شد. نماینده {$rid} دوباره در حالت پیش‌پرداخت است."
+            . (($st['current'] > 0) ? "\n⚠️ هنوز " . number_format($st['current']) . " تومان بدهی باقی است — با شارژ موجودی تسویه می‌شود." : '');
+        step('fx_res_view', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, $msg, fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_debt_ceiling_(\d+)$/', $datain, $m)) {
+        $rid = intval($m[1]);
+        step('fx_res_do_debt_ceiling', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        $st = fx_debt_state($rid);
+        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار جدید (به تومان) را وارد کنید:\nسقف فعلی: " . number_format($st['ceiling']), null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- wholesale price per product (two-tier pricing) ---
+    if (preg_match('/^fx_res_whprice_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        step('fx_res_whprice_list', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید:", fx_res_inline_kb(fx_res_product_rows($rid)), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_set_wh_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = $m[1]; $pid = intval($m[2]);
+        step('fx_res_do_whprice_val', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        update("user", "Processing_value_one", $pid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای محصول {$pid} وارد کنید:\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel", null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+
     // --- delete confirm / delete ---
     if (preg_match('/^fx_res_delconfirm_(\d+)$/', $datain, $m)) {
         $rid = $m[1];
@@ -467,6 +669,54 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         update("user", "Processing_value", 0, "id", $from_id);
         Editmessagetext($from_id, $message_id, (string)$res[1],
             fx_res_inline_kb([['text' => '🏢 فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']]), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- buyer/service list (step 1: view buyers, live volume, extend/remove) ---
+    if (preg_match('/^fx_res_buyers_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        fx_res_render_buyers($from_id, $message_id, $rid);
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_bext_(\w+)$/', $datain, $m)) {
+        $iid = $m[1];
+        $rid = (string)fx_res_buyer_rid($iid);
+        $kb = fx_res_inline_kb([
+            [['text' => '🏠 بازگشت به فهرست سرویس‌ها', 'callback_data' => "fx_res_buyers_{$rid}"]],
+        ]);
+        step('fx_res_buyer_extend', $from_id);
+        update("user", "Processing_value", $iid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "⏳ <b>تمدید سرویس خریدار</b>\nتعداد روز تمدید را ارسال کنید:\nمثال: <code>30</code>\n\nانصراف: /cancel", $kb, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_bdel_(\w+)$/', $datain, $m)) {
+        $iid = $m[1];
+        $rid = (string)fx_res_buyer_rid($iid);
+        step('fx_res_bdel_confirm', $from_id);
+        update("user", "Processing_value", $iid, "id", $from_id);
+        $kb = fx_res_inline_kb([
+            [['text' => '✅ بله، حذف شود', 'callback_data' => "fx_res_bdelgo_{$iid}"],
+             ['text' => '❌ انصراف', 'callback_data' => "fx_res_buyers_{$rid}"]],
+        ]);
+        Editmessagetext($from_id, $message_id, "🗑 آیا سرویس خریدار این فاکتور حذف شود؟\n<code>{$iid}</code>", $kb, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_bdelgo_(\w+)$/', $datain, $m)) {
+        $iid = $m[1];
+        global $ManagePanel;
+        $rid = (string)fx_res_buyer_rid($iid);
+        $nameloc = select("invoice", "*", "id_invoice", $iid, "select");
+        if (is_array($nameloc) && class_exists('ManagePanel')) {
+            try {
+                $ManagePanel->RemoveUser($nameloc['Service_location'], $nameloc['username']);
+            } catch (\Throwable $e) {}
+            update('invoice', 'Status', 'removebyadmin', 'id_invoice', $iid);
+        }
+        Editmessagetext($from_id, $message_id, "✅ سرویس خریدار حذف شد.", fx_res_inline_kb([['text' => '🏠 بازگشت به فهرست سرویس‌ها', 'callback_data' => "fx_res_buyers_{$rid}"]]), 'HTML');
         fx_res_answer_cb();
         return true;
     }
@@ -518,15 +768,38 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
 }
 
 function fx_reseller_text_handler(string $text, array $user, int $from_id, string $backuser): bool {
-    global $ApiToken;
+    global $ApiToken, $pdo;
+    @file_put_contents("/tmp/fxdbg_txt.log", "[TXT_H] step=" . (string)($user['step'] ?? '') . " text=" . substr($text,0,40) . " from=$from_id\n", FILE_APPEND);
 
     if ($user['step'] === 'fx_res_do_credit') {
         if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $rid = intval($user['Processing_value']);
-        if (fx_reseller_db_credit($rid, intval($text), 'admin_credit', $ApiToken)) {
-            sendmessage($from_id, "✅ مبلغ {$text} تومان به نماینده {$rid} شارژ شد.", $backuser, 'html');
-            sendmessage($rid, "💎 مبلغ {$text} تومان به موجودی شما اضافه شد.", null, 'HTML');
+        $amt = intval($text);
+        $debtUsed = 0;
+        try {
+            $dbt = fx_debt_state($rid);
+            if ($dbt['mode'] === 'debt' && $dbt['current'] > 0) {
+                $debtUsed = min($amt, $dbt['current']);
+                $pdo->prepare("UPDATE botsaz SET current_debt = GREATEST(0, current_debt - :amt) WHERE id_user = :rid")
+                    ->execute([':amt' => $debtUsed, ':rid' => (string)$rid]);
+                $after = fx_debt_state($rid)['current'];
+                $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time) VALUES (:rid, :amt, 'out', :m, NULL, :after, NOW())")
+                    ->execute([':rid' => $rid, ':amt' => $debtUsed, ':m' => 'settlement', ':after' => $after]);
+                if ($after * 100 < $dbt['ceiling'] * 80) {
+                    @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+                    @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+                }
+            }
+        } catch (\Throwable $e) {
+            $debtUsed = 0;
+        }
+        if (fx_reseller_db_credit($rid, $amt - $debtUsed, 'admin_credit', $ApiToken) || $debtUsed > 0) {
+            $msg = $debtUsed > 0
+                ? "✅ تسویه شد: " . number_format($debtUsed) . " تومان بدهی نماینده {$rid} کسر شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")
+                : "✅ مبلغ " . number_format($amt) . " تومان به نماینده {$rid} شارژ شد.";
+            sendmessage($from_id, $msg, $backuser, 'html');
+            sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML');
         } else {
             sendmessage($from_id, "❌ خطا در شارژ.", $backuser, 'html');
         }
@@ -548,6 +821,34 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         return true;
     }
 
+    if ($user['step'] === 'fx_res_do_debt_ceiling') {
+        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
+        $amt = intval($text);
+        if ($amt <= 0) { sendmessage($from_id, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", $backuser, 'html'); return true; }
+        $rid = intval($user['Processing_value']);
+        @update("botsaz", "debt_ceiling", $amt, "id_user", $rid);
+        @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+        @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+        sendmessage($from_id, "✅ سقف اعتبار نماینده {$rid} روی " . number_format($amt) . " تومان تنظیم شد.", $backuser, 'html');
+        sendmessage($rid, "🏦 سقف اعتبار (فروش به‌حساب) شما روی " . number_format($amt) . " تومان تنظیم شد.", null, 'HTML');
+        fx_res_exit_to_hub($from_id);
+        return true;
+    }
+
+    if ($user['step'] === 'fx_res_do_whprice_val') {
+        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
+        $amt = intval($text);
+        $rid = intval($user['Processing_value']);
+        $pid = intval($user['Processing_value_one'] ?? 0);
+        if ($pid <= 0) { sendmessage($from_id, "❌ محصول مشخص نیست؛ دوباره از «🏷️ قیمت عمده‌فروشی» وارد شوید.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        $pdo->prepare("UPDATE product SET fx_wholesale_price = :w WHERE id = :pid")->execute([':w' => $amt, ':pid' => $pid]);
+        sendmessage($from_id, "✅ قیمت عمده‌فروشی محصول {$pid} روی " . number_format($amt) . " تومان تنظیم شد.\n💵 از این به بعد هر خرید مشتری از این محصول، به‌عنوان هزینه به نماینده {$rid} محاسبه می‌شود (در حالت اعتباری: به بدهی).", $backuser, 'html');
+        fx_res_exit_to_hub($from_id);
+        return true;
+    }
+
     if ($user['step'] === 'fx_res_do_pasargad') {
         if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
         $parts = explode('|', $text);
@@ -559,6 +860,49 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             sendmessage($from_id, "✅ اعتبار پاسارگاد پنل {$panelId} تنظیم شد.", $backuser, 'html');
         } else {
             sendmessage($from_id, "❌ خطا در تنظیم اعتبار.", $backuser, 'html');
+        }
+        fx_res_exit_to_hub($from_id);
+        return true;
+    }
+
+    if ($user['step'] === 'fx_res_buyer_extend') {
+        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (!ctype_digit(trim($text)) || intval(trim($text)) <= 0) { sendmessage($from_id, "❌ فقط تعداد روز (عدد) وارد کنید.", $backuser, 'html'); return true; }
+        $days = intval(trim($text));
+        $iid = (string)$user['Processing_value'];
+        $rid = (string)fx_res_buyer_rid($iid);
+        $nameloc = select("invoice", "*", "id_invoice", $iid, "select");
+        if (!is_array($nameloc)) { sendmessage($from_id, "❌ فاکتور یافت نشد.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        $marzban_list_get = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
+        if (!is_array($marzban_list_get)) { sendmessage($from_id, "❌ پنل سرویس یافت نشد.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        $ext = null;
+        $extErr = '';
+        try {
+            global $ManagePanel;
+            $ext = $ManagePanel->extend($marzban_list_get['Methodextend'], $nameloc['Volume'], $days, $nameloc['username'], 'custom_volume', $marzban_list_get['code_panel']);
+        } catch (\Throwable $e) {
+            $extErr = $e->getMessage();
+        }
+        if (is_array($ext) && !empty($ext['status'])) {
+            try {
+                $pdo2 = $GLOBALS['pdo'];
+                $st2 = $pdo2->prepare("INSERT IGNORE INTO service_other (id_user, username, value, type, time, price, output) VALUES (:id_user, :username, :value, :type, :time, :price, :output)");
+                $st2->execute([
+                    ':id_user' => $nameloc['id_user'],
+                    ':username' => $nameloc['username'],
+                    ':value' => $nameloc['Volume'] . "_" . $days,
+                    ':type' => 'extend_user_by_admin',
+                    ':time' => date('Y/m/d H:i:s'),
+                    ':price' => 0,
+                    ':output' => json_encode($ext),
+                ]);
+            } catch (\Throwable $e) {}
+            update("invoice", "Status", "active", "id_invoice", $iid);
+            sendmessage($from_id, "✅ سرویس " . $nameloc['username'] . " برای {$days} روز تمدید شد.", $backuser, 'html');
+            sendmessage((int)$nameloc['id_user'], "⏳ سرویس " . $nameloc['username'] . " شما برای {$days} روز تمدید شد.", null, 'HTML');
+        } else {
+            $msg = is_array($ext) ? ($ext['msg'] ?? 'نامشخص') : $extErr;
+            sendmessage($from_id, "❌ تمدید ناموفق بود: " . $msg, $backuser, 'html');
         }
         fx_res_exit_to_hub($from_id);
         return true;
@@ -585,7 +929,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
  * safety net after the bootstrap_1 gate. Returns true when $text was consumed.
  */
 function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string $backadmin): bool {
-    global $pdo;
+    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
     if (defined('FX_RESELLER_ID')) return false; // main-admin module only
     $text = trim($text);
     if ($text === '' || !($pdo instanceof PDO)) return false;
@@ -607,7 +951,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
 
     // --- section entry from the hub (reply-kb button text) ---
     if ($text === '📱 مدیریت ربات‌های نمایندگی') {
-        fx_res_hide_reply_kb($from_id);
+        error_log("[FXLBL2] from=".$from_id); fx_res_hide_reply_kb($from_id);
         step('home', $from_id);
         update("user", "Processing_value", 0, "id", $from_id);
         sendmessage($from_id, "🏢 <b>مدیریت ربات‌های نماینده</b>\nیک نماینده را انتخاب کنید یا ربات جدید بسازید:", fx_res_inline_kb(fx_res_list_rows(fx_reseller_get_all())), 'HTML');
@@ -615,14 +959,14 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
     }
 
     // --- text-entry steps (primary consumer: bootstrap_1 gate; this is a net) ---
-    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create'], true)) {
+    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'], true)) {
         if (fx_reseller_text_handler($text, (array)$user, $from_id, $backadmin)) {
             return true;
         }
     }
 
     // --- /cancel inside the section ---
-    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm'], true)) {
+    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm'], true)) {
         fx_res_exit_to_hub($from_id);
         return true;
     }

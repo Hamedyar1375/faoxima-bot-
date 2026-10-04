@@ -3,6 +3,7 @@
 if (!defined('RX_MIN_TRANSFER_AMOUNT')) {
     define('RX_MIN_TRANSFER_AMOUNT', 1000);
 }
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_debt.php'; // FX-DEBT helpers (2026-10-03)
 
 if (!function_exists('tk_miniapp_ticket_mode_active')) {
     function tk_miniapp_ticket_mode_active()
@@ -55,7 +56,7 @@ $tkCancelKb = json_encode(['inline_keyboard' => [[['text' => '🔙 انصراف'
    Reset the stuck step to home so the click reaches its real handler in one tap.
    Additive: no behavior change for normal flows (callbacks only). */
 if (!empty($datain) && isset($update['callback_query'])) {
-    $__fx_textwait_steps = ['getprice', 'getcodesellDiscountcharge', 'gettimecustomvol', 'gettimecustomvolom', 'getcountconfig', 'getcodesellDiscount', 'getTransferRecipient', 'getTransferAmount', 'getticketsubj', 'tk_media_choice', 'tk_media_count', 'tk_desc', 'tk_collect', 'statusnamecustom', 'get_agent_bot_token', 'fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm'];
+    $__fx_textwait_steps = ['getprice', 'getcodesellDiscountcharge', 'gettimecustomvol', 'gettimecustomvolom', 'getcountconfig', 'getcodesellDiscount', 'getTransferRecipient', 'getTransferAmount', 'getticketsubj', 'tk_media_choice', 'tk_media_count', 'tk_desc', 'tk_collect', 'statusnamecustom', 'get_agent_bot_token', 'fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_do_debt_ceiling', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'];
     if (in_array((string)($user['step'] ?? ''), $__fx_textwait_steps, true)) {
         if ($user['step'] == 'getprice' && is_numeric($user['Processing_value'] ?? '')) {
             @deletemessage($from_id, $user['Processing_value']);
@@ -1571,6 +1572,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $prodcut = $dataget[1];
     }
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
+    if (function_exists('fx_reseller_load_retail_units')) fx_reseller_load_retail_units($marzban_list_get, (string)$user['agent']);
     if (!is_array($marzban_list_get)) {
         sendmessage($from_id, $datatextbot['dyn_errors_panel_not_found'] ?? "❌ پنل انتخاب‌شده یافت نشد؛ لطفا مراحل خرید را مجددا انجام دهید.", $keyboard, 'HTML');
         step('home', $from_id);
@@ -1609,6 +1611,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $info_product['code_product'] = $textbotlang['users']['customsellvolume']['title'];
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1]);
     } else {
         if (function_exists('rxResolveProductForPanel')) {
             $info_product = rxResolveProductForPanel($loc, $userdate['name_panel'], $user['agent'], $userdate['category'] ?? null, $userdate['monthproduct'] ?? null);
@@ -1633,6 +1636,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     $fxBuyKinds = $parts[0] == "customvolume" ? ['custom_volume', 'custom_time'] : 'product';
     if ($parts[0] != "customvolume") {
         $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) fx_apply_reseller_retail($info_product, $marzban_list_get);
     }
     if (intval($user['pricediscount']) != 0) {
         $resultper = ($info_product['price_product'] * $user['pricediscount']) / 100;
@@ -1711,6 +1715,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
 
     $partsdic = explode("_", $user['Processing_value_four']);
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
+    if (function_exists('fx_reseller_load_retail_units')) fx_reseller_load_retail_units($marzban_list_get, (string)$user['agent']);
     if (!is_array($marzban_list_get)) {
         sendmessage($from_id, $datatextbot['dyn_errors_panel_not_found'] ?? "❌ پنل انتخاب‌شده یافت نشد؛ لطفا مراحل خرید را مجددا انجام دهید.", $keyboard, 'HTML');
         step('home', $from_id);
@@ -1731,6 +1736,8 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $info_product['code_product'] = "customvolume";
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        $info_product['fx_wholesale_price'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1]);
         $info_product['data_limit_reset'] = "no_reset";
     } else {
         if (function_exists('rxResolveProductForPanel')) {
@@ -1763,6 +1770,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     $fxBuyKinds = $parts[0] == "customvolume" ? ['custom_volume', 'custom_time'] : 'product';
     if ($parts[0] != "customvolume") {
         $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) fx_apply_reseller_retail($info_product, $marzban_list_get);
     }
     if ($datain == "confirmandgetserviceDiscount") {
         $discountcode = select("DiscountSell", "*", "codeDiscount", $partsdic[0], "count");
@@ -1879,6 +1887,24 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             return;
         }
     }
+
+    // ===== FX-DEBT GUARD (reseller credit mode) =====
+    $__fxDebtMode = false;
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') $__fxDebtMode = true;
+        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
+        if ($__fxDebtWholesale <= 0) $__fxDebtWholesale = (int)$priceproduct;
+        if ($__fxDebtMode && function_exists('fx_debt_gate')) {
+            list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
+            if (!$__fxGateOk) {
+                sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+                step('home', $from_id);
+                return;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD (reseller credit mode) =====
     Editmessagetext($from_id, $message_id, "♻️ در حال ساختن سرویس شما...", null);
     $SellDiscountlimit = false;
     if ($datain == "confirmandgetserviceDiscount") {
@@ -1910,7 +1936,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         ]
     ];
     if (function_exists('nmPanelNationalEnabled') && nmPanelNationalEnabled($marzban_list_get)) {
-        if (nmStockCompleteBuyFromInventory($from_id, $user, $marzban_list_get, $info_product, $randomString, $username_ac, true, 'national_buy')) {
+        if (nmStockCompleteBuyFromInventory($from_id, $user, $marzban_list_get, $info_product, $randomString, $username_ac, !($__fxDebtMode ?? false), 'national_buy')) {
             sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
             step('home', $from_id);
             return;
@@ -1921,6 +1947,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     }
     $dataoutput = $ManagePanel->createUser($marzban_list_get['name_panel'], $info_product['code_product'], $username_ac, $datac, true);
     if (!isset($dataoutput['username']) || $dataoutput['username'] === null || $dataoutput['username'] === '') {
+        if (!empty($__fxDebtMode) && function_exists('fx_debt_revert')) { $__fxDebtAmtRv = (int)($info_product['fx_wholesale_price'] ?? 0); if ($__fxDebtAmtRv <= 0) $__fxDebtAmtRv = (int)$priceproduct; fx_debt_revert($__fxRid, $__fxDebtAmtRv, $randomString); }
         $dataoutput['msg'] = rx_panel_error_text($dataoutput['msg'] ?? null, $dataoutput['detail'] ?? null);
         sendmessage($from_id, $textbotlang['users']['sell']['ErrorConfig'], $keyboard, 'HTML');
         $texterros = "⭕️ خطای ساخت اشتراک
@@ -1943,6 +1970,17 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     $username_ac = rx_adopt_created_username($dataoutput, $username_ac, $randomString);
     rx_notify_username_renamed($from_id, $dataoutput, $marzban_list_get);
     update("invoice", "Status", "active", "username", $username_ac);
+
+    if (!empty($__fxDebtMode)) {
+        $__fxDebtAmount = (int)($info_product['fx_wholesale_price'] ?? 0);
+        if ($__fxDebtAmount <= 0) $__fxDebtAmount = (int)$priceproduct;
+        if (function_exists('fx_debt_inc')) {
+            list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_inc($__fxRid, $__fxDebtAmount, 'purchase', $randomString);
+            if (!$__fxIncOk && $__fxIncReason === 'ceiling') {
+                error_log('[FX_DEBT] ceiling hit mid-transaction rid=' . $__fxRid . ' invoice=' . $randomString);
+            }
+        }
+    }
     $output_config_link = "";
     $config = "";
     $output_config_link = rxShouldShowConnectionLink($marzban_list_get, $dataoutput['file_ext'] ?? null) ? rxResolveConnectionLink($marzban_list_get, $dataoutput['subscription_url'], $dataoutput['file_ext'] ?? null) : "";
@@ -1972,10 +2010,11 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
     }
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
+    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML'); }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     if (intval($priceproduct) != 0) {
 
-        if (($user['agent'] ?? '') === 'n2') {
+        if (($user['agent'] ?? '') === 'n2' || !empty($__fxDebtMode)) {
             $stmtBuyDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid");
         } else {
             $stmtBuyDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid AND Balance >= :check_delta");
@@ -2174,6 +2213,7 @@ $textonebuy
         return;
     }
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
+    if (function_exists('fx_reseller_load_retail_units')) fx_reseller_load_retail_units($marzban_list_get, (string)$user['agent']);
     if (!rxTableValueExists('DiscountSell', 'codeDiscount', $text)) {
         sendmessage($from_id, $textbotlang['users']['Discount']['notcode'], $backuser, 'HTML');
         return;
@@ -2199,6 +2239,7 @@ $textonebuy
         $info_product['code_product'] = $textbotlang['users']['customsellvolume']['title'];
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1]);
     } else {
         if (function_exists('rxResolveProductForPanel')) {
             $info_product = rxResolveProductForPanel($user['Processing_value_one'], $userdate['name_panel'], $user['agent'], $userdate['category'] ?? null, $userdate['monthproduct'] ?? null);
@@ -2221,6 +2262,7 @@ $textonebuy
     $fxBuyKinds = $parts[0] == "customvolume" ? ['custom_volume', 'custom_time'] : 'product';
     if ($parts[0] != "customvolume") {
         $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) fx_apply_reseller_retail($info_product, $marzban_list_get);
     }
     $info_product['price_product'] = fx_finalize_amount($info_product['price_product'], $marzban_list_get, $fxBuyKinds);
     $info_productmain = $info_product['price_product'];
@@ -2430,6 +2472,7 @@ $textonebuy
         $_rx_usernameKb = ($marzban_list_get['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم" || $marzban_list_get['MethodUsername'] == "متن دلخواه کاربر + رندوم") ? $usernamePromptKb : $backuser;
         if ($datain === 'gen_random_uname') {
             $text = rx_build_smart_random_username($username ?? '', $from_id);
+    if (function_exists('fx_reseller_load_retail_units')) fx_reseller_load_retail_units($marzban_list_get, (string)$user['agent']);
             if ($callback_query_id && function_exists('telegram')) {
                 @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'cache_time' => 0]);
             }
@@ -2454,6 +2497,7 @@ $textonebuy
         $info_product['code_product'] = $textbotlang['users']['customsellvolume']['title'];
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1]);
     } else {
         if (function_exists('rxResolveProductForPanel')) {
             $info_product = rxResolveProductForPanel($loc, $user['Processing_value'], $user['agent']);
@@ -2484,6 +2528,7 @@ $textonebuy
     $fxBulkKinds = $parts[0] == "customvolume" ? ['custom_volume', 'custom_time'] : 'product';
     if ($parts[0] != "customvolume") {
         $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) fx_apply_reseller_retail($info_product, $marzban_list_get);
     }
     $info_product['price_product'] = intval($info_product['price_product']) * intval($user['Processing_value_four']);
     $info_product['price_product'] = fx_finalize_amount($info_product['price_product'], $marzban_list_get, $fxBulkKinds);
@@ -2508,6 +2553,7 @@ $textonebuy
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $user['Processing_value'], "select");
     $eextraprice = json_decode($marzban_list_get['pricecustomvolume'], true);
     $custompricevalue = fx_adjust_base_toman($eextraprice[$user['agent']], $marzban_list_get, 'custom_volume');
+    if (function_exists('fx_reseller_load_retail_units')) fx_reseller_load_retail_units($marzban_list_get, (string)$user['agent']);
     $eextraprice = json_decode($marzban_list_get['pricecustomtime'], true);
     $customtimevalueprice = fx_adjust_base_toman($eextraprice[$user['agent']], $marzban_list_get, 'custom_time');
     $parts = explode("_", $user['Processing_value_one']);
@@ -2517,6 +2563,8 @@ $textonebuy
         $info_product['code_product'] = "customvolume";
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        $info_product['fx_wholesale_price'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1]);
         $info_product['data_limit_reset'] = "no_reset";
     } else {
         if (function_exists('rxResolveProductForPanel')) {
@@ -2540,6 +2588,7 @@ $textonebuy
     $fxBulkKinds = $parts[0] == "customvolume" ? ['custom_volume', 'custom_time'] : 'product';
     if ($parts[0] != "customvolume") {
         $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        if (defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) fx_apply_reseller_retail($info_product, $marzban_list_get);
     }
     if ($user['Processing_value_price'] !== null && $user['Processing_value_price'] !== '') {
         $priceproduct = (float) $user['Processing_value_price'];
@@ -2597,6 +2646,24 @@ $textonebuy
             return;
         }
     }
+
+    // ===== FX-DEBT GUARD (bulk, reseller credit mode) =====
+    $__fxDebtMode = false;
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') $__fxDebtMode = true;
+        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0) * max(1, (int)$user['Processing_value_four']);
+        if ($__fxDebtWholesale <= 0) $__fxDebtWholesale = (int)$priceproduct;
+        if ($__fxDebtMode && function_exists('fx_debt_gate')) {
+            list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
+            if (!$__fxGateOk) {
+                sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+                step('home', $from_id);
+                return;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD (bulk, reseller credit mode) =====
     $datep = strtotime("+" . $info_product['Service_time'] . "days");
     if ($marzban_list_get['MethodUsername'] == "متن دلخواه + عدد ترتیبی" || $marzban_list_get['MethodUsername'] == "نام کاربری + عدد به ترتیب" || $marzban_list_get['MethodUsername'] == "آیدی عددی+عدد ترتیبی" || $marzban_list_get['MethodUsername'] == "متن دلخواه نماینده + عدد ترتیبی") {
         $value = intval($user['number_username']) + $user['Processing_value_four'];
@@ -2686,7 +2753,7 @@ $textonebuy
             ];
             nmStockDeliverConfig($stock, $inventoryInvoice, '✅ وضعیت نت ملی فعال است؛ اشتراک از انبار شبکه‌ملی تحویل شد');
             if (function_exists('balance_atomic_charge')) {
-                $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
+                $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg && empty($__fxDebtMode));
                 if (!empty($__bulkChargeNm['ok']) && function_exists('wallet_ledger_record')) {
                     wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس (انبار ملی)', (string)$randomString, 'invoice', (string)$randomString);
                 }
@@ -2700,6 +2767,7 @@ $textonebuy
         }
         $dataoutput = $ManagePanel->createUser($marzban_list_get['name_panel'], $info_product['code_product'], $username_acc, $datac, true);
         if ($dataoutput['username'] == null) {
+            if (!empty($__fxDebtMode) && function_exists('fx_debt_revert')) { $__fxDebtItemAmtRv = intdiv((int)($info_product['fx_wholesale_price'] ?? (int)$priceproduct), max(1, (int)$user['Processing_value_four'])); fx_debt_revert($__fxRid, $__fxDebtItemAmtRv, $randomString); }
             $dataoutput['msg'] = rx_panel_error_text($dataoutput['msg'] ?? null, $dataoutput['detail'] ?? null);
             sendmessage($from_id, $textbotlang['users']['sell']['ErrorConfig'], $keyboard, 'HTML');
             $texterros = "
@@ -2721,6 +2789,7 @@ $textonebuy
             return;
         }
         $username_acc = rx_adopt_created_username($dataoutput, $username_acc);
+        if (!empty($__fxDebtMode) && function_exists('fx_debt_inc')) { $__fxDebtItemAmt = intdiv((int)($info_product['fx_wholesale_price'] ?? (int)$priceproduct), max(1, (int)$user['Processing_value_four'])); list($__fxIncOk2, $__fxIncReason2, $__fxDebtAfter2, $__fxDebtAlert2) = fx_debt_inc($__fxRid, $__fxDebtItemAmt, 'bulk_purchase', $randomString); $__fxDebtAlert = $__fxDebtAlert2 ?: ($__fxDebtAlert ?? ''); }
         rx_notify_username_renamed($from_id, $dataoutput, $marzban_list_get);
         $invoiceIpLimit = (string)(isset($info_product['ip_limit']) ? intval($info_product['ip_limit']) : 0);
         $invoiceHwidLimit = (string)(isset($info_product['hwid_limit']) ? intval($info_product['hwid_limit']) : 0);
@@ -2760,7 +2829,7 @@ $textonebuy
         $textcreatuser = applyConnectionPlaceholders($textcreatuser, $output_config_link, $config);
         sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
         if (function_exists('balance_atomic_charge')) {
-            $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
+            $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg && empty($__fxDebtMode));
             if (!empty($__bulkChargeLive['ok']) && function_exists('wallet_ledger_record')) {
                 wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس', (string)$randomString, 'invoice', (string)$randomString);
             }
@@ -2768,6 +2837,7 @@ $textonebuy
             update("user", "Balance", select("user", "Balance", "id", $from_id, "select")['Balance'] - $__bulkItemCharge, "id", $from_id);
         }
         $__bulkChargedTotal += $__bulkItemCharge;
+    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML'); }
     }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     $__bulkBalanceRow = select("user", "*", "id", $from_id, "select");
