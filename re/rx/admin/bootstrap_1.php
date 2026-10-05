@@ -4,7 +4,7 @@ require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_reseller_mgmt.php';
 if (fx_res_mgmt_gate($datain ?? '', $from_id, $admin_ids, $message_id, $user, $backadmin)) {
     return;
 }
-if (in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create'])) {
+if (in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val'])) {
     if (fx_reseller_text_handler((string)($text ?? ''), $user, $from_id, $backadmin)) {
         return;
     }

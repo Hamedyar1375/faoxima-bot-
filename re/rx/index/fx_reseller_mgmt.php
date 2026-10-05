@@ -300,6 +300,113 @@ function fx_res_fmt_volume(?float $remBytes): string {
 }
 
 /**
+ * Financial + config + credit report for a reseller (admin view, read-only).
+ * Revenue = customers' paid retail (invoice.price_product); Cost = reseller
+ * wholesale (product.fx_wholesale_price, defaulting to retail => zero margin);
+ * Net = Revenue - Cost. Periods: today / week / month (host-local boundaries).
+ * Configs: active (active/sendedwarn/send_on_hold) vs expired (end_of_time/end_of_volume).
+ * Credit: debt ceiling / current / remaining allowed for a new config + balance.
+ */
+function fx_res_report_data(int $rid): array {
+    global $pdo;
+    $sinceToday = (int)strtotime('today');
+    $sinceWeek  = (int)strtotime('monday this week');
+    $sinceMonth = (int)strtotime('first day of this month');
+
+    $base = "FROM invoice i
+             JOIN user u ON u.id = i.id_user
+             LEFT JOIN product p ON p.name_product = i.name_product
+             WHERE u.agent = :rid
+               AND i.name_product != 'سرویس تست'
+               AND i.Status NOT IN ('removebyadmin')
+               AND CAST(i.time_sell AS UNSIGNED) >= :since";
+
+    $periods = [];
+    foreach (['today' => $sinceToday, 'week' => $sinceWeek, 'month' => $sinceMonth] as $key => $since) {
+        $p = ['count' => 0, 'revenue' => 0, 'cost' => 0, 'net' => 0];
+        try {
+            $st = $pdo->prepare("SELECT COUNT(*) AS c,
+                     COALESCE(SUM(CAST(i.price_product AS DECIMAL(20,0))),0) AS rev,
+                     COALESCE(SUM(COALESCE(p.fx_wholesale_price, CAST(i.price_product AS DECIMAL(20,0))),0)) AS cost
+                  " . $base);
+            $st->execute([':rid' => (string)$rid, ':since' => (string)$since]);
+            $row = $st->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                $p['count']   = (int)$row['c'];
+                $p['revenue'] = (int)$row['rev'];
+                $p['cost']    = (int)$row['cost'];
+                $p['net']     = $p['revenue'] - $p['cost'];
+            }
+        } catch (\Throwable $e) { /* leave zeros on any DB hiccup */ }
+        $periods[$key] = $p;
+    }
+
+    $cfg = ['active' => 0, 'expired' => 0, 'total' => 0];
+    try {
+        $st = $pdo->prepare("SELECT
+                    SUM(CASE WHEN i.Status IN ('active','sendedwarn','send_on_hold') THEN 1 ELSE 0 END) AS a,
+                    SUM(CASE WHEN i.Status IN ('end_of_time','end_of_volume') THEN 1 ELSE 0 END) AS e,
+                    COUNT(*) AS t
+                 FROM invoice i
+                 JOIN user u ON u.id = i.id_user
+                 WHERE u.agent = :rid AND i.name_product != 'سرویس تست'");
+        $st->execute([':rid' => (string)$rid]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            $cfg['active']  = (int)$row['a'];
+            $cfg['expired'] = (int)$row['e'];
+            $cfg['total']   = (int)$row['t'];
+        }
+    } catch (\Throwable $e) { /* leave zeros */ }
+
+    $credit = ['mode' => 'balance', 'ceiling' => 0, 'current' => 0, 'remaining' => 0];
+    if (function_exists('fx_debt_state')) {
+        $stt = fx_debt_state($rid);
+        $credit['mode']    = $stt['mode'] ?? 'balance';
+        $credit['ceiling'] = (int)($stt['ceiling'] ?? 0);
+        $credit['current'] = (int)($stt['current'] ?? 0);
+        $credit['remaining'] = max(0, $credit['ceiling'] - $credit['current']);
+    }
+    $balance = function_exists('fx_reseller_db_balance') ? fx_reseller_db_balance($rid) : 0;
+
+    return ['periods' => $periods, 'configs' => $cfg, 'credit' => $credit, 'balance' => (int)$balance];
+}
+
+/**
+ * Render the reseller financial/credit report (edit-in-place, glass UI, read-only).
+ */
+function fx_res_render_report(int $from_id, int $message_id, string $rid): void {
+    step('fx_res_report', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    $d = fx_res_report_data((int)$rid);
+    $p = $d['periods'];
+    $c = $d['credit'];
+    $fmt = function ($n) { return number_format((int)$n); };
+    $lines = [];
+    $lines[] = "📊 <b>گزارش مالی و اعتباری نماینده</b>";
+    $lines[] = "";
+    $lines[] = "💵 فروش / سود خالص (به تومان)";
+    $lines[] = "▫️ امروز: فروش " . $fmt($p['today']['revenue']) . " | سود " . $fmt($p['today']['net']) . " (" . $p['today']['count'] . " خرید)";
+    $lines[] = "▫️ این هفته: فروش " . $fmt($p['week']['revenue']) . " | سود " . $fmt($p['week']['net']) . " (" . $p['week']['count'] . " خرید)";
+    $lines[] = "▫️ این ماه: فروش " . $fmt($p['month']['revenue']) . " | سود " . $fmt($p['month']['net']) . " (" . $p['month']['count'] . " خرید)";
+    $lines[] = "";
+    $lines[] = "🧩 کانفیگ‌ها: " . $fmt($d['configs']['active']) . " فعال | " . $fmt($d['configs']['expired']) . " منقضی (مجموع " . $fmt($d['configs']['total']) . ")";
+    $lines[] = "";
+    $modeLabel = $c['mode'] === 'debt' ? 'اعتباری (بدهی)' : 'پیش‌پرداخت (موجودی)';
+    $lines[] = "🏦 حالت: " . $modeLabel;
+    $lines[] = "📏 سقف بدهی (Debt_Ceiling): " . $fmt($c['ceiling']);
+    $lines[] = "💸 بدهی فعلی (Current_Debt): " . $fmt($c['current']);
+    $lines[] = "✅ اعتبار باقی‌مانده (مجاز برای ساخت کانفیگ جدید): " . $fmt($c['remaining']);
+    $lines[] = "💰 موجودی کیف‌پول: " . $fmt($d['balance']);
+    $lines[] = "";
+    $lines[] = "همه مبالغ به تومان است.";
+    $kb = fx_res_inline_kb([
+        [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]],
+    ]);
+    Editmessagetext($from_id, $message_id, implode("\n", $lines), $kb, 'HTML');
+}
+
+/**
  * Render the buyer/service list for a reseller (edit-in-place, glass UI).
  */
 function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
@@ -473,6 +580,9 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
              ['text' => '🏷️ قیمت عمده‌فروشی', 'callback_data' => "fx_res_whprice_{$rid}"]],
             [['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"],
              ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
+            [['text' => '⚙️ تنظیم سقف بدهی', 'callback_data' => "fx_res_debt_ceiling_{$rid}"],
+             ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
+            [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"]],
             [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
         ]);
         $__fxDebtSt = fx_debt_state($rid);
@@ -721,6 +831,25 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         return true;
     }
 
+    // --- financial/credit report (step 2: read-only dashboard) ---
+    if (preg_match('/^fx_res_report_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        fx_res_render_report($from_id, $message_id, $rid);
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- settlement: register a payment/deposit against the reseller's debt ---
+    if (preg_match('/^fx_res_settle_(\d+)$/', $datain, $m)) {
+        $rid = intval($m[1]);
+        step('fx_res_do_settle', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        $st = fx_debt_state($rid);
+        Editmessagetext($from_id, $message_id, "💳 <b>ثبت تسویه‌حساب / واریزی</b>\nمبلغ واریزی (به تومان) را برای نماینده {$rid} وارد کنید:\n💸 بدهی فعلی: " . number_format($st['current']) . " تومان\n(مبلغ تا سقف بدهی از Current_Debt کسر می‌شود؛ مازاد به موجودی اضافه می‌گردد.)\nانصراف: /cancel", null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+
     // --- webhook reset ---
     if (preg_match('/^fx_res_wh_(\d+)$/', $datain, $m)) {
         $rid = $m[1];
@@ -803,6 +932,63 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         } else {
             sendmessage($from_id, "❌ خطا در شارژ.", $backuser, 'html');
         }
+        fx_res_exit_to_hub($from_id);
+        return true;
+    }
+
+    if ($user['step'] === 'fx_res_do_settle') {
+        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
+        $amt = intval($text);
+        if ($amt <= 0) { sendmessage($from_id, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", $backuser, 'html'); return true; }
+        $rid = intval($user['Processing_value']);
+        $before = 0; $after = 0; $applied = 0; $excess = 0; $ceiling = 0;
+        try {
+            $st = fx_debt_state($rid);
+            $before = $st['current'];
+            $ceiling = (int)($st['ceiling'] ?? 0);
+            $applied = min($amt, $before);
+            $excess = $amt - $applied;
+            if ($applied > 0) {
+                $pdo->prepare("UPDATE botsaz SET current_debt = GREATEST(0, current_debt - :amt) WHERE id_user = :rid")
+                    ->execute([':amt' => $applied, ':rid' => (string)$rid]);
+            }
+            $stmt = $pdo->prepare("SELECT current_debt FROM botsaz WHERE id_user = :rid LIMIT 1");
+            $stmt->execute([':rid' => (string)$rid]);
+            $after = (int)$stmt->fetchColumn();
+            if ($applied > 0) {
+                $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time) VALUES (:rid, :amt, 'out', :m, NULL, :after, NOW())")
+                    ->execute([':rid' => $rid, ':amt' => $applied, ':m' => 'settlement', ':after' => $after]);
+            }
+            if ($ceiling > 0 && $after * 100 < $ceiling * 80) {
+                @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+                @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+            }
+            if ($excess > 0) {
+                fx_reseller_db_credit($rid, $excess, 'admin_credit', $ApiToken);
+            }
+        } catch (\Throwable $e) {
+            error_log('[FX_DEBT] settle failed rid=' . $rid . ' amt=' . $amt . ': ' . $e->getMessage());
+            sendmessage($from_id, "❌ خطا در ثبت تسویه‌حساب.", $backuser, 'html');
+            fx_res_exit_to_hub($from_id);
+            return true;
+        }
+        $creditLeft = max(0, $ceiling - $after);
+        $msgAdmin = "💳 تسویه‌حساب ثبت شد:\n"
+            . (($applied > 0) ? ("✅ کسرشده از بدهی: " . number_format($applied) . " تومان\n") : "⚠️ بدهی فعالی وجود نداشت (کسری نشد).\n")
+            . "💸 بدهی باقی‌مانده: " . number_format($after) . " تومان";
+        $msgAgent = "💳 <b>تسویه‌حساب ثبت شد</b>\n"
+            . ((($applied > 0)) ? ("✅ مبلغ تسویه‌شده: " . number_format($applied) . " تومان\n") : "⚠️ بدهی فعالی وجود نداشت (کسری نشد).\n")
+            . "💸 بدهی باقی‌مانده: " . number_format($after) . " تومان";
+        if ($ceiling > 0) {
+            $msgAgent .= "\n🏦 سقف اعتبار: " . number_format($ceiling) . " تومان\n✅ اعتبار مجاز خرید: " . number_format($creditLeft) . " تومان";
+        }
+        if ($excess > 0) {
+            $msgAdmin .= "\n💰 مازاد واریزی به موجودی اضافه شد: " . number_format($excess) . " تومان";
+            $msgAgent .= "\n💰 مازاد واریزی به موجودی اضافه شد: " . number_format($excess) . " تومان";
+        }
+        sendmessage($from_id, $msgAdmin, $backuser, 'html');
+        sendmessage($rid, $msgAgent, null, 'HTML');
         fx_res_exit_to_hub($from_id);
         return true;
     }
@@ -959,14 +1145,14 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
     }
 
     // --- text-entry steps (primary consumer: bootstrap_1 gate; this is a net) ---
-    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'], true)) {
+    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'], true)) {
         if (fx_reseller_text_handler($text, (array)$user, $from_id, $backadmin)) {
             return true;
         }
     }
 
     // --- /cancel inside the section ---
-    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm'], true)) {
+    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm', 'fx_res_report'], true)) {
         fx_res_exit_to_hub($from_id);
         return true;
     }

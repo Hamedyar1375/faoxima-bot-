@@ -56,7 +56,7 @@ $tkCancelKb = json_encode(['inline_keyboard' => [[['text' => '🔙 انصراف'
    Reset the stuck step to home so the click reaches its real handler in one tap.
    Additive: no behavior change for normal flows (callbacks only). */
 if (!empty($datain) && isset($update['callback_query'])) {
-    $__fx_textwait_steps = ['getprice', 'getcodesellDiscountcharge', 'gettimecustomvol', 'gettimecustomvolom', 'getcountconfig', 'getcodesellDiscount', 'getTransferRecipient', 'getTransferAmount', 'getticketsubj', 'tk_media_choice', 'tk_media_count', 'tk_desc', 'tk_collect', 'statusnamecustom', 'get_agent_bot_token', 'fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_do_debt_ceiling', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'];
+    $__fx_textwait_steps = ['getprice', 'getcodesellDiscountcharge', 'gettimecustomvol', 'gettimecustomvolom', 'getcountconfig', 'getcodesellDiscount', 'getTransferRecipient', 'getTransferAmount', 'getticketsubj', 'tk_media_choice', 'tk_media_count', 'tk_desc', 'tk_collect', 'statusnamecustom', 'get_agent_bot_token', 'fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend', 'fx_res_report'];
     if (in_array((string)($user['step'] ?? ''), $__fx_textwait_steps, true)) {
         if ($user['step'] == 'getprice' && is_numeric($user['Processing_value'] ?? '')) {
             @deletemessage($from_id, $user['Processing_value']);
