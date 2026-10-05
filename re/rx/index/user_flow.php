@@ -2010,7 +2010,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
     }
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
-    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML'); }
+    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null); }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     if (intval($priceproduct) != 0) {
 
@@ -2837,7 +2837,7 @@ $textonebuy
             update("user", "Balance", select("user", "Balance", "id", $from_id, "select")['Balance'] - $__bulkItemCharge, "id", $from_id);
         }
         $__bulkChargedTotal += $__bulkItemCharge;
-    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML'); }
+    if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null); }
     }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     $__bulkBalanceRow = select("user", "*", "id", $from_id, "select");

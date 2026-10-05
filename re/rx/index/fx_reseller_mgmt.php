@@ -928,7 +928,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
                 ? "✅ تسویه شد: " . number_format($debtUsed) . " تومان بدهی نماینده {$rid} کسر شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")
                 : "✅ مبلغ " . number_format($amt) . " تومان به نماینده {$rid} شارژ شد.";
             sendmessage($from_id, $msg, $backuser, 'html');
-            sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML');
+            // FX-ROUTE: notify the agent through the RESELLER bot's own token
+            sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML', fx_reseller_bot_token($rid));
         } else {
             sendmessage($from_id, "❌ خطا در شارژ.", $backuser, 'html');
         }
@@ -988,7 +989,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             $msgAgent .= "\n💰 مازاد واریزی به موجودی اضافه شد: " . number_format($excess) . " تومان";
         }
         sendmessage($from_id, $msgAdmin, $backuser, 'html');
-        sendmessage($rid, $msgAgent, null, 'HTML');
+        // FX-ROUTE: notify the agent through the RESELLER bot's own token
+        sendmessage($rid, $msgAgent, null, 'HTML', fx_reseller_bot_token($rid));
         fx_res_exit_to_hub($from_id);
         return true;
     }
@@ -999,7 +1001,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         $rid = intval($user['Processing_value']);
         if (fx_reseller_db_debit($rid, intval($text), 'admin_debit', $ApiToken)) {
             sendmessage($from_id, "✅ مبلغ {$text} تومان از نماینده {$rid} کسر شد.", $backuser, 'html');
-            sendmessage($rid, "⚠️ مبلغ {$text} تومان از موجودی شما کسر شد.", null, 'HTML');
+            // FX-ROUTE: notify the agent through the RESELLER bot's own token
+            sendmessage($rid, "⚠️ مبلغ {$text} تومان از موجودی شما کسر شد.", null, 'HTML', fx_reseller_bot_token($rid));
         } else {
             sendmessage($from_id, "❌ موجودی کافی نیست یا خطا رخ داد.", $backuser, 'html');
         }
@@ -1017,7 +1020,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
         @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
         sendmessage($from_id, "✅ سقف اعتبار نماینده {$rid} روی " . number_format($amt) . " تومان تنظیم شد.", $backuser, 'html');
-        sendmessage($rid, "🏦 سقف اعتبار (فروش به‌حساب) شما روی " . number_format($amt) . " تومان تنظیم شد.", null, 'HTML');
+        // FX-ROUTE: notify the agent through the RESELLER bot's own token
+        sendmessage($rid, "🏦 سقف اعتبار (فروش به‌حساب) شما روی " . number_format($amt) . " تومان تنظیم شد.", null, 'HTML', fx_reseller_bot_token($rid));
         fx_res_exit_to_hub($from_id);
         return true;
     }
@@ -1085,7 +1089,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             } catch (\Throwable $e) {}
             update("invoice", "Status", "active", "id_invoice", $iid);
             sendmessage($from_id, "✅ سرویس " . $nameloc['username'] . " برای {$days} روز تمدید شد.", $backuser, 'html');
-            sendmessage((int)$nameloc['id_user'], "⏳ سرویس " . $nameloc['username'] . " شما برای {$days} روز تمدید شد.", null, 'HTML');
+            // FX-ROUTE: notify the buyer through the RESELLER bot's own token
+            sendmessage((int)$nameloc['id_user'], "⏳ سرویس " . $nameloc['username'] . " شما برای {$days} روز تمدید شد.", null, 'HTML', fx_reseller_bot_token((int)$rid));
         } else {
             $msg = is_array($ext) ? ($ext['msg'] ?? 'نامشخص') : $extErr;
             sendmessage($from_id, "❌ تمدید ناموفق بود: " . $msg, $backuser, 'html');
