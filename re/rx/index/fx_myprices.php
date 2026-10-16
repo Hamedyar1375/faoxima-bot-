@@ -62,10 +62,16 @@ if (!defined('FX_MYPRICES_LOADED')) {
                 }
                 step('fx_res_my_do_retail', $from_id);
                 update("user", "Processing_value", (string)$pid, "id", $from_id);
+                $whRaw = (int)($prod['wholesale'] ?? 0);
+                $whEff = $whRaw > 0 ? $whRaw : (int)($prod['base_price'] ?? 0);
+                $retRaw = (int)($prod['retail'] ?? 0);
+                $retDisplay = $retRaw > 0
+                    ? number_format($retRaw) . " تومان (اختصاصی شما)"
+                    : number_format((int)($prod['base_price'] ?? 0)) . " تومان (قیمت پایه)";
                 sendmessage($from_id,
-                    "🏷️ قیمت فروش محصول «" . $prod['name_product'] . "»\n\n" .
-                    "💵 هزینه عمده شما: " . number_format((int)$prod['wholesale']) . " تومان\n" .
-                    "💰 قیمت فعلی شما: " . ($prod['retail'] > 0 ? number_format((int)$prod['retail']) . " تومان" : "قیمت پایه (بدون تغییر)") . "\n\n" .
+                    "🏷️ قیمت فروش محصول «" . $prod['name_product'] . "» (#" . $pid . ")\n\n" .
+                    "💵 هزینه عمده شما: " . number_format($whEff) . " تومان" . ($whRaw > 0 ? "" : " (قیمت پایه)") . "\n" .
+                    "💰 قیمت فعلی شما: " . $retDisplay . "\n\n" .
                     "لطفا قیمت فروش جدید را به تومان وارد کنید (فقط عدد):\n" .
                     "❌ انصراف /cancel",
                     $backadmin, 'HTML');
@@ -195,13 +201,14 @@ if (!defined('FX_MYPRICES_LOADED')) {
             foreach ($rows as $row) {
                 $i++;
                 $base  = (int)($row['base_price'] ?? 0);
+                $whRaw = (int)($row['wholesale'] ?? 0);
                 $whole = $wholesaleOf($row);
                 $ret   = (int)($row['retail'] ?? 0);
                 $cur   = $ret > 0 ? $ret : $base;
                 $profit = $cur - $whole;
                 $isHidden = in_array((int)$row['id'], $hiddenIds, true);
-                $msg .= "{$i}️⃣ " . (string)$row['name_product'] . ($isHidden ? " 🚫 (غیرفعال)" : "") . "\n" .
-                    "💵 هزینه عمده: " . number_format($whole) . " | " .
+                $msg .= "{$i}️⃣ " . (string)$row['name_product'] . " (#" . (int)$row['id'] . ")" . ($isHidden ? " 🚫 (غیرفعال)" : "") . "\n" .
+                    "💵 هزینه عمده: " . number_format($whole) . ($whRaw > 0 ? "" : " (قیمت پایه)") . " | " .
                     "💰 فروش من: " . number_format($cur) . ($ret > 0 ? "" : " (پایه)") . " | " .
                     "📈 سود: " . number_format($profit) . "\n\n";
             }
@@ -209,7 +216,7 @@ if (!defined('FX_MYPRICES_LOADED')) {
             foreach ($rows as $row) {
                 $isHiddenB = in_array((int)$row['id'], $hiddenIds, true);
                 $kb['inline_keyboard'][] = [
-                    ['text' => "🏷️ " . mb_substr((string)$row['name_product'], 0, 30), 'callback_data' => 'fx_myprice_set_' . (int)$row['id']],
+                    ['text' => "🏷️ " . mb_substr((string)$row['name_product'], 0, 22) . " (#" . (int)$row['id'] . ")", 'callback_data' => 'fx_myprice_set_' . (int)$row['id']],
                     ['text' => $isHiddenB ? "👁 نمایش" : "🚫 پنهان", 'callback_data' => 'fx_myvis_' . ($isHiddenB ? 'on_' : 'off_') . (int)$row['id']]
                 ];
             }
