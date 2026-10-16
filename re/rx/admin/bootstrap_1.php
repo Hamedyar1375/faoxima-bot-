@@ -1,4 +1,10 @@
 <?php
+// === FX-BROADCAST-QUEUE: per-tenant broadcast queue paths (live require) ===
+if (!function_exists('fx_broadcast_files')) {
+    $__fx_bc = REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_broadcast_paths.php';
+    if (is_file($__fx_bc)) require_once $__fx_bc;
+    unset($__fx_bc);
+}
 // === Phase 2: Reseller Management (additive, admin-only) ===
 require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_reseller_mgmt.php';
 // === FX-MYPRICES: reseller «قیمت‌های من» (live require, NOT in any manifest) ===
@@ -704,9 +710,13 @@ HTML;
 
 if (!function_exists('nm_getBroadcastStatus')) {
     function nm_getBroadcastStatus() {
-        $infoFile      = 'cronbot/info';
-        $usersFileTxt  = 'cronbot/users.txt';
-        $usersFileJson = 'cronbot/users.json';
+        $__fxbc = function_exists('fx_broadcast_files')
+            ? fx_broadcast_files('cronbot')
+            : ['info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+        $infoFile      = $__fxbc['info'];
+        $usersFileTxt  = $__fxbc['users'];
+        $usersFileJson = $__fxbc['json'];
+        unset($__fxbc);
         if (!is_file($infoFile)) {
             return null;
         }

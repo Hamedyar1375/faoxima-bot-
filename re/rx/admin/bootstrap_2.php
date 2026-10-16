@@ -2694,8 +2694,11 @@ elseif ($datain == "systemsms") {
         return;
     }
 
-    if (!is_file('cronbot/users.json')) {
-        @file_put_contents('cronbot/users.json', json_encode([]));
+    $FXBC = function_exists('fx_broadcast_files')
+        ? fx_broadcast_files('cronbot')
+        : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+    if (!is_file($FXBC['json'])) {
+        @file_put_contents($FXBC['json'], json_encode([]));
     }
     $listbtn = json_encode([
         'inline_keyboard' => [
@@ -2763,8 +2766,11 @@ elseif ($datain == "systemsms") {
     return;
 } elseif (preg_match('/^broadcast_resume_([0-9a-f]{12})$/', $datain, $rxResumeMatch)) {
     $rxResumeResult = 'not_found';
+    $FXBC = function_exists('fx_broadcast_files')
+        ? fx_broadcast_files('cronbot')
+        : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
     if (function_exists('rx_broadcast_info_update')) {
-        rx_broadcast_info_update('cronbot/info', $rxResumeMatch[1], static function (array &$c) use (&$rxResumeResult) {
+        rx_broadcast_info_update($FXBC['info'], $rxResumeMatch[1], static function (array &$c) use (&$rxResumeResult) {
             if (!rx_broadcast_resume_now($c, true)) {
                 $rxResumeResult = 'not_paused';
                 return false;
@@ -3161,13 +3167,17 @@ $textday
     @ini_set('memory_limit', '1G');
     @set_time_limit(300);
 
+    $FXBC = function_exists('fx_broadcast_files')
+        ? fx_broadcast_files('cronbot')
+        : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+
     if (!function_exists('nm_writeBroadcastQueueFromJson')) {
-        function nm_writeBroadcastQueueFromJson($jsonStr) {
+        function nm_writeBroadcastQueueFromJson($jsonStr, array $files) {
             $arr = is_string($jsonStr) ? json_decode($jsonStr) : $jsonStr;
             if (!is_array($arr)) {
                 return 0;
             }
-            $tmp = "cronbot/users.txt.new";
+            $tmp = $files['users'] . '.new';
             $fh  = @fopen($tmp, 'w');
             if (!$fh) {
                 return 0;
@@ -3184,9 +3194,9 @@ $textday
                 }
             }
             fclose($fh);
-            @unlink('cronbot/users.json');
-            @unlink('cronbot/users.txt');
-            @rename($tmp, 'cronbot/users.txt');
+            @unlink($files['json']);
+            @unlink($files['users']);
+            @rename($tmp, $files['users']);
 
             $arr = null;
             unset($arr);
@@ -3195,17 +3205,19 @@ $textday
     }
 
     if ($typeservice == "unpinmessage") {
-        $userlist = json_encode(select("user", "id", null, null, "fetchAll"));
+        $stmt = $pdo->prepare("SELECT id FROM user WHERE {$FXU_SCOPE}");
+        $stmt->execute();
+        $userlist = json_encode($stmt->fetchAll());
         $message_id = Editmessagetext($from_id, $message_id, "✅ عملیات آغاز گردید پس از پایان اطلاع رسانی خواهد شد.", $cancelmessage);
         $dataunpin = json_encode(array(
             "id_admin" => $from_id,
             'type' => "unpinmessage",
             "id_message" => $message_id['result']['message_id']
         ));
-        nm_writeBroadcastQueueFromJson($userlist); $userlist = null;
-        file_put_contents('cronbot/info', $dataunpin);
+        nm_writeBroadcastQueueFromJson($userlist, $FXBC); $userlist = null;
+        file_put_contents($FXBC['info'], $dataunpin);
     } elseif ($typeservice == "sendmessage") {
-        $rxStartLock = @fopen('cronbot/startaction.lock', 'c');
+        $rxStartLock = @fopen('cronbot/startaction' . $FXBC['suffix'] . '.lock', 'c');
         if ($rxStartLock && !@flock($rxStartLock, LOCK_EX | LOCK_NB)) {
             @fclose($rxStartLock);
             if (!empty($callback_query_id)) {
@@ -3227,13 +3239,15 @@ $textday
         $statusMessageId = $message_id;
         if ($agent == "all") {
             if ($typeusermessage == "all") {
-                $userslist = json_encode(select("user", "id", "User_Status", "Active", "fetchAll"));
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND u.User_Status = 'Active'");
+                $stmt->execute();
+                $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "customer") {
                 if ($userdata['selectpanel'] == "all") {
                     $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 } else {
                     $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}') AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])}) AND u.User_Status = 'Active'");
                 }
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
@@ -3244,26 +3258,29 @@ $textday
             }
         } else {
             if ($typeusermessage == "all") {
-                $userslist = json_encode(select("user", "id", "agent", $agent, "fetchAll"));
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent = :agent AND {$FXU_SCOPE}");
+                $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
+                $stmt->execute();
+                $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "customer") {
                 if ($userdata['selectpanel'] == "all") {
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 } else {
                     $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE  u.agent =  :agent AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}') AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE  u.agent =  :agent AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])}) AND u.User_Status = 'Active'");
                 }
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "nonecustomer") {
-                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
             }
         }
         Editmessagetext($from_id, $statusMessageId, "✅ عملیات آغاز گردید پس از پایان اطلاع رسانی خواهد شد.", $cancelmessage);
-        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist); $userslist = null;
+        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist, $FXBC); $userslist = null;
         $data = json_encode(array(
             "id_admin" => $from_id,
             'type' => "sendmessage",
@@ -3283,7 +3300,7 @@ $textday
                 "started_at" => time()
             )
         ));
-        $rxInfoWritten = file_put_contents('cronbot/info', $data);
+        $rxInfoWritten = file_put_contents($FXBC['info'], $data);
         if ($rxStartLock) { @flock($rxStartLock, LOCK_UN); @fclose($rxStartLock); }
         $broadcastStatus = ($rxInfoWritten !== false && function_exists('nm_getBroadcastStatus')) ? nm_getBroadcastStatus() : null;
         if ($broadcastStatus !== null) {
@@ -3292,13 +3309,15 @@ $textday
     } elseif ($typeservice == "forwardmessage") {
         if ($agent == "all") {
             if ($typeusermessage == "all") {
-                $userslist = json_encode(select("user", "id", "User_Status", "Active", "fetchAll"));
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND u.User_Status = 'Active'");
+                $stmt->execute();
+                $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "customer") {
                 if ($userdata['selectpanel'] == "all") {
                     $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 } else {
                     $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}') AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])}) AND u.User_Status = 'Active'");
                 }
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
@@ -3309,19 +3328,22 @@ $textday
             }
         } else {
             if ($typeusermessage == "all") {
-                $userslist = json_encode(select("user", "id", "agent", $agent, "fetchAll"));
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent = :agent AND {$FXU_SCOPE}");
+                $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
+                $stmt->execute();
+                $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "customer") {
                 if ($userdata['selectpanel'] == "all") {
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 } else {
                     $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}') AND u.User_Status = 'Active'");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])}) AND u.User_Status = 'Active'");
                 }
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "nonecustomer") {
-                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id) AND u.User_Status = 'Active'");
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
@@ -3336,7 +3358,7 @@ $textday
             "pingmessage" => $userdata['typepinmessage'],
             "pinduration" => $userdata['pinduration'] ?? 'none',
         ));
-        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist); $userslist = null;        file_put_contents('cronbot/info', $data);
+        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist, $FXBC); $userslist = null;        file_put_contents($FXBC['info'], $data);
     } elseif ($typeservice == "xdaynotmessage") {
         $timedaystamp = intval($userdata['daynoyuse']) * 86400;
         $timenouser = time() - $timedaystamp;
@@ -3356,7 +3378,7 @@ $textday
                         $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id);");
                     } else {
                         $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                        $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}');");
+                        $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE {$FXU_SCOPE} AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])});");
                     }
                     $stmt->bindParam(':time', $timenouser, PDO::PARAM_STR);
                     $stmt->execute();
@@ -3369,17 +3391,17 @@ $textday
                 }
             } elseif ($typeusermessage == "customer") {
                 if ($userdata['selectpanel'] == "all") {
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id);");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id);");
                 } else {
                     $panel = select("marzban_panel", "*", "code_panel", $userdata['selectpanel'], "select");
-                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = '{$panel['name_panel']}');");
+                    $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND u.last_message_time < :time AND EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id AND i.Service_location = {$pdo->quote($panel['name_panel'])});");
                 }
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->bindParam(':time', $timenouser, PDO::PARAM_STR);
                 $stmt->execute();
                 $userslist = json_encode($stmt->fetchAll());
             } elseif ($typeusermessage == "nonecustomer") {
-                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND u.last_message_time < :time AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id);");
+                $stmt = $pdo->prepare("SELECT u.id FROM user u WHERE u.agent =  :agent AND {$FXU_SCOPE} AND u.last_message_time < :time AND NOT EXISTS ( SELECT 1 FROM invoice i WHERE i.id_user = u.id);");
                 $stmt->bindParam(':agent', $agent, PDO::PARAM_STR);
                 $stmt->bindParam(':time', $timenouser, PDO::PARAM_STR);
                 $stmt->execute();
@@ -3396,18 +3418,21 @@ $textday
             "pinduration" => $userdata['pinduration'] ?? 'none',
             "btnmessage" => $userdata['btntypemessage']
         ));
-        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist); $userslist = null;        file_put_contents('cronbot/info', $data);
+        $rxBuilt = nm_writeBroadcastQueueFromJson($userslist, $FXBC); $userslist = null;        file_put_contents($FXBC['info'], $data);
     }
 } elseif ($datain == "cancel_sendmessage") {
-    @file_put_contents('users.json', json_encode(array()));
+    $FXBC = function_exists('fx_broadcast_files')
+        ? fx_broadcast_files('cronbot')
+        : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+    @file_put_contents($FXBC['json'], json_encode(array()));
     if (function_exists('rx_broadcast_cancel')) {
-        rx_broadcast_cancel('cronbot');
+        rx_broadcast_cancel('cronbot', $FXBC['suffix']);
     } else {
-        @unlink('cronbot/users.json');
-        @unlink('cronbot/users.txt');
-        @unlink('cronbot/users.txt.new');
-        @unlink('cronbot/users.txt.tail.tmp');
-        @unlink('cronbot/info');
+        @unlink($FXBC['json']);
+        @unlink($FXBC['users']);
+        @unlink($FXBC['users'] . '.new');
+        @unlink($FXBC['users'] . '.tail.tmp');
+        @unlink($FXBC['info']);
     }
     deletemessage($from_id, $message_id);
     nm_adminInstantReply($from_id, "❌ عملیات ارسال پیام لغو شد و قابل ادامه نیست.", null, 'HTML');
@@ -6096,7 +6121,9 @@ $caption";
         } elseif ($rxGiftType === 'notcustomer') {
             $rxGiftWhere[] = "NOT EXISTS (SELECT 1 FROM invoice i WHERE i.id_user = u.id)";
         }
-        $rxGiftScope = defined('FX_RESELLER_ID') ? ["agent = '" . (int)FX_RESELLER_ID . "'"] : [];
+        $rxGiftScope = defined('FX_RESELLER_ID')
+            ? ((isset($FXU_SCOPE) && $FXU_SCOPE !== '') ? [$FXU_SCOPE] : ["agent = '" . (int)FX_RESELLER_ID . "'"])
+            : [];
         $allWhere = array_merge($rxGiftScope, $rxGiftWhere);
         $stmt = $pdo->prepare("SELECT u.id FROM user u" . (empty($allWhere) ? "" : " WHERE " . implode(" AND ", $allWhere)) . " ORDER BY u.id");
         $stmt->execute($rxGiftParams);
@@ -6177,11 +6204,14 @@ $caption";
                 "pingmessage" => "no",
                 "btnmessage" => "start"
             ));
-            file_put_contents("cronbot/users.json", json_encode($Balance_user));
-            file_put_contents('cronbot/info', $data);
+            $FXBC = function_exists('fx_broadcast_files')
+                ? fx_broadcast_files('cronbot')
+                : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+            file_put_contents($FXBC['json'], json_encode($Balance_user));
+            file_put_contents($FXBC['info'], $data);
         }
     }
-    if (defined('FX_RESELLER_ID')) { $fxscope = "agent = '" . (int)FX_RESELLER_ID . "'"; $query_where = ($query_where === "" || $query_where === null) ? "WHERE (" . $fxscope . ")" : preg_replace('/\\bWHERE\\b/i', 'WHERE (' . $fxscope . ') AND', (string)$query_where, 1); }
+    if (defined('FX_RESELLER_ID')) { $fxscope = (isset($FXU_SCOPE) && $FXU_SCOPE !== '') ? $FXU_SCOPE : "agent = '" . (int)FX_RESELLER_ID . "'"; $query_where = ($query_where === "" || $query_where === null) ? "WHERE (" . $fxscope . ")" : preg_replace('/\\bWHERE\\b/i', 'WHERE (' . $fxscope . ') AND', (string)$query_where, 1); }
     $stmt = $pdo->prepare("SELECT u.id FROM user u " . $query_where);
     $stmt->execute();
     $Balance_user = $stmt->fetchAll();
@@ -6206,8 +6236,11 @@ $caption";
             "pingmessage" => "no",
             "btnmessage" => "start"
         ));
-        file_put_contents("cronbot/users.json", json_encode($Balance_user));
-        file_put_contents('cronbot/info', $data);
+        $FXBC = function_exists('fx_broadcast_files')
+            ? fx_broadcast_files('cronbot')
+            : ['rid' => 0, 'suffix' => '', 'info' => 'cronbot/info', 'users' => 'cronbot/users.txt', 'json' => 'cronbot/users.json'];
+        file_put_contents($FXBC['json'], json_encode($Balance_user));
+        file_put_contents($FXBC['info'], $data);
     }
 } elseif ($text == "⬇️ کم کردن موجودی") {
     nm_adminInstantReply($from_id, $textbotlang['Admin']['Balance']['NegativeBalance'], $backadmin, 'HTML');

@@ -1315,12 +1315,12 @@ if (!function_exists('rx_broadcast_info_update')) {
 }
 
 if (!function_exists('rx_broadcast_cleanup_token')) {
-    function rx_broadcast_cleanup_token(string $cronbotDir, string $token): void
+    function rx_broadcast_cleanup_token(string $cronbotDir, string $token, string $prefix = 'users.txt'): void
     {
         if (!preg_match('/^[0-9a-f]{12}$/', $token)) {
             return;
         }
-        foreach (glob($cronbotDir . '/users.txt.*') ?: [] as $f) {
+        foreach (glob($cronbotDir . '/' . $prefix . '.*') ?: [] as $f) {
             if (strpos(basename($f), '.' . $token . '.') !== false) {
                 @unlink($f);
             }
@@ -1329,9 +1329,9 @@ if (!function_exists('rx_broadcast_cleanup_token')) {
 }
 
 if (!function_exists('rx_broadcast_cancel')) {
-    function rx_broadcast_cancel(string $cronbotDir): ?string
+    function rx_broadcast_cancel(string $cronbotDir, string $suffix = ''): ?string
     {
-        $infoFile = $cronbotDir . '/info';
+        $infoFile = $cronbotDir . '/info' . $suffix;
         $lf = @fopen($infoFile . '.wlock', 'c');
         if ($lf) {
             @flock($lf, LOCK_EX);
@@ -1340,11 +1340,11 @@ if (!function_exists('rx_broadcast_cancel')) {
         $token = is_array($cur) ? rx_broadcast_token($cur) : null;
         @unlink($infoFile);
         @unlink($infoFile . '.tmp');
-        foreach (['users.txt', 'users.json', 'users.txt.new', 'users.txt.tail.tmp', 'users.txt.recover.tmp'] as $f) {
-            @unlink($cronbotDir . '/' . $f);
+        foreach (['.txt', '.json', '.txt.new', '.txt.tail.tmp', '.txt.recover.tmp'] as $ext) {
+            @unlink($cronbotDir . '/users' . $suffix . $ext);
         }
         if ($token !== null) {
-            rx_broadcast_cleanup_token($cronbotDir, $token);
+            rx_broadcast_cleanup_token($cronbotDir, $token, 'users' . $suffix . '.txt');
         }
         if ($lf) {
             @flock($lf, LOCK_UN);

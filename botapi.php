@@ -2834,12 +2834,12 @@ function sendDocument($chat_id, $documentPath, $caption, $filename = null)
     ]);
 }
 
-function forwardMessage($chat_id,$message_id,$chat_id_user){
+function forwardMessage($chat_id,$message_id,$chat_id_user,$bot_token = null){
     return telegram('forwardMessage',[
         'from_chat_id'=> $chat_id,
         'message_id'=> $message_id,
         'chat_id'=> $chat_id_user,
-    ]);
+    ],$bot_token);
 }
 function sendphoto($chat_id,$photoid,$caption){
     telegram('sendphoto',[
@@ -2865,7 +2865,7 @@ function senddocumentsid($chat_id,$documentid,$caption){
         'parse_mode' => 'HTML',
     ]);
 }
-function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = 'HTML', $threadId = null){
+function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = 'HTML', $threadId = null, $bot_token = null){
     $message_id = (int) $message_id;
     global $update;
     $__callbackMsg = (isset($update['callback_query']['message']) && is_array($update['callback_query']['message']))
@@ -2874,7 +2874,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
     $__origThreadId = $threadId !== null
         ? (int) $threadId
         : ($__callbackMsg ? (int)($__callbackMsg['message_thread_id'] ?? 0) : 0);
-    $__sendFallback = function ($fbChatId, $fbText, $fbKeyboard, $fbParseMode) use ($__origThreadId) {
+    $__sendFallback = function ($fbChatId, $fbText, $fbKeyboard, $fbParseMode) use ($__origThreadId, $bot_token) {
         $fbText = applyPremiumEmojiTransform($fbText, $fbParseMode);
         $fbKeyboard = processKeyboardStyles($fbKeyboard, function_exists('rx_isAdminChat') && rx_isAdminChat($fbChatId));
         $fbKeyboard = applyPremiumEmojiToKeyboard($fbKeyboard);
@@ -2888,7 +2888,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
         if ($__origThreadId > 0) {
             $fbPayload['message_thread_id'] = $__origThreadId;
         }
-        return telegram('sendmessage', $fbPayload);
+        return telegram('sendmessage', $fbPayload, $bot_token);
     };
     if ($message_id <= 0) {
         return $__sendFallback($chat_id, $text, $keyboard, strtolower($parse_mode));
@@ -2905,7 +2905,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
     );
     if ($__isPhotoMsg && $__callbackMsgId === (int)$message_id) {
         if (function_exists('deletemessage')) {
-            @deletemessage($chat_id, $message_id);
+            @deletemessage($chat_id, $message_id, $bot_token);
         }
         return $__sendFallback($chat_id, $text, $keyboard, strtolower($parse_mode));
     }
@@ -2917,7 +2917,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
         'reply_markup' => $keyboard,
         'parse_mode' => $parse_mode,
         '_rx_already_transformed' => true,
-    ]);
+    ], $bot_token);
 
 
     if (is_array($result) && isset($result['ok']) && $result['ok'] === false) {
@@ -2931,36 +2931,36 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
         );
         if ($needsFallback) {
             if (function_exists('deletemessage')) {
-                @deletemessage($chat_id, $message_id);
+                @deletemessage($chat_id, $message_id, $bot_token);
             }
             return $__sendFallback($chat_id, $text, $keyboard, strtolower($parse_mode));
         }
     }
     return $result;
 }
- function deletemessage($chat_id, $message_id){
+ function deletemessage($chat_id, $message_id, $bot_token = null){
   $message_id = (int) $message_id;
   if ($message_id <= 0) return ['ok' => false, 'description' => 'message_id missing'];
   return telegram('deletemessage', [
 'chat_id' => $chat_id,
 'message_id' => $message_id,
-]);
+],$bot_token);
  }
 function getFileddire($photoid){
   return telegram('getFile', [
 'file_id' => $photoid,
 ]);
  }
-function pinmessage($from_id,$message_id){
+function pinmessage($from_id,$message_id,$bot_token = null){
   return telegram('pinChatMessage', [
 'chat_id' => $from_id,
 'message_id' => $message_id,
-]);
+],$bot_token);
  }
- function unpinmessage($from_id){
+ function unpinmessage($from_id,$bot_token = null){
   return telegram('unpinAllChatMessages', [
 'chat_id' => $from_id,
-]);
+],$bot_token);
  }
   function answerInlineQuery($inline_query_id,$results){
   return telegram('answerInlineQuery', [

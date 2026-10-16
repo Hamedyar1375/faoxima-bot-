@@ -52,9 +52,21 @@ foreach ($__required_files as $__f) {
 }
 unset($__required_files, $__f);
 
+$__fxq = $baseDir . '/../re/rx/index/fx_broadcast_paths.php';
+if (is_file($__fxq)) {
+    require_once $__fxq;
+}
+unset($__fxq);
+
 if (!rx_cron_db_ready('sendmessage')) {
-    if (function_exists('rx_broadcast_info_update') && is_file($baseDir . '/info')) {
-        rx_broadcast_info_update($baseDir . '/info', null, static function (array &$c) {
+    $__q = null;
+    if (function_exists('fx_broadcast_pick')) {
+        $__q = fx_broadcast_pick($baseDir);
+    } elseif (is_file($baseDir . '/info')) {
+        $__q = ['info' => $baseDir . '/info'];
+    }
+    if (function_exists('rx_broadcast_info_update') && is_array($__q)) {
+        rx_broadcast_info_update($__q['info'], null, static function (array &$c) {
             $st = (string) ($c['status'] ?? '');
             if ($st === 'cancelled' || $st === 'finished') {
                 return false;
@@ -62,6 +74,7 @@ if (!rx_cron_db_ready('sendmessage')) {
             rx_broadcast_apply_pause($c, ['class' => 'temporary_database', 'temporary' => true, 'code' => 0, 'retry_after' => 0, 'detail' => 'db_unavailable', 'manual' => false]);
         });
     }
+    unset($__q);
     return;
 }
 
@@ -141,13 +154,38 @@ try {
         }
     }
 
-    $infoFile     = $baseDir . '/info';
-    $usersFileTxt = $baseDir . '/users.txt';
-    $usersFileJson= $baseDir . '/users.json';
-
-    if (!is_file($infoFile)) {
+    $queue = null;
+    if (function_exists('fx_broadcast_pick')) {
+        $queue = fx_broadcast_pick($baseDir);
+    } elseif (is_file($baseDir . '/info')) {
+        $queue = ['rid' => 0, 'suffix' => '', 'info' => $baseDir . '/info', 'users' => $baseDir . '/users.txt', 'json' => $baseDir . '/users.json'];
+    }
+    if (!is_array($queue)) {
         @unlink($lockFile);
         exit;
+    }
+    $infoFile     = $queue['info'];
+    $usersFileTxt = $queue['users'];
+    $usersFileJson= $queue['json'];
+    $queueRid     = (int) ($queue['rid'] ?? 0);
+    $queueToken   = null;
+    $activeInfoFile = $infoFile;
+    if ($queueRid > 0) {
+        $queueToken = function_exists('fx_broadcast_rid_token') ? fx_broadcast_rid_token($queueRid) : null;
+        if ($queueToken === null || $queueToken === '') {
+            if (function_exists('rx_broadcast_info_update')) {
+                rx_broadcast_info_update($infoFile, null, static function (array &$c) {
+                    $st = (string) ($c['status'] ?? '');
+                    if ($st === 'cancelled' || $st === 'finished') {
+                        return false;
+                    }
+                    rx_broadcast_apply_pause($c, ['class' => 'system_error', 'temporary' => true, 'code' => 0, 'retry_after' => 0, 'detail' => 'tenant_token_missing', 'manual' => true]);
+                });
+            }
+            @error_log('[sendmessage.php] tenant broadcast paused: bot token missing for rid=' . $queueRid);
+            @unlink($lockFile);
+            exit;
+        }
     }
     $infoContent = @file_get_contents($infoFile);
     if ($infoContent === false) { $rxBcLog('ERROR — خواندن info ناموفق'); @unlink($lockFile); exit; }
@@ -210,7 +248,7 @@ try {
 
     $rxTryFinish = static function () use (
         $usersFileTxt, $usersFileJson, $claimLockFile, $reportLockFile, $infoFile, $infoLockFile,
-        &$info, $rxBcLog, $rxAllInflight, $rxBroadcastState
+        &$info, $rxBcLog, $rxAllInflight, $rxBroadcastState, $queueToken
     ): bool {
         $clf = @fopen($claimLockFile, 'c');
         if ($clf) { @flock($clf, LOCK_EX); }
@@ -228,8 +266,8 @@ try {
                 $st = (is_array($st) && isset($st['stats']) && is_array($st['stats'])) ? $st['stats'] : [];
                 $rxBcLog('FINISHED — کل عملیات تمام شد | total=' . (int) ($st['total'] ?? 0) . ' | موفق=' . (int) ($st['success'] ?? 0));
                 if (isset($info['id_admin'], $info['id_message'])) {
-                    @deletemessage($info['id_admin'], $info['id_message']);
-                    sendmessage($info['id_admin'], buildFinalReport($st), null, 'HTML');
+                    @deletemessage($info['id_admin'], $info['id_message'], $queueToken);
+                    sendmessage($info['id_admin'], buildFinalReport($st), null, 'HTML', $queueToken);
                 }
                 @unlink($infoFile);
                 @unlink($usersFileTxt);
@@ -465,7 +503,7 @@ try {
         $resp = null;
         $rxAttempted = true;
         if ($info['type'] === 'unpinmessage') {
-            $unpinResult = runRateLimitedUnpin($userId, $baseDir, $batchStart, $softTimeLimit, $rxBcLog);
+            $unpinResult = runRateLimitedUnpin($userId, $baseDir, $batchStart, $softTimeLimit, $rxBcLog, $queueToken);
             if (!empty($unpinResult['deferred'])) {
                 $idx--;
                 $processed--;
@@ -477,9 +515,9 @@ try {
             $resp = $unpinResult['response'];
         } elseif ($info['type'] === 'sendmessage' || $info['type'] === 'xdaynotmessage') {
             $kb = $keyboards[$info['btnmessage'] ?? 'none'] ?? null;
-            $resp = sendmessage($userId, $info['message'], $kb, 'HTML');
+            $resp = sendmessage($userId, $info['message'], $kb, 'HTML', $queueToken);
         } elseif ($info['type'] === 'forwardmessage') {
-            $resp = forwardMessage($info['id_admin'], $info['message'], $userId);
+            $resp = forwardMessage($info['id_admin'], $info['message'], $userId, $queueToken);
         } else {
             $rxAttempted = false;
         }
@@ -505,7 +543,7 @@ try {
 
         if ($rxAttempted) {
             handleResponse($resp, $userId, $info, $orphanCheckStmt, $deleteStmt,
-                $bSuccess, $bBlocked, $bDeleted, $bFailed, $bChatNotFound, $rxBcLog);
+                $bSuccess, $bBlocked, $bDeleted, $bFailed, $bChatNotFound, $rxBcLog, $queueToken);
         }
 
         if (!$usingJsonMode && ($processed % $checkpointEvery) === 0) {
@@ -562,8 +600,8 @@ try {
         if ($usingJsonMode) {
             $rxBcLog('FINISHED — کل عملیات تمام شد | total=' . (int) ($rxAgg['total'] ?? 0));
             if (isset($info['id_admin'], $info['id_message'])) {
-                @deletemessage($info['id_admin'], $info['id_message']);
-                sendmessage($info['id_admin'], buildFinalReport($rxAgg), null, 'HTML');
+                @deletemessage($info['id_admin'], $info['id_message'], $queueToken);
+                sendmessage($info['id_admin'], buildFinalReport($rxAgg), null, 'HTML', $queueToken);
             }
             @unlink($infoFile); @unlink($usersFileTxt); @unlink($usersFileJson);
             @unlink($inflightFile); @unlink($sentFile);
@@ -593,17 +631,17 @@ try {
             [['text' => "لغو عملیات", 'callback_data' => 'cancel_sendmessage']],
         ]]);
         if (isset($info['id_admin'], $info['id_message'])) {
-            Editmessagetext($info['id_admin'], $info['id_message'], $textprocces, $rxPauseKb);
+            Editmessagetext($info['id_admin'], $info['id_message'], $textprocces, $rxPauseKb, 'HTML', null, $queueToken);
         }
     } elseif ($workerId === 0 && isset($info['id_admin'], $info['id_message'])) {
-        Editmessagetext($info['id_admin'], $info['id_message'], $textprocces, $cancelmessage);
+        Editmessagetext($info['id_admin'], $info['id_message'], $textprocces, $cancelmessage, 'HTML', null, $queueToken);
     }
 } catch (Throwable $e) {
     error_log('[sendmessage.php] ' . $e->getMessage());
     $rxBcLog('EXCEPTION — ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
     if (function_exists('rx_broadcast_info_update')) {
         $rxExCls = rx_broadcast_classify_exception($e);
-        rx_broadcast_info_update($baseDir . '/info', $bcToken ?? null, static function (array &$c) use ($rxExCls) {
+        rx_broadcast_info_update(isset($activeInfoFile) ? $activeInfoFile : $baseDir . '/info', $bcToken ?? null, static function (array &$c) use ($rxExCls) {
             $st = (string) ($c['status'] ?? '');
             if ($st !== '' && $st !== 'queued' && $st !== 'running') {
                 return false;
@@ -620,7 +658,7 @@ function handleResponse(
     $resp, string $userId, array $info,
     PDOStatement $orphanCheckStmt, PDOStatement $deleteStmt,
     int &$bSuccess, int &$bBlocked, int &$bDeleted, int &$bFailed, int &$bChatNotFound,
-    ?callable $rxBcLog = null
+    ?callable $rxBcLog = null, ?string $queueToken = null
 ): void {
     if (isset($resp['ok']) && !$resp['ok']) {
         $errorDesc = $resp['description'] ?? 'unknown error';
@@ -645,7 +683,7 @@ function handleResponse(
         $bSuccess++;
         if (($info['pingmessage'] ?? '') === 'yes' && isset($resp['result']['message_id'])) {
             try {
-                pinmessage($userId, $resp['result']['message_id']);
+                pinmessage($userId, $resp['result']['message_id'], $queueToken);
                 savePinnedMessageRecord($userId, (int) $resp['result']['message_id'], (string) ($info['pinduration'] ?? 'none'));
             } catch (Throwable $e) {
                 if ($rxBcLog) {
@@ -661,10 +699,11 @@ function runRateLimitedUnpin(
     string $baseDir,
     float $batchStart,
     int $softTimeLimit,
-    ?callable $rxBcLog = null
+    ?callable $rxBcLog = null,
+    ?string $queueToken = null
 ): array {
     $resolvedBaseDir = realpath($baseDir);
-    $rateKey = md5($resolvedBaseDir !== false ? $resolvedBaseDir : $baseDir);
+    $rateKey = md5(($resolvedBaseDir !== false ? $resolvedBaseDir : $baseDir) . '|' . (string) $queueToken);
     $ratePath = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'faoxima_unpin_' . $rateKey;
     $lockFh = @fopen($ratePath . '.lock', 'c');
 
@@ -695,7 +734,7 @@ function runRateLimitedUnpin(
             usleep($waitMicros);
         }
 
-        $response = unpinmessage($userId);
+        $response = unpinmessage($userId, $queueToken);
         $isRateLimited = isset($response['error_code']) && (int) $response['error_code'] === 429;
 
         if (!$isRateLimited) {
