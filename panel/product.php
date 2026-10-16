@@ -92,6 +92,17 @@ $catQuery = $pdo->prepare("SELECT remark FROM category ORDER BY id ASC");
 $catQuery->execute();
 $listcategory = $catQuery->fetchAll(PDO::FETCH_COLUMN);
 
+// FX-RESELLER (2026-10-16): «نوع کاربر» options must include reseller bots so a
+// product can be created/edited for a specific reseller bot (agent = reseller id).
+$fxResellerAgents = [];
+try {
+    $fxResellerAgents = $pdo->query("SELECT id_user, username FROM botsaz ORDER BY id_user ASC")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (\Throwable $e) {}
+$fxResellerAgentMap = [];
+foreach ($fxResellerAgents as $fxra) {
+    $fxResellerAgentMap[(string)$fxra['id_user']] = (string)$fxra['username'];
+}
+
 
 $nameProduct = $_POST['nameproduct'] ?? null;
 if (!empty($nameProduct)) {
@@ -112,7 +123,14 @@ alert('محصول از قبل وجود دارد'); window.location.href='product
     $serviceTime     = $_POST['time_product']     ?? '';
     $agentProduct    = $_POST['agent_product']    ?? '';
     $agentProduct    = strtolower(trim((string)$agentProduct));
-    if (!in_array($agentProduct, ['f', 'n', 'n2', 'all'], true)) {
+    $fxAgentAllowed  = in_array($agentProduct, ['f', 'n', 'n2', 'all'], true);
+    if (!$fxAgentAllowed && ctype_digit($agentProduct) && (int)$agentProduct > 0) {
+        // FX-RESELLER (2026-10-16): «ربات نماینده» as user type (agent = reseller id)
+        $fxAgentChk = $pdo->prepare("SELECT COUNT(*) FROM botsaz WHERE id_user = :u");
+        $fxAgentChk->execute([':u' => $agentProduct]);
+        $fxAgentAllowed = ((int)$fxAgentChk->fetchColumn() > 0);
+    }
+    if (!$fxAgentAllowed) {
         echo "<script>alert('گروه کاربری نامعتبر است'); window.location.href='product.php';</script>";
         return;
     }
@@ -291,6 +309,16 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                             $agent_type = 'عادی'; $agent_badge = 'badge-gray';
                             if ($list['agent'] == 'n')  { $agent_type = 'نماینده';      $agent_badge = 'badge-purple';  }
                             if ($list['agent'] == 'n2') { $agent_type = 'نماینده ویژه';  $agent_badge = 'badge-warning'; }
+                            // FX-RESELLER (2026-10-16): shared + reseller-bot user types
+                            if ($list['agent'] === 'all' || $list['agent'] === 'allusers') { $agent_type = 'همه کاربران'; $agent_badge = 'badge-success'; }
+                            $fxListAgentRaw = str_replace(' ', '', (string)($list['agent'] ?? ''));
+                            if ($fxListAgentRaw !== '' && isset($fxResellerAgentMap[$fxListAgentRaw])) {
+                                $agent_type = '🤖 @' . $fxResellerAgentMap[$fxListAgentRaw];
+                                $agent_badge = 'badge-info';
+                            } elseif ($fxListAgentRaw !== '' && !in_array($fxListAgentRaw, ['f', 'n', 'n2', 'all', 'allusers'], true)) {
+                                $agent_type = $list['agent'];
+                                $agent_badge = 'badge-cyan';
+                            }
                         ?>
                             <tr data-detail-row data-detail-title="<?php echo htmlspecialchars($list['name_product'], ENT_QUOTES, 'UTF-8'); ?>">
                                 <td><label class="fx-check-row"><input type="checkbox" name="ids[]" value="<?php echo $list['id']; ?>"></label></td>
@@ -429,9 +457,19 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                 <div class="form-group">
                     <label class="form-label">نوع کاربر</label>
                     <select name="agent_product" class="form-control" required>
-                        <option value="f">کاربر عادی</option>
-                        <option value="n">نماینده</option>
-                        <option value="n2">نماینده پیشرفته</option>
+                        <optgroup label="گروه‌های اصلی">
+                            <option value="f">کاربر عادی</option>
+                            <option value="n">نماینده</option>
+                            <option value="n2">نماینده پیشرفته</option>
+                            <option value="all">همه کاربران</option>
+                        </optgroup>
+                        <?php if ($fxResellerAgents): ?>
+                        <optgroup label="ربات‌های نمایندگی">
+                            <?php foreach ($fxResellerAgents as $fxra): ?>
+                            <option value="<?php echo (int)$fxra['id_user']; ?>">🤖 @<?php echo htmlspecialchars((string)$fxra['username'], ENT_QUOTES, 'UTF-8'); ?> (نماینده <?php echo (int)$fxra['id_user']; ?>)</option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                        <?php endif; ?>
                     </select>
                 </div>
             </div>
@@ -544,9 +582,19 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                 <div class="form-group">
                     <label class="form-label">نوع کاربر</label>
                     <select name="agent_product" id="clone_agent" class="form-control" required>
-                        <option value="f">کاربر عادی</option>
-                        <option value="n">نماینده</option>
-                        <option value="n2">نماینده پیشرفته</option>
+                        <optgroup label="گروه‌های اصلی">
+                            <option value="f">کاربر عادی</option>
+                            <option value="n">نماینده</option>
+                            <option value="n2">نماینده پیشرفته</option>
+                            <option value="all">همه کاربران</option>
+                        </optgroup>
+                        <?php if ($fxResellerAgents): ?>
+                        <optgroup label="ربات‌های نمایندگی">
+                            <?php foreach ($fxResellerAgents as $fxra): ?>
+                            <option value="<?php echo (int)$fxra['id_user']; ?>">🤖 @<?php echo htmlspecialchars((string)$fxra['username'], ENT_QUOTES, 'UTF-8'); ?> (نماینده <?php echo (int)$fxra['id_user']; ?>)</option>
+                            <?php endforeach; ?>
+                        </optgroup>
+                        <?php endif; ?>
                     </select>
                 </div>
             </div>

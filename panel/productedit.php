@@ -34,6 +34,12 @@ $catQuery = $pdo->prepare("SELECT remark FROM category ORDER BY id ASC");
 $catQuery->execute();
 $listcategory = $catQuery->fetchAll(PDO::FETCH_COLUMN);
 
+// FX-RESELLER (2026-10-16): «نوع کاربر» also lists reseller bots (agent = reseller id).
+$fxResellerAgents = [];
+try {
+    $fxResellerAgents = $pdo->query("SELECT id_user, username FROM botsaz ORDER BY id_user ASC")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (\Throwable $e) {}
+
 if ($product == false) {
     $statusmessage = true;
     $infomesssage  = "محصول مورد نظر یافت نشد!";
@@ -72,9 +78,17 @@ if ($product == false) {
         }
 
         $agent = htmlspecialchars($_POST['agent'], ENT_QUOTES, 'UTF-8');
-        if (!in_array($agent, ['f', 'n', 'n2'])) {
+        $agent = strtolower(trim((string)$agent));
+        $fxAgentAllowed = in_array($agent, ['f', 'n', 'n2', 'all'], true);
+        if (!$fxAgentAllowed && ctype_digit($agent) && (int)$agent > 0) {
+            // FX-RESELLER (2026-10-16): «ربات نماینده» as user type (agent = reseller id)
+            $fxAgentChk = $pdo->prepare("SELECT COUNT(*) FROM botsaz WHERE id_user = :u");
+            $fxAgentChk->execute([':u' => $agent]);
+            $fxAgentAllowed = ((int)$fxAgentChk->fetchColumn() > 0);
+        }
+        if (!$fxAgentAllowed) {
             $statusmessage = true; $infomesssage = "گروه کاربری نامعتبر است";
-        } elseif ($product['agent'] != $agent) {
+        } elseif ((string)$product['agent'] !== (string)$agent) {
             update("product", "agent", $agent, "id", $id_product);
         }
 
@@ -222,9 +236,19 @@ if ($product == false) {
                         <div class="form-group">
                             <label class="form-label">نوع کاربر</label>
                             <select name="agent" class="form-control">
-                                <option value="f"  <?php if ($product['agent']=='f')  echo 'selected'; ?>>کاربر عادی</option>
-                                <option value="n"  <?php if ($product['agent']=='n')  echo 'selected'; ?>>نماینده معمولی</option>
-                                <option value="n2" <?php if ($product['agent']=='n2') echo 'selected'; ?>>نماینده پیشرفته</option>
+                                <optgroup label="گروه‌های اصلی">
+                                    <option value="f"  <?php if ($product['agent']=='f')  echo 'selected'; ?>>کاربر عادی</option>
+                                    <option value="n"  <?php if ($product['agent']=='n')  echo 'selected'; ?>>نماینده معمولی</option>
+                                    <option value="n2" <?php if ($product['agent']=='n2') echo 'selected'; ?>>نماینده پیشرفته</option>
+                                    <option value="all" <?php if ($product['agent']=='all' || $product['agent']=='allusers') echo 'selected'; ?>>همه کاربران</option>
+                                </optgroup>
+                                <?php if ($fxResellerAgents): ?>
+                                <optgroup label="ربات‌های نمایندگی">
+                                    <?php foreach ($fxResellerAgents as $fxra): ?>
+                                    <option value="<?php echo (int)$fxra['id_user']; ?>" <?php if ((string)$product['agent'] === (string)$fxra['id_user']) echo 'selected'; ?>>🤖 @<?php echo htmlspecialchars((string)$fxra['username'], ENT_QUOTES, 'UTF-8'); ?> (نماینده <?php echo (int)$fxra['id_user']; ?>)</option>
+                                    <?php endforeach; ?>
+                                </optgroup>
+                                <?php endif; ?>
                             </select>
                         </div>
                     </div>

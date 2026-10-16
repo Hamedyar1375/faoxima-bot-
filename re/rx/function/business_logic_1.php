@@ -768,7 +768,16 @@ if (!function_exists('rx_product_allows_agent')) {
     function rx_product_allows_agent(array $product, $agent)
     {
         $agent = strtolower(trim((string) $agent));
-        if (!in_array($agent, ['f', 'n', 'n2'], true)) {
+        // FX-RESELLER (2026-10-16): reseller-bot customers carry agent = reseller
+        // id (see bootstrap.php new-user insert). Allow that group through so
+        // products assigned to the reseller (agent CSV contains the rid) are
+        // visible in the reseller's bot. Main bot (FX_RESELLER_ID undefined)
+        // behavior is unchanged.
+        $fxIsResellerAgent = false;
+        if (defined('FX_RESELLER_ID') && FX_RESELLER_ID !== '' && FX_RESELLER_ID !== null) {
+            $fxIsResellerAgent = ($agent === strtolower(trim((string) FX_RESELLER_ID)));
+        }
+        if (!$fxIsResellerAgent && !in_array($agent, ['f', 'n', 'n2'], true)) {
             return false;
         }
 
