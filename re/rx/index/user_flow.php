@@ -1888,7 +1888,8 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         return;
     }
     // STEP_3: NM-DEBT GUARD — نماینده (n2): سقف بدهکاری فعال (user.maxbuyagent یا پیش‌فرض)
-    if (function_exists('nm_agent_purchase_guard')) {
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی فعال است؛ در ربات نمایندگی (FX_RESELLER_ID) غیرفعال.
+    if (!defined('FX_RESELLER_ID') && function_exists('nm_agent_purchase_guard')) {
         $__nm = nm_agent_purchase_guard($user, $priceproduct);
         if (!$__nm['ok']) {
             sendmessage($from_id, $__nm['msg'], $keyboard, 'HTML');
@@ -1901,7 +1902,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             return;
         }
         $__nmLimit = (int)$__nm['limit'];
-    } else if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    } else if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (intval($user['Balance'] - $priceproduct) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -2036,12 +2037,16 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
     if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null); }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
-    if (intval($priceproduct) != 0) {
+    // FX-ACCOUNT (2026-10-17): خرید خودِ مالکِ ربات نمایندگی در حالت اعتباری فقط هزینهٔ عمده (fx) است؛
+    // شارژ retail از کیف‌پول خودش انجام نمی‌شود.
+    $__fxOwnerCostOnly = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+    if (intval($priceproduct) != 0 && !$__fxOwnerCostOnly) {
 
-        if (($user['agent'] ?? '') === 'n2' || !empty($__fxDebtMode)) {
+        if ((($user['agent'] ?? '') === 'n2' && !defined('FX_RESELLER_ID')) || !empty($__fxDebtMode)) {
             // STEP_3: کسر اتمیک با سقف بدهکاری فعال (nm) — اگر nm در دسترس نباشد، fallback به منطق قبلی
+            // FX-ACCOUNT: nm فقط در ربات اصلی.
             $__nmDebitOk = true;
-            if (function_exists('nm_agent_debit') && ($user['agent'] ?? '') === 'n2') {
+            if (function_exists('nm_agent_debit') && ($user['agent'] ?? '') === 'n2' && !defined('FX_RESELLER_ID')) {
                 $__nmDebit = nm_agent_debit($from_id, (int)$priceproduct, $__nmLimit > 0 ? $__nmLimit : nm_agent_purchase_limit($user), (string)($randomString ?? ''));
                 $__nmDebitOk = !empty($__nmDebit['ok']);
                 if (!$__nmDebitOk) {
@@ -2692,7 +2697,8 @@ $textonebuy
         }
     }
     // STEP_3: NM-DEBT GUARD (bulk) — نماینده (n2): سقف بدهکاری فعال
-    if (function_exists('nm_agent_purchase_guard')) {
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی.
+    if (!defined('FX_RESELLER_ID') && function_exists('nm_agent_purchase_guard')) {
         $__nmB = nm_agent_purchase_guard($user, $priceproduct);
         if (!$__nmB['ok']) {
             sendmessage($from_id, $__nmB['msg'], $keyboard, 'HTML');
@@ -2700,7 +2706,7 @@ $textonebuy
             return;
         }
         $__nmBLimit = (int)$__nmB['limit'];
-    } else if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    } else if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $priceproduct) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -2762,7 +2768,11 @@ $textonebuy
     $__bulkUnitCharge = intdiv((int)round($priceproduct), $__bulkQty);
     $__bulkUnitChargeRemainder = ((int)round($priceproduct)) - ($__bulkUnitCharge * $__bulkQty);
     $__bulkChargedTotal = 0;
-    $__bulkAllowNeg = ($user['agent'] === 'n2') ? (function_exists('nm_agent_purchase_limit') ? nm_agent_purchase_limit($user) : (int)($user['maxbuyagent'] ?? 0)) : 0;
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ خرید خودِ مالک در حالت اعتباری فقط هزینهٔ عمده fx.
+    $__bulkOwnerCostOnly = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+    $__bulkAllowNeg = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+        ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (function_exists('nm_agent_purchase_limit') ? nm_agent_purchase_limit($user) : (int)($user['maxbuyagent'] ?? 0)))
+        : 0;
     for ($i = 0; $i < $user['Processing_value_four']; $i++) {
         $__bulkItemCharge = $__bulkUnitCharge + (($i == $__bulkQty - 1) ? $__bulkUnitChargeRemainder : 0);
         $random_number = rand(1000000, 9999999);
@@ -2811,8 +2821,8 @@ $textonebuy
                 'price_product' => $info_product['price_product'] ?? 0,
             ];
             nmStockDeliverConfig($stock, $inventoryInvoice, '✅ وضعیت نت ملی فعال است؛ اشتراک از انبار شبکه‌ملی تحویل شد');
-            if (function_exists('balance_atomic_charge')) {
-                $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg && empty($__fxDebtMode));
+            if (!$__bulkOwnerCostOnly && function_exists('balance_atomic_charge')) {
+                $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
                 if (!empty($__bulkChargeNm['ok']) && function_exists('wallet_ledger_record')) {
                     wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس (انبار ملی)', (string)$randomString, 'invoice', (string)$randomString);
                 }
@@ -2902,8 +2912,8 @@ $textonebuy
         $textcreatuser = str_replace('{volume}', $info_product['Volume_constraint'], $textcreatuser);
         $textcreatuser = applyConnectionPlaceholders($textcreatuser, $output_config_link, $config);
         sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
-        if (function_exists('balance_atomic_charge')) {
-            $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg && empty($__fxDebtMode));
+        if (!$__bulkOwnerCostOnly && function_exists('balance_atomic_charge')) {
+            $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
             if (!empty($__bulkChargeLive['ok']) && function_exists('wallet_ledger_record')) {
                 wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس', (string)$randomString, 'invoice', (string)$randomString);
             }

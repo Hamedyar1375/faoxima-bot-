@@ -97,6 +97,10 @@ $r = nm_credit_balance($pdo, $uid, 12005000, 'NMF_SELFTEST', 'credit');
 $b = (int)$pdo->query("SELECT Balance FROM user WHERE id = $uid")->fetchColumn();
 check('B4 واریز ۱۲,۰۰۵,۰۰۰ → موجودی می‌شود ۵,۰۰۰', $r['ok'] === true && $b === 5000, json_encode($r) . " b=$b");
 
+// B4-bis: جداسازی دفتر — ردیف‌های NM باید scope='main' ثبت شوند (ستون از scripts/fx_migrate_debt_scope.php)
+$sc = (string)$pdo->query("SELECT scope FROM fx_debt_log WHERE reseller_id = $uid AND invoice_ref = 'NMF_SELFTEST' AND method = 'credit' ORDER BY id DESC LIMIT 1")->fetchColumn();
+check("B4bis ردیف NM با scope='main' ثبت شده", $sc === 'main', "scope=$sc");
+
 // ROLLBACK — پاک‌سازی کامل
 $pdo->exec("ROLLBACK");
 $pdo->exec("SET autocommit = 1");

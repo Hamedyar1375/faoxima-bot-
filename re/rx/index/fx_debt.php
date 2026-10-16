@@ -14,7 +14,10 @@
  *                            the reseller charges its customers for custom-volume services
  *   product.fx_wholesale_price BIGINT NULL — reseller's purchase cost per unit
  *                            (NULL/0 => defaults to the retail price, i.e. no margin)
- *   fx_debt_log              ledger (direction in/out)
+ *   fx_debt_log              ledger (direction in/out, scope 'bot'|'main')
+ *                            scope='bot' = this file's writers (tenant botsaz debt)
+ *                            scope='main' = NM module writers (main-bot agent balance;
+ *                            see scripts/fx_migrate_debt_scope.php)
  *
  * Business model (two-tier):
  *   - The CUSTOMER of the reseller bot pays the RETAIL price from their own wallet
@@ -51,6 +54,35 @@ if (!function_exists('fx_reseller_bot_token')) {
         } catch (\Throwable $e) {
             return null;
         }
+    }
+}
+
+if (!function_exists('fx_n2_credit_limit')) {
+    /**
+     * FX-ACCOUNT (2026-10-17): active credit limit for the MAIN-bot representative
+     * (agent='n2'): maxbuyagent when > 0, otherwise the NM default (env NM_DEBT_LIMIT
+     * or 12,000,000). nm is main-bot only — callers must guard with
+     * !defined('FX_RESELLER_ID').
+     */
+    function fx_n2_credit_limit(array $user): int {
+        $m = (int)($user['maxbuyagent'] ?? 0);
+        if (!function_exists('nm_agent_purchase_limit')) {
+            $f = dirname(__DIR__) . '/nm_manager.php';
+            if (is_file($f)) {
+                require_once $f;
+            }
+        }
+        if (function_exists('nm_agent_purchase_limit')) {
+            return (int)nm_agent_purchase_limit($user);
+        }
+        if ($m > 0) {
+            return $m;
+        }
+        $env = getenv('NM_DEBT_LIMIT');
+        if ($env !== false && $env !== '' && ctype_digit((string)$env)) {
+            return (int)$env;
+        }
+        return 12000000;
     }
 }
 
@@ -617,14 +649,14 @@ if (!function_exists('fx_reseller_statement_build')) {
         if ($pdo instanceof PDO) {
             try {
                 $since = date('Y-m-d H:i:s', $sinceTs);
-                $stmt = $pdo->prepare("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND direction = 'in' AND time >= :since AND method IN ('purchase','bulk_purchase','renewal','renewal_gateway','extra_volume','extra_volume_gateway','extra_time','extra_time_gateway')");
+                $stmt = $pdo->prepare("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND scope = 'bot' AND direction = 'in' AND time >= :since AND method IN ('purchase','bulk_purchase','renewal','renewal_gateway','extra_volume','extra_volume_gateway','extra_time','extra_time_gateway')");
                 $stmt->execute([':rid' => $rid, ':since' => $since]);
                 $row = $stmt->fetch(PDO::FETCH_ASSOC);
                 if (is_array($row)) {
                     $salesCount = (int)$row['c'];
                     $salesSum = (int)$row['s'];
                 }
-                $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND direction = 'out' AND time >= :since AND method IN ('settlement','credit')");
+                $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND scope = 'bot' AND direction = 'out' AND time >= :since AND method IN ('settlement','credit')");
                 $stmt->execute([':rid' => $rid, ':since' => $since]);
                 $settledSum = (int)round((float)$stmt->fetchColumn());
 

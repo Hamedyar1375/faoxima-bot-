@@ -170,7 +170,7 @@ if (!defined('FX_MYACCOUNT_LOADED')) {
                     : $it['time'];
                 $line = "▫️ {$ts} | {$it['label']} | <b>{$it['amount']}</b>";
                 if ($it['kind'] === 'debt' && $it['debt_after'] !== null) {
-                    $line .= " (بدهی: " . number_format($it['debt_after']) . ")";
+                    $line .= ((($it['scope'] ?? 'bot') === 'main') ? " (بدهی حساب اصلی: " : " (بدهی: ") . number_format($it['debt_after']) . ")";
                 }
                 $txt .= $line . "\n";
             }

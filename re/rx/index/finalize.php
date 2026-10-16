@@ -227,7 +227,7 @@ if (isset($update['pre_checkout_query'])) {
             return;
         }
     }
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $prodcut['price_product']) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -239,27 +239,64 @@ if (isset($update['pre_checkout_query'])) {
         sendmessage($from_id, sprintf($textbotlang['users']['Discount']['discountapplied'], $user['pricediscount']), null, 'HTML');
     }
     $prodcut['price_product'] = fx_finalize_amount($prodcut['price_product'], $marzban_list_get, 'product');
+    // ===== FX-DEBT GUARD (reseller debt mode): reserve renewal wholesale =====
+    $__fxDebtMode = false;
+    $__fxRid = 0;
+    $__fxReservedRenew = 0;
+    $__fxFinRef = (string)($nameloc['id_invoice'] ?? '');
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+            $__fxDebtMode = true;
+            $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
+            if ($__fxDebtWholesale <= 0) {
+                $__fxDebtWholesale = (int)$prodcut['price_product'];
+            }
+            if ($__fxDebtWholesale > 0) {
+                $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                if (empty($__fxRenewRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedRenew = $__fxDebtWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ خرید خودِ مالک در حالت اعتباری فقط هزینهٔ عمده fx.
+    $__fxOwnerCostOnlyFin = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
     if (function_exists('nmPanelNationalEnabled') && nmPanelNationalEnabled($marzban_list_get)) {
         if (!is_array($nameloc)) {
+            if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
             sendmessage($from_id, $textbotlang['users']['extend']['renewalerror'], $keyboard, 'HTML');
             return;
         }
         $stockNew = function_exists('nmStockReserveForProduct') ? nmStockReserveForProduct($marzban_list_get, $prodcut, $from_id, $nameloc['id_invoice'], 'normal_extend_national_stock') : false;
         if (!$stockNew) {
+            if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
             sendmessage($from_id, $datatextbot['dyn_errors_stock_depleted_no_charge'] ?? "❌ موجودی انبار برای این محصول تمام شده است. مبلغی کسر نشد.", $keyboard, 'HTML');
             return;
         }
         $__pp = (float)$prodcut['price_product'];
-        $__allowNeg = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
-        $__charge = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $__pp, $__allowNeg) : ['ok' => false, 'reason' => 'helper-missing'];
-        if (empty($__charge['ok'])) {
-            if (function_exists('nmStockReleaseReservation')) nmStockReleaseReservation($stockNew);
-            sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", $keyboard, 'HTML');
-            return;
-        }
-        $Balance_Low_user = $__charge['new_balance'];
-        if (function_exists('wallet_ledger_record')) {
-            wallet_ledger_record($from_id, 'debit', $__pp, 'service_action', 'تمدید سرویس (انبار ملی)', null, 'invoice', (string)$nameloc['id_invoice']);
+        $__allowNeg = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+            ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+            : 0;
+        $__chargedFinStock = false;
+        if ($__pp > 0 && !$__fxOwnerCostOnlyFin) {
+            $__charge = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $__pp, $__allowNeg) : ['ok' => false, 'reason' => 'helper-missing'];
+            if (empty($__charge['ok'])) {
+                if (function_exists('nmStockReleaseReservation')) nmStockReleaseReservation($stockNew);
+                if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
+                sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", $keyboard, 'HTML');
+                return;
+            }
+            $Balance_Low_user = $__charge['new_balance'];
+            $__chargedFinStock = true;
+            if (function_exists('wallet_ledger_record')) {
+                wallet_ledger_record($from_id, 'debit', $__pp, 'service_action', 'تمدید سرویس (انبار ملی)', null, 'invoice', (string)$nameloc['id_invoice']);
+            }
+        } else {
+            $Balance_Low_user = $user['Balance'];
         }
         update("invoice", "name_product", $prodcut['name_product'], "id_invoice", $nameloc['id_invoice']);
         update("invoice", "price_product", $prodcut['price_product'], "id_invoice", $nameloc['id_invoice']);
@@ -279,33 +316,50 @@ if (isset($update['pre_checkout_query'])) {
             'source_panel_code' => $marzban_list_get['code_panel'],
         ]);
         nmStockDeliverConfig($stockNew, $invoiceNew, '✅ تمدید سرویس از انبار شبکه‌ملی با موفقیت انجام شد');
+        if ($__fxReservedRenew > 0 && function_exists('fx_debt_commit')) {
+            list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedRenew, 'renewal', $__fxFinRef);
+            if (!$__fxIncOk) { error_log('[FX_DEBT] finalize(stock) renewal ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedRenew . ' invoice=' . $__fxFinRef . ' reason=' . $__fxIncReason); }
+        }
         sendmessage($from_id, $datatextbot['dyn_errors_stock_extend_success'] ?? "✅ تمدید انباری انجام شد و موجودی انبار یک عدد کم شد.", $keyboard, 'HTML');
         return;
     }
 
     $DataUserOut = $ManagePanel->DataUser($marzban_list_get['name_panel'], $usernamePanelExtends);
     if ($DataUserOut['status'] == "Unsuccessful") {
+        if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
         sendmessage($from_id, $textbotlang['users']['extend']['renewalerror'], $keyboard, 'HTML');
         return;
     }
     $__pp2 = (float)$prodcut['price_product'];
-    $__allowNeg2 = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
-    $__charge2 = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $__pp2, $__allowNeg2) : ['ok' => false, 'reason' => 'helper-missing'];
-    if (empty($__charge2['ok'])) {
-        sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", $keyboard, 'HTML');
-        return;
-    }
-    $Balance_Low_user = $__charge2['new_balance'];
-    if (function_exists('wallet_ledger_record')) {
-        wallet_ledger_record($from_id, 'debit', $__pp2, 'service_action', 'تمدید سرویس', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
+    $__allowNeg2 = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+        ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+        : 0;
+    $__chargedFinUser = false;
+    if ($__pp2 > 0 && !$__fxOwnerCostOnlyFin) {
+        $__charge2 = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $__pp2, $__allowNeg2) : ['ok' => false, 'reason' => 'helper-missing'];
+        if (empty($__charge2['ok'])) {
+            if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
+            sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", $keyboard, 'HTML');
+            return;
+        }
+        $Balance_Low_user = $__charge2['new_balance'];
+        $__chargedFinUser = true;
+        if (function_exists('wallet_ledger_record')) {
+            wallet_ledger_record($from_id, 'debit', $__pp2, 'service_action', 'تمدید سرویس', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
+        }
+    } else {
+        $Balance_Low_user = $user['Balance'];
     }
     $extend = $ManagePanel->extend($marzban_list_get['Methodextend'], $prodcut['Volume_constraint'], $prodcut['Service_time'], $usernamePanelExtends, $prodcut['code_product'], $marzban_list_get['code_panel']);
-    if (empty($extend['status']) && function_exists('balance_atomic_credit')) {
-        $__refundedFin = balance_atomic_credit($from_id, $__pp2);
-        $Balance_Low_user = $user['Balance'];
-        if ($__refundedFin && function_exists('wallet_ledger_record')) {
-            wallet_ledger_record($from_id, 'credit', $__pp2, 'refund', 'بازگشت وجه تمدید سرویس', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
+    if (empty($extend['status'])) {
+        if ($__chargedFinUser && function_exists('balance_atomic_credit')) {
+            $__refundedFin = balance_atomic_credit($from_id, $__pp2);
+            $Balance_Low_user = $user['Balance'];
+            if ($__refundedFin && function_exists('wallet_ledger_record')) {
+                wallet_ledger_record($from_id, 'credit', $__pp2, 'refund', 'بازگشت وجه تمدید سرویس', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
+            }
         }
+        if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedRenew, $__fxFinRef); }
     }
     if ($extend['status'] == false) {
         $rxStockEmpty = ($extend['code'] ?? '') === 'manual_stock_empty';
@@ -331,6 +385,10 @@ if (isset($update['pre_checkout_query'])) {
             ]);
         }
         return;
+    }
+    if ($__fxReservedRenew > 0 && function_exists('fx_debt_commit')) {
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedRenew, 'renewal', $__fxFinRef);
+        if (!$__fxIncOk) { error_log('[FX_DEBT] finalize renewal ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedRenew . ' invoice=' . $__fxFinRef . ' reason=' . $__fxIncReason); }
     }
     if (is_array($nameloc)) {
         update("invoice", "name_product", $prodcut['name_product'], "id_invoice", $nameloc['id_invoice']);

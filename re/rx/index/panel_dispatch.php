@@ -1497,7 +1497,7 @@ $text_porsant
             return;
         }
     }
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $volume) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -1517,6 +1517,34 @@ $text_porsant
         sendmessage($from_id, sprintf($textbotlang['users']['Discount']['discountapplied'], $user['pricediscount']), null, 'HTML');
     }
     $volume = fx_finalize_amount($volume, $marzban_list_get, 'extra_volume');
+    // ===== FX-DEBT GUARD (reseller debt mode): reserve extra-volume wholesale (external panel) =====
+    $__fxDebtMode = false;
+    $__fxRid = 0;
+    $__fxReservedEv = 0;
+    $__fxEvRef = 'xvol:' . (string)$from_id . ':' . (string)$user['Processing_value'];
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+            $__fxDebtMode = true;
+            $__fxEvQty = $fxExternalQty ?? (intval($extrapricevalue) > 0 ? intval($volume) / intval($extrapricevalue) : 0);
+            $__fxEvUnit = function_exists('fx_panel_raw_unit_price') ? (fx_panel_raw_unit_price($marzban_list_get, 'priceextravolume', $user['agent']) ?? 0) : 0;
+            $__fxDebtWholesale = (int)round((float)$__fxEvQty * (float)$__fxEvUnit);
+            if ($__fxDebtWholesale <= 0) {
+                $__fxDebtWholesale = (int)$volume;
+            }
+            if ($__fxDebtWholesale > 0) {
+                $__fxEvRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                if (empty($__fxEvRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری حجم وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedEv = $__fxDebtWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ خرید خودِ مالک در حالت اعتباری فقط هزینهٔ عمده fx.
+    $__fxOwnerCostOnlyEv = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
 
     $DataUserOut = $ManagePanel->DataUser($user['Processing_value_one'], $user['Processing_value']);
     $data_limit = $DataUserOut['data_limit'] + (($fxExternalQty ?? intval($volume) / intval($extrapricevalue)) * pow(1024, 3));
@@ -1549,12 +1577,18 @@ $text_porsant
                 'parse_mode' => "HTML"
             ]);
         }
+        if ($__fxReservedEv > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedEv, $__fxEvRef); }
         return;
     }
-    if (function_exists('balance_atomic_charge')) {
-        $__allowNegEv = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
+    if ($__fxOwnerCostOnlyEv) {
+        $Balance_Low_user = $user['Balance'];
+    } elseif (function_exists('balance_atomic_charge')) {
+        $__allowNegEv = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+            ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+            : 0;
         $__chargeEv = balance_atomic_charge($from_id, (float)$volume, $__allowNegEv);
         if (empty($__chargeEv['ok'])) {
+            if ($__fxReservedEv > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxReservedEv, $__fxEvRef); }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
         }
@@ -1565,6 +1599,10 @@ $text_porsant
     } else {
         $Balance_Low_user = $user['Balance'] - $volume;
         update("user", "Balance", $Balance_Low_user, "id", $from_id);
+    }
+    if ($__fxReservedEv > 0 && function_exists('fx_debt_commit')) {
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedEv, 'extra_volume', $__fxEvRef);
+        if (!$__fxIncOk) { error_log('[FX_DEBT] panel_dispatch external extra-volume ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedEv . ' ref=' . $__fxEvRef . ' reason=' . $__fxIncReason); }
     }
     $back = json_encode([
         'inline_keyboard' => [

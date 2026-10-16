@@ -13,6 +13,8 @@
  * الزامات:
  *  - هیچ دستوری روی ساختار دیتابیس اجرا نمی‌کند (بدون ALTER/CREATE).
  *  - فقط از ستون‌های موجود استفاده می‌کند: user.Balance + جدول ledger موجود fx_debt_log.
+ *    (FX-ACCOUNT 2026-10-17: ردیف‌های NM با scope='main' ثبت می‌شوند تا دفتر ربات اصلی و
+ *     ربات نمایندگی (scope='bot') قاطی نشوند — ستون با scripts/fx_migrate_debt_scope.php.)
  *  - همه کسر/واریزها اتمیک هستند (UPDATE شرطی در یک statement).
  *  - لاگ رویدادهای بدهی در fx_debt_log (جدول موجود، فقط INSERT).
  *
@@ -170,8 +172,8 @@ if (!function_exists('nm_debit_balance')) {
             // مطابق کنوانسیون موجود جدول: purchase → direction=in, debt_after = بدهی جدید
             if ($debt_after > 0) {
                 $log = $pdo->prepare(
-                    "INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time)
-                     VALUES (:rid, :amt, 'in', 'purchase', :ref, :debt, NOW())"
+                    "INSERT INTO fx_debt_log (reseller_id, amount, direction, method, scope, invoice_ref, debt_after, time)
+                     VALUES (:rid, :amt, 'in', 'purchase', 'main', :ref, :debt, NOW())"
                 );
                 $log->execute([
                     ':rid'  => $user_id,
@@ -226,8 +228,8 @@ if (!function_exists('nm_credit_balance')) {
 
             // ledger: خروج از بدهی
             $log = $pdo->prepare(
-                "INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time)
-                 VALUES (:rid, :amt, 'out', :method, :ref, :debt, NOW())"
+                "INSERT INTO fx_debt_log (reseller_id, amount, direction, method, scope, invoice_ref, debt_after, time)
+                 VALUES (:rid, :amt, 'out', :method, 'main', :ref, :debt, NOW())"
             );
             $log->execute([
                 ':rid'    => $user_id,

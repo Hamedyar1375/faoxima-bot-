@@ -3570,7 +3570,7 @@ $nameconfig";
             $pricelastextend = 0;
         }
     }
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $pricelastextend) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -3599,9 +3599,14 @@ $nameconfig";
         }
     }
     // ===== END FX-DEBT GUARD =====
-    $__allowNegEx = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ سقف فعال با پیش‌فرض ۱۲M هم‌سان با خریدها.
+    // خرید خودِ مالک در حالت اعتباری ربات نمایندگی فقط هزینهٔ عمده fx است (بدون کسر از کیف‌پول).
+    $__fxOwnerCostOnlyEx = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+    $__allowNegEx = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+        ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+        : 0;
     $__chargedExUser = false;
-    if (intval($pricelastextend) > 0) {
+    if (intval($pricelastextend) > 0 && !$__fxOwnerCostOnlyEx) {
         $__chargeEx = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $pricelastextend, $__allowNegEx) : ['ok' => false];
         if (empty($__chargeEx['ok'])) {
             if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) {
@@ -4066,7 +4071,7 @@ $nameconfig";
         sendmessage($from_id, sprintf($textbotlang['users']['Discount']['discountapplied'], $user['pricediscount']), null, 'HTML');
     }
     $volumepricelast = fx_finalize_amount($volumepricelast, $marzban_list_get, 'extra_volume');
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $volumepricelast) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -4096,9 +4101,13 @@ $nameconfig";
         }
     }
     // ===== END FX-DEBT GUARD =====
-    $__allowNegVx = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ خرید خودِ مالک در حالت اعتباری فقط هزینهٔ عمده fx.
+    $__fxOwnerCostOnlyVx = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+    $__allowNegVx = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+        ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+        : 0;
     $__chargedVxUser = false;
-    if ($volumepricelast > 0) {
+    if ($volumepricelast > 0 && !$__fxOwnerCostOnlyVx) {
         $__chargeVx = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $volumepricelast, $__allowNegVx) : ['ok' => false];
         if (empty($__chargeVx['ok'])) {
             if ($__fxReservedVx > 0 && function_exists('fx_debt_release')) {
@@ -4383,7 +4392,7 @@ $nameconfig";
         $Pricechange = $Pricechange - $result;
         sendmessage($from_id, sprintf($textbotlang['users']['Discount']['discountapplied'], $user['pricediscount']), null, 'HTML');
     }
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if (($user['Balance'] - $Pricechange) < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -4479,7 +4488,10 @@ $nameconfig";
 
 <code>$output_config_link</code>";
     if (intval($Pricechange) != 0) {
-        $__allowNegPc = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
+        // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ سقف فعال هم‌سان با خریدها (پیش‌فرض ۱۲M).
+        $__allowNegPc = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+            ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+            : 0;
         $__chargePc = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $Pricechange, $__allowNegPc) : ['ok' => false];
         if (empty($__chargePc['ok'])) {
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
@@ -4894,7 +4906,7 @@ $nameconfig";
     }
     $pricelasttime = fx_finalize_amount($pricelasttime, $marzban_list_get, 'extra_time');
     $Balance_Low_user = $user['Balance'] - $pricelasttime;
-    if (intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
+    if (!defined('FX_RESELLER_ID') && intval($user['maxbuyagent']) != 0 and $user['agent'] == "n2") {
         if ($Balance_Low_user < intval("-" . $user['maxbuyagent'])) {
             sendmessage($from_id, $textbotlang['users']['Balance']['maxpurchasereached'], null, 'HTML');
             return;
@@ -4925,8 +4937,13 @@ $nameconfig";
         }
     }
     // ===== END FX-DEBT GUARD =====
-    $__allowNegEt = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
-    if ($pricelasttime > 0) {
+    // FX-ACCOUNT (2026-10-17): nm فقط در ربات اصلی؛ خرید خودِ مالک در حالت اعتباری فقط هزینهٔ عمده fx.
+    $__fxOwnerCostOnlyEt = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+    $__allowNegEt = ((($user['agent'] ?? '') === 'n2') && !defined('FX_RESELLER_ID'))
+        ? (function_exists('fx_n2_credit_limit') ? fx_n2_credit_limit($user) : (int)($user['maxbuyagent'] ?? 0))
+        : 0;
+    $__chargedEtUser = false;
+    if ($pricelasttime > 0 && !$__fxOwnerCostOnlyEt) {
         $__chargeEt = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $pricelasttime, $__allowNegEt) : ['ok' => false];
         if (empty($__chargeEt['ok'])) {
             if ($__fxReservedEt > 0 && function_exists('fx_debt_release')) {
@@ -4936,13 +4953,13 @@ $nameconfig";
             return;
         }
         $Balance_Low_user = $__chargeEt['new_balance'];
+        $__chargedEtUser = true;
         if (function_exists('wallet_ledger_record')) {
             wallet_ledger_record($from_id, 'debit', $pricelasttime, 'service_action', 'خرید زمان اضافه', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
         }
     } else {
         $Balance_Low_user = $user['Balance'];
     }
-    $__chargedEtUser = true;
     update("invoice", "Status", "active", "id_invoice", $nameloc['id_invoice']);
     $extratimeday = $fxTimeQty ?? $tmieextra / $extratimepricevalue;
     $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);

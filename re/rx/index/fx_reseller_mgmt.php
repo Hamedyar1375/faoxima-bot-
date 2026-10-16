@@ -598,15 +598,24 @@ function fx_res_ledger_data(int $rid, int $limit = 20): array {
     global $pdo;
     $items = [];
     try {
-        $st = $pdo->prepare("SELECT amount, direction, method, invoice_ref, debt_after, time FROM fx_debt_log WHERE reseller_id = :rid ORDER BY id DESC LIMIT 40");
+        $st = $pdo->prepare("SELECT amount, direction, method, scope, invoice_ref, debt_after, time FROM fx_debt_log WHERE reseller_id = :rid ORDER BY id DESC LIMIT 40");
         $st->execute([':rid' => $rid]);
         foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
             $amt = (int)$r['amount'];
+            $isMain = ((string)($r['scope'] ?? 'bot') === 'main');
             if ($r['direction'] === 'in') {
-                $label = $r['method'] === 'purchase' ? '🧾 خرید عمده' : ($r['method'] === 'adjustment' ? '⚖️ اصلاح حساب' : '📥 افزایش بدهی');
+                if ($isMain) {
+                    $label = $r['method'] === 'purchase' ? '🛒 خرید از ربات اصلی' : '🏦 افزایش بدهی حساب اصلی';
+                } else {
+                    $label = $r['method'] === 'purchase' ? '🧾 خرید عمده' : ($r['method'] === 'adjustment' ? '⚖️ اصلاح حساب' : '📥 افزایش بدهی');
+                }
                 $amtTxt = '+' . number_format($amt);
             } else {
-                $label = $r['method'] === 'settlement' ? '💳 تسویه از بدهی' : ($r['method'] === 'credit' ? '💰 شارژ/تسویه بدهی' : '📤 کاهش بدهی');
+                if ($isMain) {
+                    $label = $r['method'] === 'settlement' ? '💳 تسویه حساب اصلی' : ($r['method'] === 'credit' ? '💰 شارژ حساب اصلی' : '📤 کاهش حساب اصلی');
+                } else {
+                    $label = $r['method'] === 'settlement' ? '💳 تسویه از بدهی' : ($r['method'] === 'credit' ? '💰 شارژ/تسویه بدهی' : '📤 کاهش بدهی');
+                }
                 $amtTxt = '-' . number_format($amt);
             }
             if (!empty($r['invoice_ref'])) $label .= ' (' . $r['invoice_ref'] . ')';
@@ -617,6 +626,7 @@ function fx_res_ledger_data(int $rid, int $limit = 20): array {
                 'debt_after' => (int)$r['debt_after'],
                 'time' => (string)$r['time'],
                 'kind' => 'debt',
+                'scope' => $isMain ? 'main' : 'bot',
             ];
         }
     } catch (\Throwable $e) { /* leave as-is */ }
@@ -661,7 +671,9 @@ function fx_res_render_ledger(int $from_id, int $message_id, string $rid): void 
                 ? ((function_exists('jdate') ? jdate('Y/m/d', $it['ts']) : date('Y/m/d', $it['ts'])) . ' ' . date('H:i', $it['ts']))
                 : $it['time'];
             $line = "▫️ {$ts} | {$it['label']} | <b>{$it['amount']}</b>";
-            if ($it['kind'] === 'debt' && $it['debt_after'] !== null) $line .= " (بدهی: " . number_format($it['debt_after']) . ")";
+            if ($it['kind'] === 'debt' && $it['debt_after'] !== null) {
+                $line .= ((($it['scope'] ?? 'bot') === 'main') ? " (بدهی حساب اصلی: " : " (بدهی: ") . number_format($it['debt_after']) . ")";
+            }
             $txt .= $line . "\n";
         }
     }
