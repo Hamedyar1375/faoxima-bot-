@@ -570,6 +570,7 @@ if (!function_exists('rx_normalizeAdminButtonText')) {
                 'set_qrbg'              => "🖼 پس‌زمینه کیوآرکد",
                 'set_qr_toggle'         => "🔄 وضعیت کیوآرکد",
                 'set_webhook'           => "🔗 وبهوک ربات‌های نماینده",
+                'fx_myprices_menu'      => "🏷️ قیمت‌های من",
                 'shop_status'           => "🛒 وضعیت قابلیت های فروشگاه",
                 'shop_category'         => "🗂 مدیریت دسته‌بندی",
                 'shop_products'         => "🛍 مدیریت محصولات",
@@ -698,6 +699,7 @@ if (!function_exists('rx_normalizeAdminButtonText')) {
                 'feat_info'             => "قابلیت مشاهده اطلاعات اکانت",
                 'feat_test'             => "قابلیت اکانت تست",
                 'feat_help'             => "قابلیت آموزش",
+                'nm_manager_menu'       => "🗂 مدیریت نمایندگی",
             ];
             $adminMap = [];
             foreach ($targets as $k => $canonicalStr) {

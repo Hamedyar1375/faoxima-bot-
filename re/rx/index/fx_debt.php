@@ -95,10 +95,124 @@ if (!function_exists('fx_debt_gate')) {
     }
 }
 
+if (!function_exists('fx_debt_alert_eval')) {
+    /**
+     * Shared 80%/95% ceiling alert evaluation + flag re-arm (once per cycle).
+     * Returns the alert HTML for the agent or '' when no alert fires.
+     */
+    function fx_debt_alert_eval(int $rid, int $after, array $row): string {
+        $ceiling = (int)($row['debt_ceiling'] ?? 0);
+        if ($ceiling <= 0) {
+            return '';
+        }
+        $pct = $after * 100 / $ceiling;
+        if ($pct < 80) {
+            @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+            @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+            return '';
+        }
+        if ($pct >= 95 && !(int)($row['debt_alert_95'] ?? 0)) {
+            @update("botsaz", "debt_alert_95", 1, "id_user", $rid);
+            @update("botsaz", "debt_alert_80", 1, "id_user", $rid);
+            return '🚨 <b>هشدار: سقف اعتبار شما پر شد</b>' . "\n"
+                . 'بدهی فعلی شما ' . number_format($after) . ' تومان از سقف ' . number_format($ceiling) . ' تومان است (بیش از ۹۵٪).' . "\n"
+                . 'تا تسویه بدهی، خرید جدید به‌حساب امکان‌پذیر نیست.';
+        }
+        if ($pct >= 80 && !(int)($row['debt_alert_80'] ?? 0)) {
+            @update("botsaz", "debt_alert_80", 1, "id_user", $rid);
+            return '⚠️ <b>هشدار اعتبار</b>' . "\n"
+                . 'بدهی فعلی شما ' . number_format($after) . ' تومان از سقف ' . number_format($ceiling) . ' تومان است (بیش از ۸۰٪).' . "\n"
+                . 'لطفاً بدهی خود را به‌زودی تسویه کنید.';
+        }
+        return '';
+    }
+}
+
+if (!function_exists('fx_debt_reserve')) {
+    /**
+     * BR-01: atomically pre-charge the reseller's debt BEFORE service creation.
+     * Single UPDATE with the ceiling in the WHERE clause closes the gate→create
+     * race (two concurrent purchases can no longer overshoot the ceiling).
+     * Returns [ok, reason, debtAfter]. reason: '' | 'ceiling' | 'db'.
+     */
+    function fx_debt_reserve(int $rid, int $amount): array {
+        global $pdo;
+        if ($amount <= 0) {
+            return [true, '', 0];
+        }
+        try {
+            $stmt = $pdo->prepare("UPDATE botsaz SET current_debt = current_debt + :amt WHERE id_user = :rid AND debt_mode = 'debt' AND debt_ceiling > 0 AND current_debt + :amt2 <= debt_ceiling");
+            $stmt->execute([':amt' => $amount, ':amt2' => $amount, ':rid' => (string)$rid]);
+            if ($stmt->rowCount() > 0) {
+                return [true, '', fx_debt_state($rid)['current']];
+            }
+            $st = fx_debt_state($rid);
+            if ($st['mode'] !== 'debt') {
+                return [true, '', $st['current']];
+            }
+            return [false, 'ceiling', $st['current']];
+        } catch (\Throwable $e) {
+            error_log('[FX_DEBT] reserve failed rid=' . $rid . ' amt=' . $amount . ': ' . $e->getMessage());
+            return [false, 'db', 0];
+        }
+    }
+}
+
+if (!function_exists('fx_debt_commit')) {
+    /**
+     * Ledger row for an amount already added by fx_debt_reserve (service created).
+     * Returns [ok, reason, debtAfter, alertHtml].
+     */
+    function fx_debt_commit(int $rid, int $amount, string $method, string $ref): array {
+        global $pdo;
+        if ($amount <= 0) {
+            return [true, '', 0, ''];
+        }
+        try {
+            $st = fx_debt_state($rid);
+            $after = $st['current'];
+            $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time) VALUES (:rid, :amt, 'in', :m, :ref, :after, NOW())")
+                ->execute([':rid' => $rid, ':amt' => $amount, ':m' => $method, ':ref' => $ref, ':after' => $after]);
+        } catch (\Throwable $e) {
+            error_log('[FX_DEBT] commit failed rid=' . $rid . ' amt=' . $amount . ' ref=' . $ref . ': ' . $e->getMessage());
+            return [false, 'db', 0, ''];
+        }
+        $row = is_array($st['bot']) ? $st['bot'] : [];
+        return [true, '', $after, fx_debt_alert_eval($rid, $after, $row)];
+    }
+}
+
+if (!function_exists('fx_debt_release')) {
+    /**
+     * Roll back a reservation after a FAILED service creation (no ledger 'in'
+     * was written for this ref). Decrements debt and logs an 'out' revert row.
+     */
+    function fx_debt_release(int $rid, int $amount, string $ref): void {
+        global $pdo;
+        if ($amount <= 0) {
+            return;
+        }
+        try {
+            $pdo->prepare("UPDATE botsaz SET current_debt = GREATEST(0, current_debt - :amt) WHERE id_user = :rid")
+                ->execute([':amt' => $amount, ':rid' => (string)$rid]);
+            $st = fx_debt_state($rid);
+            $after = $st['current'];
+            $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time) VALUES (:rid, :amt, 'out', 'revert', :ref, :after, NOW())")
+                ->execute([':rid' => $rid, ':amt' => $amount, ':ref' => $ref, ':after' => $after]);
+            if ($st['ceiling'] > 0 && $after * 100 < $st['ceiling'] * 80) {
+                @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+                @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+            }
+        } catch (\Throwable $e) {
+            error_log('[FX_DEBT] release failed rid=' . $rid . ' amt=' . $amount . ' ref=' . $ref . ': ' . $e->getMessage());
+        }
+    }
+}
+
 if (!function_exists('fx_debt_inc')) {
     /**
-     * Add to the reseller's debt after a successful sale.
-     * Returns [ok, reason, debtAfter, alertHtml]. reason: '' | 'db' | 'ceiling'.
+     * Add to the reseller's debt after a successful sale (legacy non-reserving
+     * path; kept for API compatibility). Returns [ok, reason, debtAfter, alertHtml].
      */
     function fx_debt_inc(int $rid, int $amount, string $method, string $ref): array {
         global $pdo;
@@ -116,28 +230,35 @@ if (!function_exists('fx_debt_inc')) {
             error_log('[FX_DEBT] inc failed rid=' . $rid . ' amt=' . $amount . ' ref=' . $ref . ': ' . $e->getMessage());
             return [false, 'db', 0, ''];
         }
-        $alert = '';
-        $ceiling = $st['ceiling'];
         $row = is_array($st['bot']) ? $st['bot'] : [];
-        if ($ceiling > 0) {
-            $pct = $after * 100 / $ceiling;
-            if ($pct < 80) {
-                @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
-                @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
-            } elseif ($pct >= 95 && !(int)($row['debt_alert_95'] ?? 0)) {
-                @update("botsaz", "debt_alert_95", 1, "id_user", $rid);
-                @update("botsaz", "debt_alert_80", 1, "id_user", $rid);
-                $alert = '🚨 <b>هشدار: سقف اعتبار شما پر شد</b>' . "\n"
-                    . 'بدهی فعلی شما ' . number_format($after) . ' تومان از سقف ' . number_format($ceiling) . ' تومان است (بیش از ۹۵٪).' . "\n"
-                    . 'تا تسویه بدهی، خرید جدید به‌حساب امکان‌پذیر نیست.';
-            } elseif ($pct >= 80 && !(int)($row['debt_alert_80'] ?? 0)) {
-                @update("botsaz", "debt_alert_80", 1, "id_user", $rid);
-                $alert = '⚠️ <b>هشدار اعتبار</b>' . "\n"
-                    . 'بدهی فعلی شما ' . number_format($after) . ' تومان از سقف ' . number_format($ceiling) . ' تومان است (بیش از ۸۰٪).' . "\n"
-                    . 'لطفاً بدهی خود را به‌زودی تسویه کنید.';
+        return [true, '', $after, fx_debt_alert_eval($rid, $after, $row)];
+    }
+}
+
+if (!function_exists('fx_debt_record_once')) {
+    /**
+     * FX-RESELLER (2026-10-15): idempotent debt increment for flows that can be
+     * re-run (gateway fulfillment / reconcile). Refuses to double-charge when an
+     * 'in' ledger row with the same ref+method already exists.
+     * Returns [ok, reason, debtAfter, alertHtml].
+     */
+    function fx_debt_record_once(int $rid, int $amount, string $method, string $ref): array {
+        global $pdo;
+        if ($amount <= 0) {
+            return [true, '', 0, ''];
+        }
+        if ($ref !== '') {
+            try {
+                $stmt = $pdo->prepare("SELECT 1 FROM fx_debt_log WHERE reseller_id = :rid AND invoice_ref = :ref AND method = :m AND direction = 'in' LIMIT 1");
+                $stmt->execute([':rid' => $rid, ':ref' => $ref, ':m' => $method]);
+                if ($stmt->fetchColumn() !== false) {
+                    return [true, 'duplicate', fx_debt_state($rid)['current'], ''];
+                }
+            } catch (\Throwable $e) {
+                error_log('[FX_DEBT] record_once dedupe check failed rid=' . $rid . ' ref=' . $ref . ': ' . $e->getMessage());
             }
         }
-        return [true, '', $after, $alert];
+        return fx_debt_inc($rid, $amount, $method, $ref);
     }
 }
 
@@ -194,14 +315,27 @@ if (!function_exists('fx_reseller_load_retail_units')) {
             return;
         }
         $map = ['custom_volume' => 'pricecustomvolume', 'custom_time' => 'pricecustomtime'];
+        $panelKey = (string)($panel['code_panel'] ?? $panel['name_panel'] ?? '');
         foreach ($map as $k => $col) {
+            // FX-MARGIN: stash the BASE (wholesale) unit price before the retail
+            // override rewrites the JSON — the debt charge for custom-volume sales
+            // must use the main panel's unit price, not the reseller's retail.
+            $baseArr = json_decode((string)($panel[$col] ?? ''), true);
+            $baseVal = null;
+            if (is_array($baseArr)) {
+                if (isset($baseArr[(string)$agent]) && is_numeric($baseArr[(string)$agent])) {
+                    $baseVal = (float)$baseArr[(string)$agent];
+                } elseif (isset($baseArr['f']) && is_numeric($baseArr['f'])) {
+                    $baseVal = (float)$baseArr['f'];
+                } elseif (isset($baseArr['n']) && is_numeric($baseArr['n'])) {
+                    $baseVal = (float)$baseArr['n'];
+                }
+            }
+            $GLOBALS['__fx_reseller_base_units'][$panelKey . '|' . $col] = $baseVal;
             if (!isset($ov[$k]) || !is_numeric($ov[$k]) || (float)$ov[$k] <= 0) {
                 continue;
             }
-            $arr = json_decode((string)($panel[$col] ?? ''), true);
-            if (!is_array($arr)) {
-                $arr = [];
-            }
+            $arr = is_array($baseArr) ? $baseArr : [];
             // The reseller's customers carry agent = reseller id (or 'f'); the panel
             // JSON is tier-keyed, so set the customer key(s) to the retail unit price.
             foreach (array_keys($arr) as $tier) {
@@ -212,6 +346,34 @@ if (!function_exists('fx_reseller_load_retail_units')) {
             $arr[(string)(int)FX_RESELLER_ID] = (float)$ov[$k];
             $panel[$col] = json_encode($arr);
         }
+    }
+}
+
+if (!function_exists('fx_reseller_base_unit')) {
+    /**
+     * FX-MARGIN: base (wholesale) unit price stashed by fx_reseller_load_retail_units
+     * before retail overrides were applied. null when unknown.
+     */
+    function fx_reseller_base_unit(array $panel, string $column): ?float {
+        $key = (string)($panel['code_panel'] ?? $panel['name_panel'] ?? '') . '|' . $column;
+        $v = $GLOBALS['__fx_reseller_base_units'][$key] ?? null;
+        return is_numeric($v) ? (float)$v : null;
+    }
+}
+
+if (!function_exists('fx_reseller_custom_wholesale')) {
+    /**
+     * FX-MARGIN: the reseller's COST for a custom-volume/days service, computed from
+     * the stashed BASE unit prices. null when no base is known (caller falls back to
+     * the legacy behaviour: cost = customer price).
+     */
+    function fx_reseller_custom_wholesale(array $panel, $volume, $days): ?int {
+        $uv = fx_reseller_base_unit($panel, 'pricecustomvolume');
+        $ut = fx_reseller_base_unit($panel, 'pricecustomtime');
+        if ($uv === null && $ut === null) {
+            return null;
+        }
+        return (int)round(((float)$volume * ($uv ?? 0.0)) + ((float)$days * ($ut ?? 0.0)));
     }
 }
 
@@ -228,7 +390,11 @@ if (!function_exists('fx_apply_reseller_retail')) {
             return;
         }
         if (empty($product['fx_wholesale_price']) || (int)$product['fx_wholesale_price'] <= 0) {
-            $product['fx_wholesale_price'] = (int)($product['price_product'] ?? 0);
+            // FX-EDGE 2026-10-10: default the reseller's cost to the BASE price, not
+            // price_product — on reseller bots price_product may already carry the
+            // reseller's OVERRIDDEN retail (fx_retail_override), which would zero
+            // the margin against the reseller's own price.
+            $product['fx_wholesale_price'] = (int)($product['fx_base_price'] ?? ($product['price_product'] ?? 0));
         }
     }
 }
@@ -239,7 +405,7 @@ if (!function_exists('fx_reseller_reprice_custom')) {
      * prices, recompute the customer's unit price = volume*unitVol + days*unitTime.
      * $price by reference. No-op for the main bot and when no overrides exist.
      */
-    function fx_reseller_reprice_custom(&$price, array $panel, $volume, $days): void {
+    function fx_reseller_reprice_custom(&$price, array $panel, $volume, $days, $agent = null): void {
         if (!defined('FX_RESELLER_ID')) {
             return;
         }
@@ -257,7 +423,17 @@ if (!function_exists('fx_reseller_reprice_custom')) {
         if ($uv === null && $ut === null) {
             return;
         }
-        $newPrice = ((int)$volume * ($uv ?? 0)) + ((int)$days * ($ut ?? 0));
+        // FX-MARGIN: a one-sided override must not zero the other side — fall back
+        // to the panel's (already retail-adjusted) unit price for the missing side.
+        if ($uv === null) {
+            $arr = json_decode((string)($panel['pricecustomvolume'] ?? ''), true);
+            $uv = (is_array($arr) && is_numeric($arr[(string)$agent] ?? null)) ? (float)$arr[(string)$agent] : 0.0;
+        }
+        if ($ut === null) {
+            $arr = json_decode((string)($panel['pricecustomtime'] ?? ''), true);
+            $ut = (is_array($arr) && is_numeric($arr[(string)$agent] ?? null)) ? (float)$arr[(string)$agent] : 0.0;
+        }
+        $newPrice = ((int)$volume * $uv) + ((int)$days * $ut);
         $price = $newPrice;
     }
 }

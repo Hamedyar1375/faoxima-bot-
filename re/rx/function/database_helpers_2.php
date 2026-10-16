@@ -3747,6 +3747,26 @@ $textonebuy
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
         }
 
+        // FX-RESELLER (2026-10-15): gateway-paid renewal fulfilled → record the
+        // reseller's wholesale debt (idempotent; fulfilment may re-run/reconcile).
+        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
+            $__fxRid = (int)FX_RESELLER_ID;
+            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+                $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
+                if ($__fxDebtWholesale <= 0) {
+                    $__fxDebtWholesale = ((string)($prodcut['code_product'] ?? '') === 'custom_volume' && function_exists('fx_custom_base_price'))
+                        ? (int)round(fx_custom_base_price($marzban_list_get, $Balance_id['agent'], $prodcut['Volume_constraint'], $prodcut['Service_time']))
+                        : (int)$data_order['price'];
+                }
+                if ($__fxDebtWholesale > 0) {
+                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'renewal_gateway', (string)$order_id);
+                    if (!$__fxIncOk) {
+                        error_log('[FX_DEBT] gateway renewal ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
+                    }
+                }
+            }
+        }
+
         MiniDiscount::logSale([
             'id_user' => $Balance_id['id'],
             'id_invoice' => $nameloc['id_invoice'] ?? null,
@@ -3986,6 +4006,22 @@ $textonebuy
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
         }
+        // FX-RESELLER (2026-10-15): gateway-paid extra volume fulfilled → debt.
+        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
+            $__fxRid = (int)FX_RESELLER_ID;
+            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+                $__fxDebtWholesale = (int)round((float)$volume * (fx_panel_raw_unit_price($marzban_list_get, 'priceextravolume', $Balance_id['agent']) ?? 0));
+                if ($__fxDebtWholesale <= 0) {
+                    $__fxDebtWholesale = (int)$Payment_report['price'];
+                }
+                if ($__fxDebtWholesale > 0) {
+                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'extra_volume_gateway', (string)$order_id);
+                    if (!$__fxIncOk) {
+                        error_log('[FX_DEBT] gateway extra volume ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
+                    }
+                }
+            }
+        }
         MiniDiscount::logSale([
             'id_user' => $Balance_id['id'],
             'id_invoice' => $nameloc['id_invoice'] ?? null,
@@ -4171,6 +4207,22 @@ $textonebuy
         $rxCompletion = rx_pf_complete($order_id, $rxToken, ['operation' => 'getextratimeuser', 'panel' => $extra_time, 'target' => $rxTargetState], [["UPDATE user SET Balance = ? WHERE id = ?", [$Balance_Low_user, $nameloc['id_user']]]]);
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
+        }
+        // FX-RESELLER (2026-10-15): gateway-paid extra time fulfilled → debt.
+        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
+            $__fxRid = (int)FX_RESELLER_ID;
+            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+                $__fxDebtWholesale = (int)round((float)$tmieextra * (fx_panel_raw_unit_price($marzban_list_get, 'priceextratime', $Balance_id['agent']) ?? 0));
+                if ($__fxDebtWholesale <= 0) {
+                    $__fxDebtWholesale = (int)$Payment_report['price'];
+                }
+                if ($__fxDebtWholesale > 0) {
+                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'extra_time_gateway', (string)$order_id);
+                    if (!$__fxIncOk) {
+                        error_log('[FX_DEBT] gateway extra time ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
+                    }
+                }
+            }
         }
         MiniDiscount::logSale([
             'id_user' => $Balance_id['id'],

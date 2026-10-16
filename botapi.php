@@ -112,11 +112,163 @@ if (!function_exists('rx_callback_busy_reply')) {
     }
 }
 
+if (!function_exists('rxResolveTenantTokenForChat')) {
+    /**
+     * FX-RESELLER (2026-10-15): resolve the correct bot token for a recipient.
+     * When the MAIN bot (or its cron) sends to a user who belongs to a reseller
+     * tenant (user.agent = reseller id set at registration, or legacy
+     * user.bottype = reseller bot token), the message must go out through the
+     * RESELLER's bot token — otherwise Telegram answers "chat not found".
+     * Main-bot users (agent f/n/n2, no reseller bottype) are unaffected.
+     */
+    function rxResolveTenantTokenForChat($chatId, $fallbackToken)
+    {
+        static $resellerTokens = null;
+        static $userMemo = [];
+        $cid = (int) $chatId;
+        if ($cid <= 0) {
+            return $fallbackToken;
+        }
+        if (array_key_exists($cid, $userMemo)) {
+            return $userMemo[$cid] !== null ? $userMemo[$cid] : $fallbackToken;
+        }
+        global $pdo;
+        if (!($pdo instanceof PDO)) {
+            $userMemo[$cid] = null;
+            return $fallbackToken;
+        }
+        if ($resellerTokens === null) {
+            $resellerTokens = [];
+            try {
+                $rows = $pdo->query("SELECT id_user, bot_token FROM botsaz WHERE bot_token IS NOT NULL AND bot_token <> ''")->fetchAll(PDO::FETCH_ASSOC);
+                foreach ((array) $rows as $r) {
+                    $resellerTokens[(string) (int) $r['id_user']] = trim((string) $r['bot_token']);
+                }
+            } catch (Throwable $e) {
+                $resellerTokens = [];
+            }
+        }
+        if (!$resellerTokens) {
+            $userMemo[$cid] = null;
+            return $fallbackToken;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT agent, bottype FROM user WHERE id = :u LIMIT 1");
+            $stmt->execute([':u' => (string) $cid]);
+            $u = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            $u = null;
+        }
+        $token = null;
+        if (is_array($u)) {
+            $agent = (string) ($u['agent'] ?? '');
+            if ($agent !== '' && isset($resellerTokens[$agent])) {
+                $token = $resellerTokens[$agent];
+            }
+            if ($token === null && !empty($u['bottype'])) {
+                foreach ($resellerTokens as $rt) {
+                    if ((string) $u['bottype'] === $rt) {
+                        $token = $rt;
+                        break;
+                    }
+                }
+            }
+        }
+        $userMemo[$cid] = $token;
+        return $token !== null ? $token : $fallbackToken;
+    }
+}
+
+if (!function_exists('rxTenantReportTarget')) {
+    /**
+     * FX-RESELLER (2026-10-15): chat + topic map of the RESELLER's own report
+     * group (botsaz.setting). Cached per process. Empty chat = not configured.
+     */
+    function rxTenantReportTarget(): array
+    {
+        static $target = null;
+        if ($target !== null) {
+            return $target;
+        }
+        $target = ['chat' => '', 'threadMap' => []];
+        if (!defined('FX_RESELLER_ID')) {
+            return $target;
+        }
+        global $pdo;
+        if (!($pdo instanceof PDO)) {
+            return $target;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT setting FROM botsaz WHERE id_user = :rid LIMIT 1");
+            $stmt->execute([':rid' => (string) (int) FX_RESELLER_ID]);
+            $decoded = json_decode((string) $stmt->fetchColumn(), true);
+        } catch (Throwable $e) {
+            return $target;
+        }
+        if (!is_array($decoded)) {
+            return $target;
+        }
+        $chat = trim((string) ($decoded['Channel_Report'] ?? ''));
+        if ($chat === '' || $chat === '0') {
+            return $target;
+        }
+        $target['chat'] = $chat;
+        $tenantTopics = is_array($decoded['topicid'] ?? null) ? $decoded['topicid'] : [];
+        if ($tenantTopics) {
+            try {
+                $rows = $pdo->query("SELECT report, idreport FROM topicid")->fetchAll(PDO::FETCH_ASSOC);
+                foreach ((array) $rows as $r) {
+                    $gid = (int) ($r['idreport'] ?? 0);
+                    $key = (string) ($r['report'] ?? '');
+                    $tid = (int) ($tenantTopics[$key] ?? 0);
+                    if ($gid > 0 && $tid > 0) {
+                        $target['threadMap'][$gid] = $tid;
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+        }
+        return $target;
+    }
+}
+
 function telegram($method, $datas = [], $token = null)
 {
     global $APIKEY, $telegramCurlTimeout;
 
     $token = $token === null ? $APIKEY : $token;
+
+    // FX-RESELLER (2026-10-15): tenant routing — send to reseller customers via
+    // the reseller's own bot token (no-op for main-bot users and group chats).
+    if ($token === $APIKEY && !empty($datas['chat_id'])) {
+        $rxTenantToken = rxResolveTenantTokenForChat($datas['chat_id'], $APIKEY);
+        if (is_string($rxTenantToken) && $rxTenantToken !== '' && $rxTenantToken !== $APIKEY) {
+            $token = $rxTenantToken;
+        }
+    }
+
+    // FX-RESELLER (2026-10-15): inside the reseller bot process, report-group
+    // notifications must go to the RESELLER's own group (botsaz.setting), not the
+    // main bot's group. Main-group sends are remapped; topic ids are translated
+    // via the report→topic maps (or dropped when unmapped → General topic).
+    if (defined('FX_RESELLER_ID') && !empty($datas['chat_id'])) {
+        global $setting;
+        $rxMainReport = is_array($setting ?? null) ? trim((string) ($setting['Channel_Report'] ?? '')) : '';
+        if ($rxMainReport !== '' && (string) $datas['chat_id'] === $rxMainReport) {
+            $rxTenantTarget = rxTenantReportTarget();
+            if ($rxTenantTarget['chat'] !== '') {
+                $datas['chat_id'] = $rxTenantTarget['chat'];
+                if (isset($datas['message_thread_id'])) {
+                    $rxTid = (int) $datas['message_thread_id'];
+                    if ($rxTid > 0 && isset($rxTenantTarget['threadMap'][$rxTid])) {
+                        $datas['message_thread_id'] = $rxTenantTarget['threadMap'][$rxTid];
+                    } else {
+                        unset($datas['message_thread_id']);
+                    }
+                }
+            }
+        }
+    }
     $url = "https://api.telegram.org/bot" . $token . "/" . $method;
 
     if (!is_array($datas)) {
@@ -214,10 +366,6 @@ function telegram($method, $datas = [], $token = null)
     $httpCode = 0;
     $duration = 0.0;
     $attemptedTimes = 0;
-    /* FX-KB-CAPTURE (temp) */
-    if (function_exists('file_exists') && @file_exists(__DIR__ . '/.fxkb_capture')) {
-        @file_put_contents(__DIR__ . '/.fxkb_capture.log', date('H:i:s') . ' | tok=' . substr((string)($token ?? ''), 0, 10) . ' | ' . $method . ' | ' . (is_array($datas) ? json_encode($datas['reply_markup'] ?? '', JSON_UNESCAPED_UNICODE) : '') . "\n", FILE_APPEND);
-    }
     while ($attemptedTimes < $maxAttempts) {
         $attemptedTimes++;
 
@@ -2757,8 +2905,6 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
     ]);
 
 
-    @file_put_contents("/tmp/fxedit_trace.log",
-        "[FXEDIT] mid=".(int)$message_id." editresult=".(is_array($result)?json_encode($result):var_export($result,true))."\n", FILE_APPEND);
     if (is_array($result) && isset($result['ok']) && $result['ok'] === false) {
         $desc = strtolower((string)($result['description'] ?? ''));
 

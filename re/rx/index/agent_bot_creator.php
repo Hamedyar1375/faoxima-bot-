@@ -12,6 +12,7 @@
 if (!defined('REFACTORED_LEGACY_ROOT')) {
     define('REFACTORED_LEGACY_ROOT', dirname(__DIR__, 3));
 }
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
 function fx_dbg($evt, $arr) {
     $line = date('Y-m-d H:i:s') . " $evt " . json_encode($arr, JSON_UNESCAPED_UNICODE) . "\n";
     @file_put_contents(REFACTORED_LEGACY_ROOT . '/agentbot_debug.log', $line, FILE_APPEND);
@@ -49,25 +50,27 @@ function fx_handle_agent_bot_token($from_id, $message_id, $text, $user, $setting
         return;
     }
 
-    // Already has a bot?
-    $chec_kbot = select("botsaz", "*", "id_user", $from_id, "count");
-    if ($chec_kbot != 0) {
+    // FX-RESELLER: central cap/count — shared with the admin panel and the API.
+    $fxOwn = fx_reseller_bot_count_owner($pdo, (string) $from_id);
+    $fxTotal = $fxOwn >= 0 ? fx_reseller_bot_count_total($pdo) : -1;
+    $fxTok = $fxTotal >= 0 ? fx_reseller_bot_count_token($pdo, $tokenRaw) : -1;
+    if ($fxOwn < 0 || $fxTotal < 0 || $fxTok < 0) {
+        nm_adminInstantReply($from_id, "❌ خطا در بررسی وضعیت ربات‌های نماینده. دوباره تلاش کنید.", $backuser, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+    if ($fxOwn != 0) {
         nm_adminInstantReply($from_id, "❌ شما قبلاً یک ربات نماینده فعال دارید.", $backuser, 'HTML');
         step('home', $from_id);
         return;
     }
-
-    // Global limit (15 bots)
-    $check_bots = select("botsaz", "*", null, null, "count");
-    if ($check_bots >= 15) {
-        nm_adminInstantReply($from_id, "❌ به سقف تعداد ربات‌های نماینده رسیده‌ایم.", $backuser, 'HTML');
+    $fxCap = fx_reseller_bot_cap();
+    if ($fxTotal >= $fxCap) {
+        nm_adminInstantReply($from_id, "❌ به سقف " . $fxCap . " ربات نماینده رسیده‌ایم.", $backuser, 'HTML');
         step('home', $from_id);
         return;
     }
-
-    // Token uniqueness
-    $check_exits_token = select("botsaz", "*", "bot_token", $tokenRaw, "count");
-    if ($check_exits_token != 0) {
+    if ($fxTok != 0) {
         nm_adminInstantReply($from_id, "❌ این توکن قبلاً ثبت شده است.", $backuser, 'HTML');
         step('home', $from_id);
         return;
@@ -119,6 +122,31 @@ function fx_handle_agent_bot_token($from_id, $message_id, $text, $user, $setting
     }
     file_put_contents($configFile, $new_code);
 
+    // FX-RESELLER: atomic re-check + insert (named lock inside the registry).
+    $fxReg = fx_reseller_bot_register($pdo, (string) $from_id, $tokenRaw, $remoteUsername);
+    if (!$fxReg['ok']) {
+        $fxCode = (string) ($fxReg['code'] ?? '');
+        if ($fxCode === 'db' && is_dir($dirsource) && function_exists('deleteDirectory')) {
+            @deleteDirectory($dirsource);
+        }
+        if ($fxCode === 'user_exists') {
+            $fxMsg = "❌ شما قبلاً یک ربات نماینده فعال دارید.";
+        } elseif ($fxCode === 'cap') {
+            $fxMsg = "❌ به سقف " . (int) $fxReg['cap'] . " ربات نماینده رسیده‌ایم.";
+        } elseif ($fxCode === 'token_exists') {
+            $fxMsg = "❌ این توکن قبلاً ثبت شده است.";
+        } elseif ($fxCode === 'busy') {
+            $fxMsg = "⏳ ساخت ربات دیگری در حال انجام است؛ چند لحظه بعد دوباره تلاش کنید.";
+        } elseif ($fxCode === 'db') {
+            $fxMsg = "❌ ثبت ربات در دیتابیس ناموفق بود: " . (string) ($fxReg['error'] ?? 'unknown');
+        } else {
+            $fxMsg = "❌ ثبت ربات ناموفق بود. دوباره تلاش کنید.";
+        }
+        nm_adminInstantReply($from_id, $fxMsg, $backuser, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+
     // ---- WEBHOOK FIX: include secret_token (reseller index.php enforces it) ----
     $secret_token = hash('sha256', $tokenRaw . '_faoxima_webhook_secret');
     $webhook_url = "https://{$domainhosts}/vpnbot/{$from_id}{$remoteUsername}/index.php";
@@ -136,35 +164,6 @@ function fx_handle_agent_bot_token($from_id, $message_id, $text, $user, $setting
     // Notify the new bot owner via THEIR bot
     @file_get_contents("https://api.telegram.org/bot{$tokenRaw}/sendMessage?chat_id={$from_id}&text=" . urlencode("✅ ربات نماینده شما با موفقیت نصب و فعال شد!"));
 
-    // Default settings for the reseller bot
-    $datasetting = json_encode([
-        "minpricetime" => 4000,
-        "pricetime" => 4000,
-        "minpricevolume" => 4000,
-        "pricevolume" => 4000,
-        "support_username" => "@support",
-        "Channel_Report" => 0,
-        "cart_info" => "جهت پرداخت مبلغ را به شماره کارت زیر واریز نمایید",
-        'show_product' => true,
-    ]);
-
-    try {
-        $stmt = $pdo->prepare("INSERT INTO botsaz (id_user, bot_token, admin_ids, username, time, setting, hide_panel) VALUES (:id_user, :bot_token, :admin_ids, :username, :time, :setting, :hide_panel)");
-        $stmt->bindValue(':id_user', (string)$from_id, PDO::PARAM_STR);
-        $stmt->bindValue(':bot_token', $tokenRaw, PDO::PARAM_STR);
-        $stmt->bindValue(':admin_ids', json_encode([(string)$from_id]));
-        $stmt->bindValue(':username', $remoteUsername, PDO::PARAM_STR);
-        $stmt->bindValue(':time', date('Y/m/d H:i:s'), PDO::PARAM_STR);
-        $stmt->bindValue(':setting', $datasetting);
-        $stmt->bindValue(':hide_panel', "{}");
-        $stmt->execute();
-    } catch (Throwable $e) {
-        error_log('[agent_bot_creator] DB insert failed: ' . $e->getMessage());
-        nm_adminInstantReply($from_id, "❌ ثبت ربات در دیتابیس ناموفق بود: " . $e->getMessage(), $backuser, 'HTML');
-        step('home', $from_id);
-        return;
-    }
-
     step('home', $from_id);
     nm_adminInstantReply($from_id, "✅ <b>ربات نماینده شما با موفقیت ساخته شد!</b>\n\n🤖 نام کاربری: @{$remoteUsername}\n🔗 وبهوک: <code>{$webhook_url}</code>\n\nاکنون مشتریان می‌توانند با ربات جدید شما کار کنند.", $backuser, 'HTML');
 }
@@ -173,11 +172,11 @@ function fx_handle_agent_bot_token($from_id, $message_id, $text, $user, $setting
  * Render the agent panel WITH the reseller-bot button
  */
 function fx_render_agent_bot_creator_button($from_id, $message_id, $user, $datatextbot, $backuser) {
-    global $setting, $textbotlang, $keyboardagent;
+    global $setting, $textbotlang, $keyboardagent, $pdo;
 
     if ($user['agent'] === 'f') return;
 
-    $has_bot = select("botsaz", "*", "id_user", $from_id, "count");
+    $has_bot = fx_reseller_bot_count_owner($pdo, (string) $from_id);
     if ($has_bot) {
         $bot_info = select("botsaz", "*", "id_user", $from_id, "select");
         $keyboard = json_encode([

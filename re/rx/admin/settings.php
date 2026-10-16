@@ -5349,6 +5349,10 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
 } elseif ((preg_match('/confirmchannel-(\w+)/', $datain, $dataget))) {
     $iduser = $dataget[1];
     $userdata = select("user", "*", "id", $iduser, "select");
+    if (!is_array($userdata) || (function_exists('rxUserInTenantScope') && !rxUserInTenantScope($iduser))) {
+        nm_adminInstantReply($from_id, "❌ کاربر یافت نشد یا در محدوده دسترسی شما نیست.", null, 'HTML');
+        return;
+    }
     if ($userdata['joinchannel'] == "active") {
         nm_adminInstantReply($from_id, "✍️ کاربر از قبل تایید شده است", null, 'HTML');
         return;
@@ -5358,10 +5362,45 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
 } elseif ((preg_match('/zerobalance-(\w+)/', $datain, $dataget))) {
     $iduser = $dataget[1];
     $userdata = select("user", "*", "id", $iduser, "select");
+    if (!is_array($userdata) || (function_exists('rxUserInTenantScope') && !rxUserInTenantScope($iduser))) {
+        nm_adminInstantReply($from_id, "❌ کاربر یافت نشد یا در محدوده دسترسی شما نیست.", null, 'HTML');
+        return;
+    }
     update("user", "Balance", "0", "id", $iduser);
     nm_adminInstantReply($from_id, "موجودی کاربر به مبلغ " . rxFormatToman($userdata['Balance']) . " صفر گردید", $keyboardadmin, 'HTML');
 } elseif (preg_match('/removeadmin_(\w+)/', $datain, $dataget) && $adminrulecheck['rule'] == "administrator") {
     $idadmin = trim($dataget[1]);
+    // FX-RESELLER (2026-10-15): in a reseller bot, admin management mutates
+    // botsaz.admin_ids — NEVER the global admin table (main bot's admins).
+    if (defined('FX_RESELLER_ID')) {
+        if ($idadmin === (string) (int) FX_RESELLER_ID) {
+            nm_adminInstantReply($from_id, "❌ امکان حذف ادمین اصلی وجود ندارد", null, 'HTML');
+            return;
+        }
+        $_fxAdmRow = select("botsaz", "admin_ids", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+        $_fxAdmIds = is_array($_fxAdmRow) ? json_decode((string) ($_fxAdmRow['admin_ids'] ?? '[]'), true) : null;
+        if (!is_array($_fxAdmIds)) {
+            $_fxAdmIds = [];
+        }
+        $_fxAdmNew = [];
+        $_fxAdmRemoved = false;
+        foreach ($_fxAdmIds as $_fxAdmId) {
+            if ((string) trim((string) $_fxAdmId) === $idadmin) {
+                $_fxAdmRemoved = true;
+                continue;
+            }
+            $_fxAdmNew[] = (string) trim((string) $_fxAdmId);
+        }
+        if (!$_fxAdmRemoved) {
+            nm_adminInstantReply($from_id, "⚠️ ادمینی با این شناسه یافت نشد.", null, 'HTML');
+            return;
+        }
+        update("botsaz", "admin_ids", json_encode(array_values($_fxAdmNew)), "id_user", FX_RESELLER_ID);
+        unset($_fxAdmRow, $_fxAdmIds, $_fxAdmNew, $_fxAdmRemoved, $_fxAdmId);
+        $removeAdminBackKb = json_encode(['inline_keyboard' => [[['text' => "◀️ بازگشت به لیست ادمین‌ها", 'callback_data' => "admin_mgr"]]]]);
+        nm_adminInstantReply($from_id, "✅ ادمین با موفقیت حذف گردید", $removeAdminBackKb, 'HTML');
+        return;
+    }
     $mainAdminId = trim((string) $adminnumber);
     if ($idadmin === $mainAdminId) {
         nm_adminInstantReply($from_id, "❌ امکان حذف ادمین اصلی وجود ندارد", null, 'HTML');
@@ -5492,7 +5531,7 @@ elseif ($text == "🫣 مخفی پنل برای کاربر" && $adminrulecheck['
     step("home", $from_id);
     update("setting", "wheelـluck_price", $text, null, null);
 } elseif ($text == "💵 رسید های تایید نشده") {
-    $sql = "SELECT * FROM Payment_report WHERE Payment_Method = 'cart to cart' AND payment_Status = 'waiting'";
+    $sql = "SELECT * FROM Payment_report WHERE " . (function_exists('rxReceiptScopeSql') ? rxReceiptScopeSql() : "Payment_Method = 'cart to cart'") . " AND payment_Status = 'waiting'";
     $stmt = $pdo->prepare($sql);
     $stmt->execute();
     $list_payment = $stmt->fetchAll();
@@ -5536,13 +5575,22 @@ elseif ($text == "🫣 مخفی پنل برای کاربر" && $adminrulecheck['
     if (function_exists('rxReceiptSoftDeleteAll')) {
         rxReceiptSoftDeleteAll();
     } else {
-        $sql = "UPDATE Payment_report SET payment_Status = 'reject',dec_not_confirmed = 'remove_all' WHERE Payment_Method = 'cart to cart' AND payment_Status = 'waiting'";
+        $sql = "UPDATE Payment_report SET payment_Status = 'reject', dec_not_confirmed = 'remove_all' WHERE " . (function_exists('rxReceiptScopeSql') ? rxReceiptScopeSql() : "Payment_Method = 'cart to cart'") . " AND payment_Status = 'waiting'";
         $stmt = $pdo->prepare($sql);
         $stmt->execute();
     }
 } elseif (preg_match('/showinfopay_(\w+)/', $datain, $dataget)) {
     $idorder = $dataget[1];
     $paymentUser = select("Payment_report", "*", "id_order", $idorder, "select");
+    if (is_array($paymentUser) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($paymentUser)) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => "تراکنش یافت نشد",
+            'show_alert' => true,
+            'cache_time' => 5,
+        ));
+        return;
+    }
     if ($paymentUser == false) {
         telegram('answerCallbackQuery', array(
             'callback_query_id' => $callback_query_id,
@@ -5900,10 +5948,20 @@ elseif ($text == "🫣 مخفی پنل برای کاربر" && $adminrulecheck['
     }
 } elseif (preg_match('/removeresid_(\w+)/', $datain, $dataget)) {
     $idorder = $dataget[1];
+    $__rxDelRow = select("Payment_report", "*", "id_order", $idorder, "select");
+    if (is_array($__rxDelRow) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($__rxDelRow)) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => "تراکنش یافت نشد",
+            'show_alert' => true,
+            'cache_time' => 5,
+        ));
+        return;
+    }
     if (function_exists('rxReceiptHardDelete')) {
         rxReceiptHardDelete($idorder);
     } else {
-        $stmt = $pdo->prepare("DELETE FROM Payment_report WHERE id_order = :id_order");
+        $stmt = $pdo->prepare("DELETE FROM Payment_report WHERE id_order = :id_order AND " . (function_exists('rxReceiptScopeSql') ? rxReceiptScopeSql() : "Payment_Method = 'cart to cart'"));
         $stmt->bindParam(':id_order', $idorder, PDO::PARAM_STR);
         $stmt->execute();
     }

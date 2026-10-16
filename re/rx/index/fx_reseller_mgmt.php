@@ -1,5 +1,4 @@
 <?php
-@file_put_contents("/tmp/fxedit_trace.log", "[FXLOAD] fx_reseller_mgmt.php loaded\n", FILE_APPEND);
 /**
  * Phase 2 — Reseller Management Helper (additive)
  *
@@ -11,51 +10,62 @@
  * Loaded via require_once OUTSIDE the .compiled.php bundle (like agent_bot_creator.php).
  */
 require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_debt.php'; // FX-DEBT helpers (2026-10-03)
+require_once (defined('REFACTORED_LEGACY_ROOT') ? REFACTORED_LEGACY_ROOT : dirname(__DIR__, 3)) . '/re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
 
 function fx_reseller_db_credit(int $uid, int $amount, string $method = 'reseller_credit', ?string $bottype = null): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
+    if ($amount <= 0) return true;
+    $ownTx = false;
     try {
-        $pdo->beginTransaction();
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $ownTx = true;
+        }
         $stmt = $pdo->prepare("UPDATE user SET Balance = Balance + :amt WHERE id = :id");
         $stmt->execute([':amt' => $amount, ':id' => $uid]);
         $orderId = bin2hex(random_bytes(5));
         $now = date('Y/m/d H:i:s');
         $ins = $pdo->prepare("INSERT INTO Payment_report (id_user,id_order,time,price,payment_Status,Payment_Method,id_invoice,bottype) VALUES (?,?,?,?,?,?,?,?)");
         $ins->execute([$uid, $orderId, $now, $amount, 'paid', $method, null, $bottype]);
-        $pdo->commit();
+        if ($ownTx) $pdo->commit();
         return true;
     } catch (\Throwable $e) {
-        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($ownTx && $pdo->inTransaction()) $pdo->rollBack();
         error_log("[FX_RES] credit failed uid=$uid: " . $e->getMessage());
         return false;
     }
 }
 
 function fx_reseller_db_debit(int $uid, int $amount, string $method = 'reseller_debit', ?string $bottype = null): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
+    if ($amount <= 0) return true;
+    $ownTx = false;
     try {
-        $pdo->beginTransaction();
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $ownTx = true;
+        }
         $stmt = $pdo->prepare("UPDATE user SET Balance = Balance - :amt WHERE id = :id AND Balance >= :amt2");
         $stmt->execute([':amt' => $amount, ':id' => $uid, ':amt2' => $amount]);
         if ($stmt->rowCount() === 0) {
-            $pdo->rollBack();
+            if ($ownTx) $pdo->rollBack();
             return false;
         }
         $orderId = bin2hex(random_bytes(5));
         $now = date('Y/m/d H:i:s');
         $ins = $pdo->prepare("INSERT INTO Payment_report (id_user,id_order,time,price,payment_Status,Payment_Method,id_invoice,bottype) VALUES (?,?,?,?,?,?,?,?)");
         $ins->execute([$uid, $orderId, $now, -$amount, 'paid', $method, null, $bottype]);
-        $pdo->commit();
+        if ($ownTx) $pdo->commit();
         return true;
     } catch (\Throwable $e) {
-        if ($pdo->inTransaction()) $pdo->rollBack();
+        if ($ownTx && $pdo->inTransaction()) $pdo->rollBack();
         error_log("[FX_RES] debit failed uid=$uid: " . $e->getMessage());
         return false;
     }
 }
 
 function fx_reseller_db_balance(int $uid): int {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
     $stmt = $pdo->prepare("SELECT Balance FROM user WHERE id = :id");
     $stmt->execute([':id' => $uid]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -63,27 +73,32 @@ function fx_reseller_db_balance(int $uid): int {
 }
 
 function fx_reseller_get_all(): array {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
-    $stmt = $pdo->query("SELECT b.id_user, b.username, b.bot_token, u.Balance, u.agent, u.username AS u_username FROM botsaz b LEFT JOIN user u ON u.id = b.id_user");
+    global $pdo;
+    $stmt = $pdo->query("SELECT b.id_user, b.username, b.bot_token, b.debt_mode, b.current_debt, u.Balance, u.agent, u.username AS u_username,
+            (SELECT COUNT(*) FROM invoice i JOIN user uz ON uz.id = i.id_user
+              WHERE (uz.agent = b.id_user OR uz.bottype = b.bot_token)
+                AND i.Status IN ('active','sendedwarn','send_on_hold')
+                AND i.name_product != 'سرویس تست') AS active_cfgs
+        FROM botsaz b LEFT JOIN user u ON u.id = b.id_user");
     return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 }
 
 function fx_reseller_assign_product_agent(int $productId, string $agentId): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
     $stmt = $pdo->prepare("UPDATE product SET agent = :agent WHERE id = :id");
     $stmt->execute([':agent' => $agentId, ':id' => $productId]);
     return $stmt->rowCount() > 0;
 }
 
 function fx_reseller_assign_panel_agent(int $panelId, string $agentId): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
     $stmt = $pdo->prepare("UPDATE marzban_panel SET agent = :agent WHERE id = :id");
     $stmt->execute([':agent' => $agentId, ':id' => $panelId]);
     return $stmt->rowCount() > 0;
 }
 
 function fx_reseller_set_pasargad_creds(int $panelId, string $username, string $password, string $authMode = 'password'): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
     $stmt = $pdo->prepare("UPDATE marzban_panel SET username_panel = :u, password_panel = :p, pasarguard_auth_mode = :m WHERE id = :id");
     $stmt->execute([':u' => $username, ':p' => $password, ':m' => $authMode, ':id' => $panelId]);
     return $stmt->rowCount() > 0;
@@ -93,19 +108,22 @@ function fx_reseller_set_pasargad_creds(int $panelId, string $username, string $
  * Central reseller bot creation (admin-driven only).
  */
 function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
+
     $tokenRaw = trim($tokenRaw);
     if (!preg_match('/^\d+:[A-Za-z0-9_-]{20,}$/', $tokenRaw)) {
         return [false, '❌ توکن نامعتبر است. فرمت: 123456789:AAxxx'];
     }
     $targetUser = select("user", "*", "id", $targetUid, "select", ['cache' => false]);
     if (!$targetUser || !is_array($targetUser)) return [false, '❌ کاربر/نماینده با این آیدی وجود ندارد.'];
-    $existing = select("botsaz", "*", "id_user", $targetUid, "select", ['cache' => false]);
-    if ($existing) return [false, '❌ این نماینده قبلا ربات فعال دارد.'];
-    $countBots = select("botsaz", "*", null, null, "count", ['cache' => false]);
-    if ($countBots >= 15) return [false, '❌ به سقف ۱۵ ربات نماینده رسیدیم.'];
-    $dup = select("botsaz", "*", "bot_token", $tokenRaw, "count", ['cache' => false]);
-    if ($dup != 0) return [false, '❌ این توکن قبلا ثبت شده است.'];
+    $fxCap = fx_reseller_bot_cap();
+    $fxOwn = fx_reseller_bot_count_owner($pdo, (string) $targetUid);
+    $fxTotal = $fxOwn >= 0 ? fx_reseller_bot_count_total($pdo) : -1;
+    $fxTok = $fxTotal >= 0 ? fx_reseller_bot_count_token($pdo, $tokenRaw) : -1;
+    if ($fxOwn < 0 || $fxTotal < 0 || $fxTok < 0) return [false, '❌ خطا در بررسی وضعیت ربات‌های نماینده. لطفا دوباره تلاش کنید.'];
+    if ($fxOwn > 0) return [false, '❌ این نماینده قبلا ربات فعال دارد.'];
+    if ($fxTotal >= $fxCap) return [false, '❌ به سقف ' . $fxCap . ' ربات نماینده رسیدیم.'];
+    if ($fxTok != 0) return [false, '❌ این توکن قبلا ثبت شده است.'];
     $ctx = stream_context_create(['http' => ['timeout' => 10]]);
     $getMe = @json_decode(@file_get_contents("https://api.telegram.org/bot{$tokenRaw}/getMe", false, $ctx), true);
     if (!$getMe || empty($getMe['ok']) || empty($getMe['result']['username'])) return [false, '❌ توکن معتبر نیست یا ربات یافت نشد.'];
@@ -132,6 +150,20 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
             file_put_contents($wrapperFile, $w);
         }
     }
+    $fxReg = fx_reseller_bot_register($pdo, (string) $targetUid, $tokenRaw, $remoteUsername);
+    if (!$fxReg['ok']) {
+        $fxCode = (string) ($fxReg['code'] ?? '');
+        if ($fxCode === 'db' && is_dir($dirsource) && function_exists('deleteDirectory')) {
+            @deleteDirectory($dirsource);
+        }
+        if ($fxCode === 'user_exists') return [false, '❌ این نماینده قبلا ربات فعال دارد.'];
+        if ($fxCode === 'cap') return [false, '❌ به سقف ' . (int) $fxReg['cap'] . ' ربات نماینده رسیدیم.'];
+        if ($fxCode === 'token_exists') return [false, '❌ این توکن قبلا ثبت شده است.'];
+        if ($fxCode === 'busy') return [false, '⏳ ساخت ربات دیگری در حال انجام است؛ چند لحظه بعد دوباره تلاش کنید.'];
+        return [false, '❌ خطا در ذخیره ربات: ' . (string) ($fxReg['error'] ?? 'unknown')];
+    }
+    // Token ownership is recorded before setWebhook, so a concurrent request can
+    // never overwrite the webhook of a bot that was not yet registered.
     $domain = $GLOBALS['domainhosts'] ?? 'faoxima.downloadbazi.fun/faoxima';
     $secret = hash('sha256', $tokenRaw . '_faoxima_webhook_secret');
     $wh = telegram('setWebhook', [
@@ -139,26 +171,42 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
         'secret_token' => $secret,
         'allowed_updates' => ['message', 'callback_query', 'edited_message']
     ], $tokenRaw);
-    if (!(is_array($wh) && !empty($wh['ok']))) return [false, '⚠️ ربات ساخته شد ولی ست وبهوک ناموفق بود.'];
-    @file_get_contents("https://api.telegram.org/bot{$tokenRaw}/sendMessage?chat_id={$targetUid}&text=" . urlencode("✅ ربات نماینده شما از طریق مدیریت مرکزی ساخته و فعال شد!"));
-    $datasetting = json_encode([
-        "minpricetime" => 4000, "pricetime" => 4000, "minpricevolume" => 4000, "pricevolume" => 4000,
-        "support_username" => "@support", "Channel_Report" => 0,
-        "cart_info" => "جهت پرداخت مبلغ را به شماره کارت زیر واریز نمایید", 'show_product' => true,
-    ], JSON_UNESCAPED_UNICODE);
-    try {
-        $stmt = $pdo->prepare("INSERT INTO botsaz (id_user, bot_token, admin_ids, username, time, setting, hide_panel) VALUES (:u, :t, :a, :x, :tm, :s, :h)");
-        $stmt->bindValue(':u', (string)$targetUid, PDO::PARAM_STR);
-        $stmt->bindValue(':t', $tokenRaw, PDO::PARAM_STR);
-        $stmt->bindValue(':a', json_encode([(string)$targetUid]), PDO::PARAM_STR);
-        $stmt->bindValue(':x', $remoteUsername, PDO::PARAM_STR);
-        $stmt->bindValue(':tm', date('Y/m/d H:i:s'), PDO::PARAM_STR);
-        $stmt->bindValue(':s', $datasetting, PDO::PARAM_STR);
-        $stmt->bindValue(':h', "{}", PDO::PARAM_STR);
-        $stmt->execute();
-    } catch (\Throwable $e) {
-        return [false, '❌ خطا در ذخیره ربات: ' . $e->getMessage()];
+    if (!(is_array($wh) && !empty($wh['ok']))) {
+        try {
+            $dd = $pdo->prepare("DELETE FROM botsaz WHERE id = :i");
+            $dd->execute([':i' => (int) $fxReg['id']]);
+        } catch (\Throwable $e) {
+        }
+        if (is_dir($dirsource) && function_exists('deleteDirectory')) @deleteDirectory($dirsource);
+        @file_get_contents("https://api.telegram.org/bot{$tokenRaw}/deleteWebhook");
+        return [false, '⚠️ ست وبهوک ناموفق بود؛ ثبت ربات لغو شد. دوباره تلاش کنید.'];
     }
+
+    // Clone the main bot's command menu onto the new reseller bot (best-effort).
+    try {
+        $mainTok = (string)($GLOBALS['ApiToken'] ?? '');
+        $cmds = null;
+        if ($mainTok !== '') {
+            $gm = telegram('getMyCommands', [], $mainTok);
+            if (is_array($gm) && !empty($gm['ok']) && !empty($gm['result']) && is_array($gm['result'])) $cmds = $gm['result'];
+        }
+        if (!is_array($cmds) || !$cmds) {
+            $cmds = [['command' => 'start', 'description' => 'شروع / منوی اصلی']];
+        }
+        @telegram('setMyCommands', ['commands' => $cmds], $tokenRaw);
+    } catch (\Throwable $e) { /* non-fatal */ }
+
+    // Onboarding guide for the reseller (via the reseller bot's own token).
+    try {
+        $welcome = "🎉 <b>ربات نماینده شما ساخته و فعال شد!</b>\n\n"
+            . "🔗 آدرس ربات: https://t.me/{$remoteUsername}\n\n"
+            . "📋 مراحل راه‌اندازی:\n"
+            . "1️⃣ ربات را در گروه گزارشات خود اضافه و ادمین کنید.\n"
+            . "2️⃣ از منوی مدیریت ربات، «گزارشات» را باز کرده و گروه گزارشات را ثبت کنید.\n"
+            . "3️⃣ برای دریافت محصول/پنل، قیمت‌های فروش و شارژ با مدیریت مرکزی در تماس باشید.";
+        @telegram('sendMessage', ['chat_id' => $targetUid, 'text' => $welcome, 'parse_mode' => 'HTML'], $tokenRaw);
+    } catch (\Throwable $e) { /* non-fatal */ }
+
     return [true, "✅ ربات نماینده @{$remoteUsername} برای کاربر {$targetUid} ساخته و فعال شد."];
 }
 
@@ -166,7 +214,8 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
  * Central reseller bot deletion.
  */
 function fx_reseller_delete_bot(int $targetUid): array {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
+
     $contentbto = select("botsaz", "*", "id_user", $targetUid, "select", ['cache' => false]);
     if (!$contentbto) return [false, '❌ رباتی برای این نماینده یافت نشد.'];
     $root = REFACTORED_LEGACY_ROOT;
@@ -175,7 +224,7 @@ function fx_reseller_delete_bot(int $targetUid): array {
     if (!empty($contentbto['bot_token'])) @file_get_contents("https://api.telegram.org/bot{$contentbto['bot_token']}/deletewebhook");
     $stmt = $pdo->prepare("DELETE FROM botsaz WHERE id_user = :u");
     $stmt->execute([':u' => (string)$targetUid]);
-    return [true, '❌ ربات نماینده با موفقیت حذف شد.'];
+    return [true, '✅ ربات نماینده با موفقیت حذف شد.'];
 }
 
 function fx_render_reseller_management_button(): array {
@@ -210,18 +259,34 @@ function fx_res_list_rows(array $resellers): array {
     $rows = [];
     foreach ($resellers as $r) {
         $bal = number_format(intval($r['Balance'] ?? 0));
-        $rows[] = [['text' => "@{$r['username']} | 💰{$bal}", 'callback_data' => "fx_res_sel_{$r['id_user']}"]];
+        $debt = intval($r['current_debt'] ?? 0);
+        $cfgs = intval($r['active_cfgs'] ?? 0);
+        $mark = ($r['Balance'] === null && !isset($r['agent'])) ? '⚠️' : '✅';
+        $dir = (defined('REFACTORED_LEGACY_ROOT') ? REFACTORED_LEGACY_ROOT : '') . "/vpnbot/{$r['id_user']}{$r['username']}";
+        if ($dir === '' || !is_dir($dir)) $mark = '⚠️';
+        $suffix = ($debt > 0 || (string)($r['debt_mode'] ?? '') === 'debt')
+            ? ' | 💸 ' . number_format($debt)
+            : '';
+        $label = "{$mark} @{$r['username']} | 🧩{$cfgs} | 💰{$bal}{$suffix}";
+        if (function_exists('mb_strlen') && mb_strlen($label) > 60) $label = mb_substr($label, 0, 57) . '…';
+        $rows[] = [['text' => $label, 'callback_data' => "fx_res_sel_{$r['id_user']}"]];
     }
     $rows[] = [['text' => '➕ ساخت ربات نماینده', 'callback_data' => 'fx_res_create_start']];
     $rows[] = fx_res_back_admin_row();
     return $rows;
 }
 
-function fx_res_product_rows(string $rid): array {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+function fx_res_product_rows(string $rid, int $page = 1): array {
+    global $pdo;
+
     $rows = [];
+    $page = max(1, $page);
+    $per = 30;
+    $off = ($page - 1) * $per;
+    $total = 0;
     try {
-        $stmt = $pdo->query("SELECT id, name_product, agent FROM product LIMIT 30");
+        $total = (int)$pdo->query("SELECT COUNT(*) FROM product")->fetchColumn();
+        $stmt = $pdo->query("SELECT id, name_product, agent FROM product ORDER BY id ASC LIMIT {$per} OFFSET {$off}");
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
             $label = (string)$p['name_product'];
             if (isset($p['agent']) && $p['agent'] !== 'all' && (string)$p['agent'] !== (string)$rid) {
@@ -230,15 +295,25 @@ function fx_res_product_rows(string $rid): array {
             $rows[] = [['text' => $label, 'callback_data' => "fx_res_set_prod_{$rid}_{$p['id']}"]];
         }
     } catch (\Throwable $e) {}
+    $nav = [];
+    if ($page > 1) $nav[] = ['text' => '⬅️ صفحه قبل', 'callback_data' => "fx_res_prodpage_{$rid}_" . ($page - 1)];
+    if ($page * $per < $total) $nav[] = ['text' => 'صفحه بعد ➡️', 'callback_data' => "fx_res_prodpage_{$rid}_" . ($page + 1)];
+    if ($nav) $rows[] = $nav;
     $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
     return $rows;
 }
 
-function fx_res_panel_rows(string $rid): array {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+function fx_res_panel_rows(string $rid, int $page = 1): array {
+    global $pdo;
+
     $rows = [];
+    $page = max(1, $page);
+    $per = 30;
+    $off = ($page - 1) * $per;
+    $total = 0;
     try {
-        $stmt = $pdo->query("SELECT id, name_panel, agent FROM marzban_panel LIMIT 30");
+        $total = (int)$pdo->query("SELECT COUNT(*) FROM marzban_panel")->fetchColumn();
+        $stmt = $pdo->query("SELECT id, name_panel, agent FROM marzban_panel ORDER BY id ASC LIMIT {$per} OFFSET {$off}");
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $p) {
             $label = (string)$p['name_panel'];
             if (isset($p['agent']) && $p['agent'] !== 'all' && (string)$p['agent'] !== (string)$rid) {
@@ -247,6 +322,10 @@ function fx_res_panel_rows(string $rid): array {
             $rows[] = [['text' => $label, 'callback_data' => "fx_res_set_panel_{$rid}_{$p['id']}"]];
         }
     } catch (\Throwable $e) {}
+    $nav = [];
+    if ($page > 1) $nav[] = ['text' => '⬅️ صفحه قبل', 'callback_data' => "fx_res_panelpage_{$rid}_" . ($page - 1)];
+    if ($page * $per < $total) $nav[] = ['text' => 'صفحه بعد ➡️', 'callback_data' => "fx_res_panelpage_{$rid}_" . ($page + 1)];
+    if ($nav) $rows[] = $nav;
     $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
     return $rows;
 }
@@ -260,9 +339,10 @@ function fx_res_panel_rows(string $rid): array {
 function fx_res_buyer_services(string $rid, int $limit = 15): array {
     global $pdo;
     $out = [];
+    $rtok = function_exists('fx_reseller_bot_token') ? (string)(fx_reseller_bot_token((int)$rid) ?? '') : '';
     try {
-        $st = $pdo->prepare("SELECT i.id_invoice, i.id_user, i.username, i.name_product, i.Service_location, i.Service_time, i.Volume, i.Status FROM invoice i JOIN user u ON u.id = i.id_user WHERE u.agent = :rid AND i.Status IN ('active','end_of_time','end_of_volume','sendedwarn','send_on_hold') ORDER BY i.time_sell DESC LIMIT " . max(1, (int)$limit));
-        $st->execute([':rid' => (string)$rid]);
+        $st = $pdo->prepare("SELECT i.id_invoice, i.id_user, i.username, i.name_product, i.Service_location, i.Service_time, i.Volume, i.Status FROM invoice i JOIN user u ON u.id = i.id_user WHERE (u.agent = :rid OR u.bottype = :rtok) AND i.Status IN ('active','end_of_time','end_of_volume','sendedwarn','send_on_hold') ORDER BY i.time_sell DESC LIMIT " . max(1, (int)$limit));
+        $st->execute([':rid' => (string)$rid, ':rtok' => $rtok]);
         $out = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } catch (\Throwable $e) {
         $out = [];
@@ -313,10 +393,11 @@ function fx_res_report_data(int $rid): array {
     $sinceWeek  = (int)strtotime('monday this week');
     $sinceMonth = (int)strtotime('first day of this month');
 
+    $rtok = function_exists('fx_reseller_bot_token') ? (string)(fx_reseller_bot_token($rid) ?? '') : '';
     $base = "FROM invoice i
              JOIN user u ON u.id = i.id_user
              LEFT JOIN product p ON p.name_product = i.name_product
-             WHERE u.agent = :rid
+             WHERE (u.agent = :rid OR u.bottype = :rtok)
                AND i.name_product != 'سرویس تست'
                AND i.Status NOT IN ('removebyadmin')
                AND CAST(i.time_sell AS UNSIGNED) >= :since";
@@ -329,7 +410,7 @@ function fx_res_report_data(int $rid): array {
                      COALESCE(SUM(CAST(i.price_product AS DECIMAL(20,0))),0) AS rev,
                      COALESCE(SUM(COALESCE(p.fx_wholesale_price, CAST(i.price_product AS DECIMAL(20,0))),0)) AS cost
                   " . $base);
-            $st->execute([':rid' => (string)$rid, ':since' => (string)$since]);
+            $st->execute([':rid' => (string)$rid, ':rtok' => $rtok, ':since' => (string)$since]);
             $row = $st->fetch(PDO::FETCH_ASSOC);
             if ($row) {
                 $p['count']   = (int)$row['c'];
@@ -349,8 +430,8 @@ function fx_res_report_data(int $rid): array {
                     COUNT(*) AS t
                  FROM invoice i
                  JOIN user u ON u.id = i.id_user
-                 WHERE u.agent = :rid AND i.name_product != 'سرویس تست'");
-        $st->execute([':rid' => (string)$rid]);
+                 WHERE (u.agent = :rid OR u.bottype = :rtok) AND i.name_product != 'سرویس تست'");
+        $st->execute([':rid' => (string)$rid, ':rtok' => $rtok]);
         $row = $st->fetch(PDO::FETCH_ASSOC);
         if ($row) {
             $cfg['active']  = (int)$row['a'];
@@ -407,6 +488,86 @@ function fx_res_render_report(int $from_id, int $message_id, string $rid): void 
 }
 
 /**
+ * Merged account ledger for a reseller: debt movements (fx_debt_log) and
+ * admin wallet operations (Payment_report admin_credit/admin_debit),
+ * newest first. Read-only admin view.
+ */
+function fx_res_ledger_data(int $rid, int $limit = 20): array {
+    global $pdo;
+    $items = [];
+    try {
+        $st = $pdo->prepare("SELECT amount, direction, method, invoice_ref, debt_after, time FROM fx_debt_log WHERE reseller_id = :rid ORDER BY id DESC LIMIT 40");
+        $st->execute([':rid' => $rid]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $amt = (int)$r['amount'];
+            if ($r['direction'] === 'in') {
+                $label = $r['method'] === 'purchase' ? '🧾 خرید عمده' : ($r['method'] === 'adjustment' ? '⚖️ اصلاح حساب' : '📥 افزایش بدهی');
+                $amtTxt = '+' . number_format($amt);
+            } else {
+                $label = $r['method'] === 'settlement' ? '💳 تسویه از بدهی' : ($r['method'] === 'credit' ? '💰 شارژ/تسویه بدهی' : '📤 کاهش بدهی');
+                $amtTxt = '-' . number_format($amt);
+            }
+            if (!empty($r['invoice_ref'])) $label .= ' (' . $r['invoice_ref'] . ')';
+            $items[] = [
+                'ts' => (int)strtotime(str_replace('/', '-', (string)$r['time'])),
+                'label' => $label,
+                'amount' => $amtTxt,
+                'debt_after' => (int)$r['debt_after'],
+                'time' => (string)$r['time'],
+                'kind' => 'debt',
+            ];
+        }
+    } catch (\Throwable $e) { /* leave as-is */ }
+    try {
+        $st = $pdo->prepare("SELECT time, price, Payment_Method FROM Payment_report WHERE id_user = :uid AND payment_Status = 'paid' AND Payment_Method IN ('admin_credit','admin_debit') ORDER BY id DESC LIMIT 40");
+        $st->execute([':uid' => (string)$rid]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $amt = abs((int)round((float)$r['price']));
+            if ($amt <= 0) continue;
+            $isCredit = $r['Payment_Method'] === 'admin_credit';
+            $items[] = [
+                'ts' => (int)strtotime(str_replace('/', '-', (string)$r['time'])),
+                'label' => $isCredit ? '➕ شارژ کیف‌پول (مدیر)' : '➖ کسر کیف‌پول (مدیر)',
+                'amount' => ($isCredit ? '+' : '-') . number_format($amt),
+                'debt_after' => null,
+                'time' => (string)$r['time'],
+                'kind' => 'wallet',
+            ];
+        }
+    } catch (\Throwable $e) { /* leave as-is */ }
+    usort($items, function ($a, $b) { return $b['ts'] <=> $a['ts']; });
+    return array_slice($items, 0, max(1, $limit));
+}
+
+/**
+ * Render the reseller account ledger (edit-in-place, glass UI, read-only).
+ */
+function fx_res_render_ledger(int $from_id, int $message_id, string $rid): void {
+    step('fx_res_ledger', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    $items = fx_res_ledger_data((int)$rid, 20);
+    $st = function_exists('fx_debt_state') ? fx_debt_state((int)$rid) : ['mode' => 'balance', 'current' => 0, 'ceiling' => 0];
+    $bal = number_format(fx_reseller_db_balance((int)$rid));
+    $txt = "📒 <b>دفتر حساب نماینده {$rid}</b>\n"
+        . "💰 موجودی: {$bal} تومان | 💸 بدهی: " . number_format((int)($st['current'] ?? 0)) . " تومان\n";
+    if (empty($items)) {
+        $txt .= "\n📭 هنوز گردشی ثبت نشده است.";
+    } else {
+        $txt .= "\n";
+        foreach ($items as $it) {
+            $ts = $it['ts'] > 0
+                ? ((function_exists('jdate') ? jdate('Y/m/d', $it['ts']) : date('Y/m/d', $it['ts'])) . ' ' . date('H:i', $it['ts']))
+                : $it['time'];
+            $line = "▫️ {$ts} | {$it['label']} | <b>{$it['amount']}</b>";
+            if ($it['kind'] === 'debt' && $it['debt_after'] !== null) $line .= " (بدهی: " . number_format($it['debt_after']) . ")";
+            $txt .= $line . "\n";
+        }
+    }
+    $kb = fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]);
+    Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
+}
+
+/**
  * Render the buyer/service list for a reseller (edit-in-place, glass UI).
  */
 function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
@@ -446,12 +607,27 @@ function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void 
     Editmessagetext($from_id, $message_id, $txt, fx_res_inline_kb($rows), 'HTML');
 }
 
-/** Resolve the reseller id (user.agent) that owns a given invoice. */
+/**
+ * Resolve the reseller id that owns a given invoice.
+ * Tenant model: new signups carry user.agent=<rid>; legacy engine users carry
+ * user.bottype=<reseller bot token>. Both must resolve to the botsaz id_user.
+ */
 function fx_res_buyer_rid($iid): int {
     $nameloc = select("invoice", "*", "id_invoice", $iid, "select");
     if (!is_array($nameloc)) return 0;
     $bu = select("user", "*", "id", $nameloc['id_user'], "select");
-    return is_array($bu) ? intval($bu['agent'] ?? 0) : 0;
+    if (!is_array($bu)) return 0;
+    $agent = (string)($bu['agent'] ?? '');
+    if ($agent !== '' && ctype_digit($agent) && (int)$agent > 0) {
+        $b = select("botsaz", "*", "id_user", (int)$agent, "select", ['cache' => false]);
+        if (is_array($b)) return (int)$agent;
+    }
+    $tok = (string)($bu['bottype'] ?? '');
+    if ($tok !== '') {
+        $b = select("botsaz", "*", "bot_token", $tok, "select", ['cache' => false]);
+        if (is_array($b)) return (int)$b['id_user'];
+    }
+    return ctype_digit($agent) ? (int)$agent : 0;
 }
 
 /**
@@ -531,12 +707,10 @@ function fx_res_exit_to_hub(int $from_id, int $message_id = 0): void {
 }
 
 function fx_res_mgmt_gate($datain, $from_id, $admin_ids, $message_id, $user, $backadmin): bool {
-    $c1 = in_array($from_id, (array)$admin_ids);
-    $c2 = (strpos((string)$datain, 'fx_res_') === 0 || $datain === 'fx_reseller_mgmt_menu' || $datain === 'fx_res_backadmin');
-    if ($c1 && $c2) {
-        return (bool)fx_reseller_mgmt_dispatch((string)$datain, (int)$from_id, (int)$message_id, (array)$user, (string)$backadmin);
-    }
-    return false;
+    if (defined('FX_RESELLER_ID')) return false; // main-admin module only
+    if (!in_array($from_id, (array)$admin_ids)) return false;
+    if (strpos((string)$datain, 'fx_res_') !== 0 && $datain !== 'fx_reseller_mgmt_menu' && $datain !== 'fx_res_backadmin') return false;
+    return (bool)fx_reseller_mgmt_dispatch((string)$datain, (int)$from_id, (int)$message_id, (array)$user, (string)$backadmin);
 }
 
 function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id, array $user, string $backuser): bool {
@@ -582,7 +756,8 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
              ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
             [['text' => '⚙️ تنظیم سقف بدهی', 'callback_data' => "fx_res_debt_ceiling_{$rid}"],
              ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
-            [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"]],
+            [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"],
+             ['text' => '📒 دفتر حساب', 'callback_data' => "fx_res_ledger_{$rid}"]],
             [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
         ]);
         $__fxDebtSt = fx_debt_state($rid);
@@ -590,7 +765,11 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
             ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
             : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
         $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
-        $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان\n🏷️ نوع: {$rUser['agent']}" . $__fxDebtLine;
+        $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
+        $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
+            ? "\n🤖 ربات: @{$__fxBot['username']} | https://t.me/{$__fxBot['username']}"
+            : "\n⚠️ رباتی برای این نماینده ثبت نشده";
+        $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان" . $__fxBotLine . $__fxDebtLine;
         Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
         fx_res_answer_cb();
         return true;
@@ -664,6 +843,30 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         update("user", "Processing_value", $rid, "id", $from_id);
         Editmessagetext($from_id, $message_id, ($ok ? "✅ پنل {$panId} به نماینده {$rid} اختصاص یافت." : "❌ خطا در اختصاص پنل."),
             fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- product/panel list pagination ---
+    if (preg_match('/^fx_res_prodpage_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        $page = max(1, intval($m[2]));
+        $isWh = ((string)($user['step'] ?? '') === 'fx_res_whprice_list');
+        step($isWh ? 'fx_res_whprice_list' : 'fx_res_prod_list', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        $title = $isWh
+            ? "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید (صفحه {$page}):"
+            : "📦 محصول را برای اختصاص به نماینده {$rid} انتخاب کنید (صفحه {$page}):";
+        Editmessagetext($from_id, $message_id, $title, fx_res_inline_kb(fx_res_product_rows($rid, $page)), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_panelpage_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        $page = max(1, intval($m[2]));
+        step('fx_res_panel_list', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🔌 پنل را برای اختصاص به نماینده {$rid} انتخاب کنید (صفحه {$page}):", fx_res_inline_kb(fx_res_panel_rows($rid, $page)), 'HTML');
         fx_res_answer_cb();
         return true;
     }
@@ -839,6 +1042,13 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         return true;
     }
 
+    // --- account ledger (debt movements + admin wallet ops) ---
+    if (preg_match('/^fx_res_ledger_(\d+)$/', $datain, $m)) {
+        fx_res_render_ledger($from_id, $message_id, $m[1]);
+        fx_res_answer_cb();
+        return true;
+    }
+
     // --- settlement: register a payment/deposit against the reseller's debt ---
     if (preg_match('/^fx_res_settle_(\d+)$/', $datain, $m)) {
         $rid = intval($m[1]);
@@ -898,7 +1108,6 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
 
 function fx_reseller_text_handler(string $text, array $user, int $from_id, string $backuser): bool {
     global $ApiToken, $pdo;
-    @file_put_contents("/tmp/fxdbg_txt.log", "[TXT_H] step=" . (string)($user['step'] ?? '') . " text=" . substr($text,0,40) . " from=$from_id\n", FILE_APPEND);
 
     if ($user['step'] === 'fx_res_do_credit') {
         if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
@@ -907,6 +1116,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         $amt = intval($text);
         $debtUsed = 0;
         try {
+            $pdo->beginTransaction();
             $dbt = fx_debt_state($rid);
             if ($dbt['mode'] === 'debt' && $dbt['current'] > 0) {
                 $debtUsed = min($amt, $dbt['current']);
@@ -920,19 +1130,24 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
                     @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
                 }
             }
+            $creditRemainder = $amt - $debtUsed;
+            if ($creditRemainder > 0 && !fx_reseller_db_credit($rid, $creditRemainder, 'admin_credit', $ApiToken)) {
+                throw new \RuntimeException('wallet credit failed');
+            }
+            $pdo->commit();
         } catch (\Throwable $e) {
-            $debtUsed = 0;
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('[FX_RES] credit step failed rid=' . $rid . ': ' . $e->getMessage());
+            sendmessage($from_id, "❌ خطا در شارژ. عملیات انجام نشد.", $backuser, 'html');
+            fx_res_exit_to_hub($from_id);
+            return true;
         }
-        if (fx_reseller_db_credit($rid, $amt - $debtUsed, 'admin_credit', $ApiToken) || $debtUsed > 0) {
-            $msg = $debtUsed > 0
-                ? "✅ تسویه شد: " . number_format($debtUsed) . " تومان بدهی نماینده {$rid} کسر شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")
-                : "✅ مبلغ " . number_format($amt) . " تومان به نماینده {$rid} شارژ شد.";
-            sendmessage($from_id, $msg, $backuser, 'html');
-            // FX-ROUTE: notify the agent through the RESELLER bot's own token
-            sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML', fx_reseller_bot_token($rid));
-        } else {
-            sendmessage($from_id, "❌ خطا در شارژ.", $backuser, 'html');
-        }
+        $msg = $debtUsed > 0
+            ? "✅ تسویه شد: " . number_format($debtUsed) . " تومان بدهی نماینده {$rid} کسر شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")
+            : "✅ مبلغ " . number_format($amt) . " تومان به نماینده {$rid} شارژ شد.";
+        sendmessage($from_id, $msg, $backuser, 'html');
+        // FX-ROUTE: notify the agent through the RESELLER bot's own token
+        sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML', fx_reseller_bot_token($rid));
         fx_res_exit_to_hub($from_id);
         return true;
     }
@@ -945,6 +1160,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         $rid = intval($user['Processing_value']);
         $before = 0; $after = 0; $applied = 0; $excess = 0; $ceiling = 0;
         try {
+            $pdo->beginTransaction();
             $st = fx_debt_state($rid);
             $before = $st['current'];
             $ceiling = (int)($st['ceiling'] ?? 0);
@@ -965,10 +1181,12 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
                 @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
                 @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
             }
-            if ($excess > 0) {
-                fx_reseller_db_credit($rid, $excess, 'admin_credit', $ApiToken);
+            if ($excess > 0 && !fx_reseller_db_credit($rid, $excess, 'admin_credit', $ApiToken)) {
+                throw new \RuntimeException('excess credit failed');
             }
+            $pdo->commit();
         } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             error_log('[FX_DEBT] settle failed rid=' . $rid . ' amt=' . $amt . ': ' . $e->getMessage());
             sendmessage($from_id, "❌ خطا در ثبت تسویه‌حساب.", $backuser, 'html');
             fx_res_exit_to_hub($from_id);
@@ -1120,7 +1338,8 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
  * safety net after the bootstrap_1 gate. Returns true when $text was consumed.
  */
 function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string $backadmin): bool {
-    global $pdo; error_log("[FXENTRY2] len=".strlen($text)." from=".$from_id);
+    global $pdo;
+
     if (defined('FX_RESELLER_ID')) return false; // main-admin module only
     $text = trim($text);
     if ($text === '' || !($pdo instanceof PDO)) return false;
@@ -1142,7 +1361,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
 
     // --- section entry from the hub (reply-kb button text) ---
     if ($text === '📱 مدیریت ربات‌های نمایندگی') {
-        error_log("[FXLBL2] from=".$from_id); fx_res_hide_reply_kb($from_id);
+        fx_res_hide_reply_kb($from_id);
         step('home', $from_id);
         update("user", "Processing_value", 0, "id", $from_id);
         sendmessage($from_id, "🏢 <b>مدیریت ربات‌های نماینده</b>\nیک نماینده را انتخاب کنید یا ربات جدید بسازید:", fx_res_inline_kb(fx_res_list_rows(fx_reseller_get_all())), 'HTML');
@@ -1150,6 +1369,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
     }
 
     // --- text-entry steps (primary consumer: bootstrap_1 gate; this is a net) ---
+    // (fx_res_my_do_retail is consumed by fx_myprices_gate in fx_myprices.php)
     if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'], true)) {
         if (fx_reseller_text_handler($text, (array)$user, $from_id, $backadmin)) {
             return true;
@@ -1157,7 +1377,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
     }
 
     // --- /cancel inside the section ---
-    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm', 'fx_res_report'], true)) {
+    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm', 'fx_res_report', 'fx_res_ledger'], true)) {
         fx_res_exit_to_hub($from_id);
         return true;
     }

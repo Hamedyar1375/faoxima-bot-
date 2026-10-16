@@ -993,44 +993,57 @@ if (false) {
     }
     step('home', $from_id);
 } elseif ($text == $textbotlang['Admin']['btnkeyboardadmin']['managruser'] || $datain == "backlistuser") {
-    $keyboardtypelistuser = json_encode([
-        'inline_keyboard' => [
-            [
-                ['text' => "کاربران دارای موجودی", 'callback_data' => "balanceuserlist"],
-            ],
-            [
-                ['text' => "کاربران دارای زیرمجموعه", 'callback_data' => "listrefral"],
-            ],
-            [
-                ['text' => "کاربران شماره کارت فعال", 'callback_data' => "cartuserlist"],
-            ],
-            [
-                ['text' => "کاربران با موجودی منفی", 'callback_data' => "zerobalance"],
-            ],
-            [
-                ['text' => "کاربران دارای اشتراک فعال", 'callback_data' => "activesubuserlist"],
-            ],
-            [
-                ['text' => "لیست نمایندگان", 'callback_data' => "agentlistusers"],
-                ['text' => "لیست کل کاربران", 'callback_data' => "alllistusers"],
-            ],
-            [
-                ['text' => "🛍 جستجو سفارش", 'callback_data' => "searchorder"],
-                ['text' => "👥 شارژ همگانی", 'callback_data' => "balanceaddall"],
-            ],
-            [
-                ['text' => "🔍 جستجو کاربر", 'callback_data' => "searchuser"],
-                ['text' => "📨 بخش ارسال پیام", 'callback_data' => "systemsms"],
-            ],
-            [
-                ['text' => "🔋 حجم یا زمان همگانی", 'callback_data' => "voloume_or_day_all"],
-            ],
-            [
-                ['text' => "🔙 بازگشت به منوی قبل", 'callback_data' => "admin_usershub"],
-                ['text' => "🏠 منوی مدیریت", 'callback_data' => "adm_hub_main"],
-            ]
-        ]
-    ]);
+    // FX-RESELLER (2026-10-16): full user-menu RESTORED (agents list + mass tools).
+    // The reduced menu applies only when FX_RESELLER_LOCK is enabled.
+    $rxListUserRows = [
+        [
+            ['text' => "کاربران دارای موجودی", 'callback_data' => "balanceuserlist"],
+        ],
+        [
+            ['text' => "کاربران دارای زیرمجموعه", 'callback_data' => "listrefral"],
+        ],
+        [
+            ['text' => "کاربران شماره کارت فعال", 'callback_data' => "cartuserlist"],
+        ],
+        [
+            ['text' => "کاربران با موجودی منفی", 'callback_data' => "zerobalance"],
+        ],
+        [
+            ['text' => "کاربران دارای اشتراک فعال", 'callback_data' => "activesubuserlist"],
+        ],
+    ];
+    if (defined('FX_RESELLER_LOCK') && FX_RESELLER_LOCK && defined('FX_RESELLER_ID')) {
+        $rxListUserRows[] = [
+            ['text' => "لیست کل کاربران", 'callback_data' => "alllistusers"],
+        ];
+        $rxListUserRows[] = [
+            ['text' => "🛍 جستجو سفارش", 'callback_data' => "searchorder"],
+        ];
+        $rxListUserRows[] = [
+            ['text' => "🔍 جستجو کاربر", 'callback_data' => "searchuser"],
+        ];
+    } else {
+        $rxListUserRows[] = [
+            ['text' => "لیست نمایندگان", 'callback_data' => "agentlistusers"],
+            ['text' => "لیست کل کاربران", 'callback_data' => "alllistusers"],
+        ];
+        $rxListUserRows[] = [
+            ['text' => "🛍 جستجو سفارش", 'callback_data' => "searchorder"],
+            ['text' => "👥 شارژ همگانی", 'callback_data' => "balanceaddall"],
+        ];
+        $rxListUserRows[] = [
+            ['text' => "🔍 جستجو کاربر", 'callback_data' => "searchuser"],
+            ['text' => "📨 بخش ارسال پیام", 'callback_data' => "systemsms"],
+        ];
+        $rxListUserRows[] = [
+            ['text' => "🔋 حجم یا زمان همگانی", 'callback_data' => "voloume_or_day_all"],
+        ];
+    }
+    $rxListUserRows[] = [
+        ['text' => "🔙 بازگشت به منوی قبل", 'callback_data' => "admin_usershub"],
+        ['text' => "🏠 منوی مدیریت", 'callback_data' => "adm_hub_main"],
+    ];
+    $keyboardtypelistuser = json_encode(['inline_keyboard' => $rxListUserRows]);
     $text_list_users = "📌 از لیست زیر یک گزینه را انتخاب نمایید";
     if ($datain == "backlistuser") {
         Editmessagetext($from_id, $message_id, $text_list_users, $keyboardtypelistuser);
@@ -1042,7 +1055,7 @@ if (false) {
     $page = 1;
     $items_per_page = 10;
     $start_index = ($page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE ({$FXU_SCOPE}) LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE ({$FXU_SCOPE}) LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1107,7 +1120,7 @@ if (false) {
     $items_per_page = 10;
     $start_index = ($page - 1) * $items_per_page;
     if ($typeagent == "all") {
-        $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+        $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     } else {
         $_s=(int)$start_index; $_p=(int)$items_per_page;
         $_stmt = $connect->prepare("SELECT * FROM user WHERE agent = ? AND ({$FXU_SCOPE}) LIMIT ?, ?");
@@ -1135,7 +1148,7 @@ if (false) {
     }
     $start_index = ($next_page - 1) * $items_per_page;
     if ($typeagent == "all") {
-        $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+        $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     } else {
         $_s=(int)$start_index; $_p=(int)$items_per_page;
         $_stmt = $connect->prepare("SELECT * FROM user WHERE agent = ? AND ({$FXU_SCOPE}) LIMIT ?, ?");
@@ -1162,7 +1175,7 @@ if (false) {
     }
     $start_index = ($next_page - 1) * $items_per_page;
     if ($typeagent == "all") {
-        $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+        $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE agent != 'f' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     } else {
         $_s=(int)$start_index; $_p=(int)$items_per_page;
         $_stmt = $connect->prepare("SELECT * FROM user WHERE agent = ? AND ({$FXU_SCOPE}) LIMIT ?, ?");
@@ -1183,7 +1196,7 @@ if (false) {
     $page = 1;
     $items_per_page = 10;
     $start_index = ($page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1201,7 +1214,7 @@ if (false) {
         $next_page = $page + 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1218,7 +1231,7 @@ if (false) {
         $next_page = $page - 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE Balance != '0' AND ({$FXU_SCOPE})  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1231,7 +1244,7 @@ if (false) {
     $page = 1;
     $items_per_page = 10;
     $start_index = ($page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1249,7 +1262,7 @@ if (false) {
         $next_page = $page + 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1266,7 +1279,7 @@ if (false) {
         $next_page = $page - 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT DISTINCT user.* FROM user INNER JOIN invoice ON invoice.id_user = user.id WHERE ({$FXU_SCOPE}) AND invoice.Status IN ('active','sendedwarn','send_on_hold') LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1279,7 +1292,7 @@ if (false) {
     $page = 1;
     $items_per_page = 10;
     $start_index = ($page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0'  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0' AND ({$FXU_SCOPE}) LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1297,7 +1310,7 @@ if (false) {
         $next_page = $page + 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0'  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0' AND ({$FXU_SCOPE}) LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1314,7 +1327,7 @@ if (false) {
         $next_page = $page - 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = (function() use ($connect, $start_index, $items_per_page) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0'  LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
+    $result = (function() use ($connect, $start_index, $items_per_page, $FXU_SCOPE) { $_s=(int)$start_index; $_p=(int)$items_per_page; $_stmt=$connect->prepare("SELECT * FROM user WHERE affiliatescount != '0' AND ({$FXU_SCOPE}) LIMIT ?,?"); $_stmt->bind_param("ii",$_s,$_p); $_stmt->execute(); $r=$_stmt->get_result(); $_stmt->close(); return $r; })();
     $rows = [];
     while ($row = mysqli_fetch_assoc($result)) {
         $rows[] = $row;
@@ -1521,6 +1534,10 @@ if (false) {
     $_blockfake_chat_id = $update['callback_query']['message']['chat']['id'] ?? $from_id;
     $_blockfake_thread_id = (int) ($update['callback_query']['message']['message_thread_id'] ?? 0);
     $userdata = select("user", "*", "id", $iduser, "select");
+    if (!is_array($userdata) || (function_exists('rxUserInTenantScope') && !rxUserInTenantScope($iduser))) {
+        nm_adminInstantReply($from_id, "❌ کاربر یافت نشد یا در محدوده دسترسی شما نیست.", null, 'HTML');
+        return;
+    }
     if ($userdata['User_Status'] == "block") {
         nm_adminInstantReply($from_id, $textbotlang['Admin']['ManageUser']['BlockedUser'], null, 'HTML');
         return;
@@ -1556,6 +1573,10 @@ if (false) {
 } elseif (preg_match('/acceptblock_(\w+)/', $datain, $dataget)) {
 
     $iduser = $dataget[1];
+    if (function_exists('rxUserInTenantScope') && !rxUserInTenantScope($iduser)) {
+        nm_adminInstantReply($from_id, "❌ کاربر یافت نشد یا در محدوده دسترسی شما نیست.", null, 'HTML');
+        return;
+    }
     update("user", "Processing_value", $iduser, "id", $from_id);
     update("user", "User_Status", "block", "id", $iduser);
     nm_adminInstantReply($from_id, $textbotlang['Admin']['ManageUser']['BlockUser'], $backadmin, 'HTML');
@@ -2076,6 +2097,10 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/addbalamceuser_(\w+)/', $datain, $datagetr) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
     $id_order = $datagetr[1];
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
+    if (!is_array($Payment_report) || (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report))) {
+        nm_adminInstantReply($from_id, "❌ فاکتور پرداخت یافت نشد یا در محدوده دسترسی شما نیست.", null, 'HTML');
+        return;
+    }
     $_addbal_chat_id = !empty($Payment_report['report_chat_id']) ? $Payment_report['report_chat_id'] : ($update['callback_query']['message']['chat']['id'] ?? $from_id);
     $_addbal_msg_id = !empty($Payment_report['report_message_id']) ? (int) $Payment_report['report_message_id'] : (int) $message_id;
     $_addbal_thread_id = !empty($Payment_report['report_thread_id']) ? (int) $Payment_report['report_thread_id'] : (int) ($update['callback_query']['message']['message_thread_id'] ?? 0);
@@ -2099,7 +2124,7 @@ $iduser  در ربات  رفع مسدود گردید
         return;
     }
     $Payment_report = select("Payment_report", "*", "id_order", $user['Processing_value'], "select", ['cache' => false]);
-    if (!is_array($Payment_report) || empty($Payment_report['id_user'])) {
+    if (!is_array($Payment_report) || empty($Payment_report['id_user']) || (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report))) {
         step('home', $from_id);
         nm_adminInstantReply($from_id, "❌ فاکتور پرداخت یافت نشد.", $keyboardadmin, 'HTML');
         return;

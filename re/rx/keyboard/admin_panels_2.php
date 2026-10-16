@@ -165,6 +165,10 @@ function KeyboardProduct($location,$query,$pricediscount,$datakeyboard,$statuscu
             $valuetow = "";
         }
     $productRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    // FX-RES-VIS: hide products this reseller disabled for their customers
+    if (defined('FX_RESELLER_ID') && FX_RESELLER_ID && function_exists('fx_res_visibility_filter_rows')) {
+        $productRows = fx_res_visibility_filter_rows($productRows);
+    }
     usort($productRows, function ($a, $b) {
         $pa = (int)($a['position'] ?? 0);
         $pb = (int)($b['position'] ?? 0);

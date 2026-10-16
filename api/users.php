@@ -3,6 +3,7 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../function.php';
 require_once __DIR__ . '/../botapi.php';
+require_once __DIR__ . '/../re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
 
 
 header('Content-Type: application/json; charset=UTF-8');
@@ -729,13 +730,16 @@ switch ($data['actions'] ?? '') {
 
         $data['chat_id'] = $chatIdRaw;
         $data['token'] = $tokenRaw;
-        $chec_kbot = select("botsaz", "*", "id_user", $data['chat_id'], "count");
-        $check_bots = select("botsaz", "*", null, null, "count");
 
-
-        if ($check_bots >= 15)
-            sendJsonResponse(false, "You are allowed to create 15 representative bots in your bot.");
-        if ($chec_kbot != 0)
+        // FX-RESELLER: central cap/count — shared with the admin panel and the bot UI.
+        $fxCap = fx_reseller_bot_cap();
+        $fxOwn = fx_reseller_bot_count_owner($pdo, (string) $data['chat_id']);
+        $fxTotal = $fxOwn >= 0 ? fx_reseller_bot_count_total($pdo) : -1;
+        if ($fxOwn < 0 || $fxTotal < 0)
+            sendJsonResponse(false, "Failed to read reseller bot counters", [], 500);
+        if ($fxTotal >= $fxCap)
+            sendJsonResponse(false, "You are allowed to create {$fxCap} representative bots in your bot.");
+        if ($fxOwn != 0)
             sendJsonResponse(false, "You already have an active bot.");
         $getInfoToken = json_decode(file_get_contents("https://api.telegram.org/bot{$data['token']}/getme"), true);
         if ($getInfoToken == false or empty($getInfoToken['ok']) || empty($getInfoToken['result']['username']))
@@ -747,12 +751,11 @@ switch ($data['actions'] ?? '') {
             error_log('[api/users active_bot_agent] rejected unsafe bot username from getMe: ' . substr($remoteUsername, 0, 64));
             sendJsonResponse(false, "Bot username unsafe", [], 400);
         }
-        $check_exits_token = select("botsaz", "*", "bot_token", $data['token'], "count");
-        if ($check_exits_token != 0)
+        $fxTok = fx_reseller_bot_count_token($pdo, $data['token']);
+        if ($fxTok < 0)
+            sendJsonResponse(false, "Failed to read reseller bot counters", [], 500);
+        if ($fxTok != 0)
             sendJsonResponse(false, "Token already exists");
-        $admin_ids = json_encode(array(
-            $data['chat_id']
-        ));
         $destination = dirname(getcwd());
         $defaultSource = $destination . '/vpnbot/Default';
         $dirsource = "$destination/vpnbot/{$data['chat_id']}{$getInfoToken['result']['username']}";
@@ -780,28 +783,23 @@ switch ($data['actions'] ?? '') {
         $contentconfig = file_get_contents($configFile);
         $new_code = str_replace('BotTokenNew', $data['token'], $contentconfig);
         file_put_contents($configFile, $new_code);
+
+        // FX-RESELLER: atomic re-check + insert (named lock inside the registry).
+        $fxReg = fx_reseller_bot_register($pdo, (string) $data['chat_id'], $data['token'], (string) $getInfoToken['result']['username']);
+        if (!$fxReg['ok']) {
+            $fxCode = (string) ($fxReg['code'] ?? '');
+            if ($fxCode === 'db' && is_dir($dirsource) && function_exists('deleteDirectory')) {
+                @deleteDirectory($dirsource);
+            }
+            if ($fxCode === 'user_exists') sendJsonResponse(false, "You already have an active bot.");
+            if ($fxCode === 'cap') sendJsonResponse(false, "You are allowed to create " . (int) $fxReg['cap'] . " representative bots in your bot.");
+            if ($fxCode === 'token_exists') sendJsonResponse(false, "Token already exists");
+            if ($fxCode === 'busy') sendJsonResponse(false, "Server is busy creating another bot, try again shortly.");
+            sendJsonResponse(false, "Failed to save bot record", [], 500);
+        }
+
         telegram('setWebhook', ['url' => "https://$domainhosts/vpnbot/{$data['chat_id']}{$getInfoToken['result']['username']}/index.php"], $data['token']);
         @file_get_contents("https://api.telegram.org/bot{$data['token']}/sendmessage?chat_id={$data['chat_id']}&text=✅ کاربر عزیز ربات شما با موفقیت نصب گردید.");
-        $datasetting = json_encode(array(
-            "minpricetime" => 4000,
-            "pricetime" => 4000,
-            "minpricevolume" => 4000,
-            "pricevolume" => 4000,
-            "support_username" => "@support",
-            "Channel_Report" => 0,
-            "cart_info" => "جهت پرداخت مبلغ را به شماره کارت زیر واریز نمایید",
-            'show_product' => true,
-        ));
-        $value = "{}";
-        $stmt = $pdo->prepare("INSERT INTO botsaz (id_user,bot_token,admin_ids,username,time,setting,hide_panel) VALUES (:id_user,:bot_token,:admin_ids,:username,:time,:setting,:hide_panel)");
-        $stmt->bindParam(':id_user', $data['chat_id'], PDO::PARAM_STR);
-        $stmt->bindParam(':bot_token', $data['token'], PDO::PARAM_STR);
-        $stmt->bindParam(':admin_ids', $admin_ids);
-        $stmt->bindParam(':username', $getInfoToken['result']['username'], PDO::PARAM_STR);
-        $stmt->bindParam(':time', date('Y/m/d H:i:s'), PDO::PARAM_STR);
-        $stmt->bindParam(':setting', $datasetting, PDO::PARAM_STR);
-        $stmt->bindParam(':hide_panel', $value, PDO::PARAM_STR);
-        $stmt->execute();
         sendJsonResponse(true, "Successful");
         break;
     case "remove_agent_bot":

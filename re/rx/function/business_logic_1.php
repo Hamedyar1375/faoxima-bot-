@@ -183,6 +183,49 @@ function rxSettingFlag($key, $default = true)
 function rxReceiptDeliveryRoute($topicKey = 'receiptreport')
 {
     global $pdo, $setting;
+
+    // FX-RESELLER (2026-10-15): receipts of reseller-bot customers must never be
+    // routed to the MAIN bot's report group — that group belongs to another bot
+    // token, so Telegram rejects the send ("chat not found") and the receipt is
+    // lost. Prefer the per-reseller Channel_Report stored in botsaz.setting;
+    // when unset/0 return topic_enabled=false so callers fall back to private
+    // delivery to botsaz.admin_ids using the ambient (reseller) bot token.
+    // No thread mapping here: topicid thread ids belong to the main group.
+    if (defined('FX_RESELLER_ID')) {
+        $fxRow = null;
+        if ($pdo instanceof PDO) {
+            try {
+                $stmt = $pdo->prepare('SELECT setting FROM botsaz WHERE id_user = ? LIMIT 1');
+                $stmt->execute([(string) FX_RESELLER_ID]);
+                $fxJson = $stmt->fetchColumn();
+                if (is_string($fxJson) && $fxJson !== '') {
+                    $fxDecoded = json_decode($fxJson, true);
+                    if (is_array($fxDecoded)) {
+                        $fxRow = $fxDecoded;
+                    }
+                }
+            } catch (Throwable $e) {
+                $fxRow = null;
+            }
+        }
+        $fxEnabled = !array_key_exists('receipt_topic_reporting', (array) $fxRow)
+            || !in_array(strtolower(trim((string) ($fxRow['receipt_topic_reporting'] ?? ''))), ['0', 'off', 'false', 'no'], true);
+        $fxChatId = $fxEnabled ? trim((string) ($fxRow['Channel_Report'] ?? '')) : '';
+        if ($fxChatId === '0') {
+            $fxChatId = '';
+        }
+        // Thread ids for the reseller's OWN group live in botsaz.setting.topicid
+        // (created by the channel-setup flow); no fallback to the main group's map.
+        $fxThreadId = null;
+        if ($fxChatId !== '' && isset($fxRow['topicid']) && is_array($fxRow['topicid']) && isset($fxRow['topicid'][$topicKey])) {
+            $fxThreadCandidate = (int) $fxRow['topicid'][$topicKey];
+            if ($fxThreadCandidate > 0) {
+                $fxThreadId = $fxThreadCandidate;
+            }
+        }
+        return ['topic_enabled' => $fxChatId !== '', 'chat_id' => $fxChatId, 'thread_id' => $fxThreadId];
+    }
+
     $row = null;
     if ($pdo instanceof PDO) {
         try {

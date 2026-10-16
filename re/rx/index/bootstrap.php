@@ -138,7 +138,7 @@ if ($from_id != 0 && $isNewUser) {
     $stmt->bindParam(':limit_usertest_all', $setting['limit_usertest_all']);
     $stmt->bindParam(':username', $username);
     $stmt->bindParam(':showcard', $setting['showcard']);
-    $stmt->bindParam(':fx_agent', defined('FX_RESELLER_ID') ? FX_RESELLER_ID : 'f');
+$stmt->bindValue(':fx_agent', defined('FX_RESELLER_ID') ? FX_RESELLER_ID : 'f');
     $stmt->bindParam(':date', $date);
     $stmt->bindParam(':verifycode', $valueverify);
     $stmt->bindParam(':codeInvitation', $randomString);
@@ -147,7 +147,7 @@ if ($from_id != 0 && $isNewUser) {
     $stmt->bindParam(':processing_value_one', $initialProcessingValueOne);
     $stmt->bindParam(':processing_value_tow', $initialProcessingValueTow);
     $stmt->bindParam(':processing_value_four', $initialProcessingValueFour);
-    $stmt->execute();
+$stmt->execute();
     clearSelectCache('user');
     $user = select("user", "*", "id", $from_id, "select", ['cache' => false]);
     $isNewUser = !is_array($user);
@@ -344,7 +344,9 @@ if (!function_exists('createForumTopicIfMissing')) {
             $context = is_array($response) ? json_encode($response) : 'empty response';
             error_log("Failed to create forum topic {$reportKey}: {$context}");
 
-            if (is_array($response) && isset($response['error_code']) && in_array($response['error_code'], [400, 403], true)) {
+            // FX-RESELLER: never mark the global topicid rows (-1) from a reseller
+            // process — they describe the MAIN bot's group, not this tenant's.
+            if (!defined('FX_RESELLER_ID') && is_array($response) && isset($response['error_code']) && in_array($response['error_code'], [400, 403], true)) {
                 update("topicid", "idreport", -1, "report", $reportKey);
             }
 
@@ -352,17 +354,33 @@ if (!function_exists('createForumTopicIfMissing')) {
         }
 
         $threadId = $response['result']['message_thread_id'] ?? null;
-        if ($threadId !== null) {
+        if ($threadId !== null && !defined('FX_RESELLER_ID')) {
             update("topicid", "idreport", $threadId, "report", $reportKey);
         }
     }
 }
 
-createForumTopicIfMissing($porsantreport, 'porsantreport', $textbotlang['Admin']['affiliates']['titletopic'], $setting['Channel_Report']);
-createForumTopicIfMissing($reportnight, 'reportnight', $textbotlang['Admin']['report']['reportnight'], $setting['Channel_Report']);
-createForumTopicIfMissing($reportcron, 'reportcron', $textbotlang['Admin']['report']['reportcron'], $setting['Channel_Report']);
-createForumTopicIfMissing($reportbackup, 'backupfile', "🤖 بکاپ ربات نماینده", $setting['Channel_Report']);
-createForumTopicIfMissing($receiptreport, 'receiptreport', $textbotlang['Admin']['report']['receiptreport'], $setting['Channel_Report']);
+if (defined('FX_RESELLER_ID')) {
+    // FX-RESELLER (2026-10-15): the topicid table + $setting['Channel_Report'] belong
+    // to the MAIN bot's group. With a reseller token, touching them either fails
+    // (chat not found) or poisons the main map with -1. Reseller topics live in
+    // botsaz.setting (created by the reseller's own channel-setup flow); load them
+    // here so reseller-aware notification senders can resolve thread ids.
+    $__fxTopicRow = select("botsaz", "setting", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+    $__fxTopicSetting = is_array($__fxTopicRow) ? json_decode((string)($__fxTopicRow['setting'] ?? ''), true) : null;
+    if (is_array($__fxTopicSetting) && is_array($__fxTopicSetting['topicid'] ?? null)) {
+        foreach (['buyreport', 'otherservice', 'reporttest', 'otherreport', 'errorreport', 'paymentreport', 'receiptreport', 'porsantreport', 'reportnight', 'reportcron', 'backupfile'] as $__fxTopicKey) {
+            ${$__fxTopicKey} = (int)($__fxTopicSetting['topicid'][$__fxTopicKey] ?? 0);
+        }
+    }
+    unset($__fxTopicRow, $__fxTopicSetting);
+} else {
+    createForumTopicIfMissing($porsantreport, 'porsantreport', $textbotlang['Admin']['affiliates']['titletopic'], $setting['Channel_Report']);
+    createForumTopicIfMissing($reportnight, 'reportnight', $textbotlang['Admin']['report']['reportnight'], $setting['Channel_Report']);
+    createForumTopicIfMissing($reportcron, 'reportcron', $textbotlang['Admin']['report']['reportcron'], $setting['Channel_Report']);
+    createForumTopicIfMissing($reportbackup, 'backupfile', "🤖 بکاپ ربات نماینده", $setting['Channel_Report']);
+    createForumTopicIfMissing($receiptreport, 'receiptreport', $textbotlang['Admin']['report']['receiptreport'], $setting['Channel_Report']);
+}
 foreach ($datatextbotget as $row) {
     $datatxtbot[] = array(
         'id_text' => $row['id_text'],
@@ -617,8 +635,16 @@ if ($username !== '' && $username !== 'none' && $username !== 'NOT_USERNAME' && 
 if ($user['register'] == "none") {
     update("user", "register", time(), "id", $from_id);
 }
-if (!in_array($user['agent'], ["n", "n2", "f"]))
-    update("user", "agent", "f", "id", $from_id);
+// FX-AGENTGUARD (2026-10-10): upstream guard flattened reseller-tenant agent ids
+// (agent = botsaz.id_user) to 'f' on every request, breaking tenant attribution.
+// Keep upstream normalization only for genuinely unknown values.
+if (!in_array($user['agent'], ["n", "n2", "f"])) {
+    $fxAgChk = $pdo->prepare('SELECT COUNT(*) FROM botsaz WHERE id_user = :ag LIMIT 1');
+    $fxAgChk->execute([':ag' => (string)$user['agent']]);
+    if ((int)$fxAgChk->fetchColumn() === 0) {
+        update("user", "agent", "f", "id", $from_id);
+    }
+}
 
 if ($user['User_Status'] == "block" && !in_array($from_id, $admin_ids)) {
     $textblock = sprintf($textbotlang['users']['block']['descriptions'], $user['description_blocking']);
@@ -3541,11 +3567,37 @@ $nameconfig";
             return;
         }
     }
+    // ===== FX-DEBT GUARD (reseller debt mode): reserve renewal wholesale =====
+    $__fxDebtMode = false;
+    $__fxRid = 0;
+    $__fxReservedRenew = 0;
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+            $__fxDebtMode = true;
+            $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
+            if ($__fxDebtWholesale <= 0) {
+                $__fxDebtWholesale = $fxRenewCustom ? (int)round((float)$fxRenewBasePrice) : (int)$pricelastextend;
+            }
+            if ($__fxDebtWholesale > 0) {
+                $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                if (empty($__fxRenewRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedRenew = $__fxDebtWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
     $__allowNegEx = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
     $__chargedExUser = false;
     if (intval($pricelastextend) > 0) {
         $__chargeEx = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $pricelastextend, $__allowNegEx) : ['ok' => false];
         if (empty($__chargeEx['ok'])) {
+            if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) {
+                fx_debt_release($__fxRid, $__fxReservedRenew, $randomString);
+            }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
         }
@@ -3568,6 +3620,9 @@ $nameconfig";
             if ($__refundedEx && function_exists('wallet_ledger_record')) {
                 wallet_ledger_record($from_id, 'credit', $pricelastextend, 'refund', 'بازگشت وجه تمدید سرویس', $randomString, 'invoice', (string)$id_invoice);
             }
+        }
+        if ($__fxReservedRenew > 0 && function_exists('fx_debt_release')) {
+            fx_debt_release($__fxRid, $__fxReservedRenew, $randomString);
         }
         $rxStockEmpty = ($extend['code'] ?? '') === 'manual_stock_empty';
         $rxQueuedExists = ($extend['code'] ?? '') === 'queued_renewal_exists';
@@ -3592,6 +3647,12 @@ $nameconfig";
             ]);
         }
         return;
+    }
+    if ($__fxReservedRenew > 0 && function_exists('fx_debt_commit')) {
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedRenew, 'renewal', $randomString);
+        if (!$__fxIncOk) {
+            error_log('[FX_DEBT] renewal ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedRenew . ' invoice=' . $randomString . ' reason=' . $__fxIncReason);
+        }
     }
     if ($rxCashbackDiscount > 0) {
         $rxCashbackGiftTpl = $datatextbot['dyn_rewards_cashback_gift'] ?? "تبریک 🎉\n📌 به عنوان هدیه تمدید مبلغ %s تومان حساب شما شارژ گردید";
@@ -4002,11 +4063,38 @@ $nameconfig";
             return;
         }
     }
+    // ===== FX-DEBT GUARD (reseller debt mode): reserve extra-volume wholesale =====
+    $__fxDebtMode = false;
+    $__fxRid = 0;
+    $__fxReservedVx = 0;
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+            $__fxDebtMode = true;
+            $__fxVolQty = $fxExtraQty ?? (intval($extrapricevalue) > 0 ? intval($volume) / intval($extrapricevalue) : 0);
+            $__fxDebtWholesale = (int)round((float)$__fxVolQty * (fx_panel_raw_unit_price($marzban_list_get, 'priceextravolume', $user['agent']) ?? 0));
+            if ($__fxDebtWholesale <= 0) {
+                $__fxDebtWholesale = (int)$volumepricelast;
+            }
+            if ($__fxDebtWholesale > 0) {
+                $__fxVxRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                if (empty($__fxVxRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری حجم وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedVx = $__fxDebtWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
     $__allowNegVx = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
     $__chargedVxUser = false;
     if ($volumepricelast > 0) {
         $__chargeVx = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $volumepricelast, $__allowNegVx) : ['ok' => false];
         if (empty($__chargeVx['ok'])) {
+            if ($__fxReservedVx > 0 && function_exists('fx_debt_release')) {
+                fx_debt_release($__fxRid, $__fxReservedVx, (string)($nameloc['id_invoice'] ?? ''));
+            }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
         }
@@ -4035,6 +4123,9 @@ $nameconfig";
                 wallet_ledger_record($from_id, 'credit', $volumepricelast, 'refund', 'بازگشت وجه خرید حجم اضافه', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
             }
         }
+        if ($__fxReservedVx > 0 && function_exists('fx_debt_release')) {
+            fx_debt_release($__fxRid, $__fxReservedVx, (string)($nameloc['id_invoice'] ?? ''));
+        }
         $extra_volume['msg'] = rx_panel_error_text($extra_volume['msg'] ?? null, $extra_volume['detail'] ?? null);
         $textreports = "خطای خرید حجم اضافه
 <blockquote>نام پنل : {$marzban_list_get['name_panel']}</blockquote>
@@ -4050,6 +4141,12 @@ $nameconfig";
             ]);
         }
         return;
+    }
+    if ($__fxReservedVx > 0 && function_exists('fx_debt_commit')) {
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedVx, 'extra_volume', (string)($nameloc['id_invoice'] ?? ''));
+        if (!$__fxIncOk) {
+            error_log('[FX_DEBT] extra volume ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedVx . ' invoice=' . ($nameloc['id_invoice'] ?? '') . ' reason=' . $__fxIncReason);
+        }
     }
     MiniDiscount::logSale([
         'id_user' => $from_id,
@@ -4795,10 +4892,37 @@ $nameconfig";
         }
     }
 
+    // ===== FX-DEBT GUARD (reseller debt mode): reserve extra-time wholesale =====
+    $__fxDebtMode = false;
+    $__fxRid = 0;
+    $__fxReservedEt = 0;
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRid = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+            $__fxDebtMode = true;
+            $__fxTimeQtyLocal = $fxTimeQty ?? ($extratimepricevalue > 0 ? $tmieextra / $extratimepricevalue : 0);
+            $__fxDebtWholesale = (int)round((float)$__fxTimeQtyLocal * (fx_panel_raw_unit_price($marzban_list_get, 'priceextratime', $user['agent']) ?? 0));
+            if ($__fxDebtWholesale <= 0) {
+                $__fxDebtWholesale = (int)$pricelasttime;
+            }
+            if ($__fxDebtWholesale > 0) {
+                $__fxEtRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                if (empty($__fxEtRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری زمان وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedEt = $__fxDebtWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
     $__allowNegEt = ($user['agent'] === 'n2') ? (int)($user['maxbuyagent'] ?? 0) : 0;
     if ($pricelasttime > 0) {
         $__chargeEt = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $pricelasttime, $__allowNegEt) : ['ok' => false];
         if (empty($__chargeEt['ok'])) {
+            if ($__fxReservedEt > 0 && function_exists('fx_debt_release')) {
+                fx_debt_release($__fxRid, $__fxReservedEt, (string)($nameloc['id_invoice'] ?? ''));
+            }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
         }
@@ -4845,9 +4969,18 @@ $nameconfig";
                 wallet_ledger_record($from_id, 'credit', $pricelasttime, 'refund', 'بازگشت وجه زمان اضافه', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
             }
         }
+        if ($__fxReservedEt > 0 && function_exists('fx_debt_release')) {
+            fx_debt_release($__fxRid, $__fxReservedEt, (string)($nameloc['id_invoice'] ?? ''));
+        }
         return;
     }
 
+    if ($__fxReservedEt > 0 && function_exists('fx_debt_commit')) {
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedEt, 'extra_time', (string)($nameloc['id_invoice'] ?? ''));
+        if (!$__fxIncOk) {
+            error_log('[FX_DEBT] extra time ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedEt . ' invoice=' . ($nameloc['id_invoice'] ?? '') . ' reason=' . $__fxIncReason);
+        }
+    }
     MiniDiscount::logSale([
         'id_user' => $from_id,
         'id_invoice' => $nameloc['id_invoice'] ?? null,

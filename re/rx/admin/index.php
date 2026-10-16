@@ -7,8 +7,15 @@ if (!defined('REFACTORED_LEGACY_ROOT')) {
 
 
 // Phase-2: per-reseller data isolation scope ('1=1' = main bot, no change)
-$FXU_SCOPE = defined('FX_RESELLER_ID') ? "agent = '" . (int)FX_RESELLER_ID . "'" : '1=1';
-$FXI_SCOPE = defined('FX_RESELLER_ID') ? "EXISTS (SELECT 1 FROM user ufx WHERE ufx.id = invoice.id_user AND agent = '" . (int)FX_RESELLER_ID . "')" : '1=1';
+// FX-RESELLER (2026-10-15): scope must cover BOTH user groups — users registered
+// through the reseller bot (agent = <rid>) and legacy/migrated users who used it
+// (agent f/n/n2 but bottype = reseller token).
+$__fxTenantTokenSql = "''";
+if (defined('FX_RESELLER_ID') && defined('FX_RESELLER_TOKEN') && FX_RESELLER_TOKEN !== '') {
+    $__fxTenantTokenSql = "'" . addslashes((string) FX_RESELLER_TOKEN) . "'";
+}
+$FXU_SCOPE = defined('FX_RESELLER_ID') ? "(agent = '" . (int)FX_RESELLER_ID . "' OR bottype = " . $__fxTenantTokenSql . ")" : '1=1';
+$FXI_SCOPE = defined('FX_RESELLER_ID') ? "EXISTS (SELECT 1 FROM user ufx WHERE ufx.id = invoice.id_user AND (ufx.agent = '" . (int)FX_RESELLER_ID . "' OR ufx.bottype = " . $__fxTenantTokenSql . "))" : '1=1';
 
 $__rx_section = rx_compile_section(__DIR__);
 $__rx_code = $__rx_section['body'] !== null

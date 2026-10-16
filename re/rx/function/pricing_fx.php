@@ -1,5 +1,16 @@
 <?php
 
+// FX-RETAIL: reseller retail-price override helpers (2026-10-10). Loaded here so
+// every consumer of fx_apply_to_product sees them regardless of bundle order.
+// __DIR__-absolute per skill RULE 7; is_file guard keeps fresh installs safe.
+if (!defined('FX_RETAIL_OVERRIDE_LOADED') && is_file(__DIR__ . '/../index/fx_retail_override.php')) {
+    require_once __DIR__ . '/../index/fx_retail_override.php';
+// FX-RES-VIS: per-reseller product visibility helpers (2026-10-10)
+if (is_file(__DIR__ . '/../index/fx_res_visibility.php')) {
+    require_once __DIR__ . '/../index/fx_res_visibility.php';
+}
+}
+
 if (!defined('FX_DEFAULT_PAIR')) {
     define('FX_DEFAULT_PAIR', 'USDT/IRT');
 }
@@ -545,6 +556,14 @@ if (!function_exists('fx_apply_to_product')) {
         $product['fx_base_price'] = $product['price_product'];
         $product['price_product'] = fx_adjust_base_toman($product['price_product'], $panel, 'product');
         $product['_fx_applied'] = 1;
+        // FX-RETAIL: reseller-bot retail price override (2026-10-10). Main bot
+        // never enters here (FX_RESELLER_ID undefined). Guard on own flag so a
+        // bundle-lag environment without fx_retail_override.php stays safe.
+        if (defined('FX_RESELLER_ID') && FX_RESELLER_ID
+            && function_exists('fx_apply_retail_override')
+            && empty($product['fx_retail_applied'])) {
+            fx_apply_retail_override($product);
+        }
         return $product;
     }
 }

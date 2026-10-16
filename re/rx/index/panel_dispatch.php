@@ -580,7 +580,23 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
             ],
         ],
     ], JSON_UNESCAPED_UNICODE);
-    $receiptAdminIds = function_exists('select') ? (select('admin', 'id_admin', null, null, 'FETCH_COLUMN') ?: []) : [];
+    // FX-RESELLER: never leak a reseller customer's receipt to the MAIN bot's
+    // admins — in a reseller process deliver to the tenant's own admins only.
+    if (defined('FX_RESELLER_ID')) {
+        $receiptAdminIds = [];
+        if (function_exists('select')) {
+            $_fxAdRow = select('botsaz', 'admin_ids', 'id_user', FX_RESELLER_ID, 'select', ['cache' => false]);
+            $_fxAdIds = is_array($_fxAdRow) ? json_decode((string) ($_fxAdRow['admin_ids'] ?? '[]'), true) : null;
+            if (is_array($_fxAdIds) && $_fxAdIds) {
+                $receiptAdminIds = array_map('strval', $_fxAdIds);
+            }
+        }
+        if (!$receiptAdminIds) {
+            $receiptAdminIds = [(string) FX_RESELLER_ID];
+        }
+    } else {
+        $receiptAdminIds = function_exists('select') ? (select('admin', 'id_admin', null, null, 'FETCH_COLUMN') ?: []) : [];
+    }
     if (!is_array($receiptAdminIds)) $receiptAdminIds = [];
     foreach ($receiptAdminIds as $receiptAdminId) {
         if (!is_numeric($receiptAdminId)) continue;
@@ -748,9 +764,12 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
             'text' => $text,
         ]);
     }
-    $_arze_report_group = trim((string)($setting['Channel_Report'] ?? ''));
-    if ($_arze_report_group !== '' && $_arze_report_group !== '0') {
-        $_arze_thread = !empty($receiptreport) ? $receiptreport : null;
+    $_arze_route = function_exists('rxReceiptDeliveryRoute')
+        ? rxReceiptDeliveryRoute()
+        : ['topic_enabled' => false, 'chat_id' => '', 'thread_id' => null];
+    $_arze_report_group = trim((string)($_arze_route['chat_id'] ?? ''));
+    if (!empty($_arze_route['topic_enabled']) && $_arze_report_group !== '') {
+        $_arze_thread = !empty($_arze_route['thread_id']) ? (int)$_arze_route['thread_id'] : null;
         if ($photo) {
             telegram('sendphoto', [
                 'chat_id' => $_arze_report_group,
@@ -776,7 +795,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
         $_arze_private_targets = [];
         foreach ($admin_ids as $id_admin) {
             $adminrulecheck = select("admin", "*", "id_admin", $id_admin, "select");
-            if ($adminrulecheck['rule'] == "support")
+            if (is_array($adminrulecheck) && ($adminrulecheck['rule'] ?? '') == "support")
                 continue;
             if ($photo) {
                 telegram('sendphoto', [

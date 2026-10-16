@@ -1,11 +1,33 @@
 <?php
 // === Phase 2: Reseller Management (additive, admin-only) ===
 require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_reseller_mgmt.php';
+// === FX-MYPRICES: reseller «قیمت‌های من» (live require, NOT in any manifest) ===
+if (!defined('FX_MYPRICES_LOADED')) {
+    $__fx_mp = REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_myprices.php';
+    if (is_file($__fx_mp)) require_once $__fx_mp;
+}
+if (function_exists('fx_myprices_gate') && defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
+    if (fx_myprices_gate((string)($datain ?? ''), (string)($text ?? ''), $from_id, (int)($message_id ?? 0), (array)$user, $backadmin)) {
+        return;
+    }
+}
 if (fx_res_mgmt_gate($datain ?? '', $from_id, $admin_ids, $message_id, $user, $backadmin)) {
     return;
 }
-if (in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val'])) {
+if (!defined('FX_RESELLER_ID') && in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val'])) {
     if (fx_reseller_text_handler((string)($text ?? ''), $user, $from_id, $backadmin)) {
+        return;
+    }
+}
+// === STEP_3/4: مدیریت نمایندگی (v2baz) — پنل ادمین (additive, main bot) ===
+if (!function_exists('nm_manager_dispatch')) {
+    require_once REFACTORED_LEGACY_ROOT . '/re/rx/nm_manager.php';
+}
+if (!defined('FX_RESELLER_ID') && function_exists('nm_manager_dispatch') && in_array($from_id, $admin_ids)) {
+    if (nm_manager_dispatch((string)($datain ?? ''), $from_id, $message_id, $user, $backadmin)) {
+        return;
+    }
+    if (nm_manager_text_dispatch((string)($text ?? ''), $user, $from_id, $message_id, $backadmin)) {
         return;
     }
 }

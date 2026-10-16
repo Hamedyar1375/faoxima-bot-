@@ -172,6 +172,79 @@ if (function_exists('rxStartMediaHandleAdminUpdate')
     return;
 }
 
+// FX-RESELLER central lock — OPT-IN and DISABLED by default (restored 2026-10-16).
+// To re-enable for a reseller bot: add  define('FX_RESELLER_LOCK', 1);
+// to that reseller's wrapper index.php. When enabled it blocks shared
+// panels/products/store/finance/gateway settings for reseller administrators.
+if (defined('FX_RESELLER_LOCK') && FX_RESELLER_LOCK && defined('FX_RESELLER_ID') && ($adminrulecheck['rule'] ?? '') === 'administrator') {
+    $_fxLockedTexts = [
+        "📁 مدیریت پنل‌ها و سرورها",
+        "✏️ مدیریت پنل",
+        "🖥 اضافه کردن پنل",
+        "🏬 تنظیمات فروشگاه",
+        "📚 بخش آموزش",
+        "⚙️ تنظیمات فنی و ربات",
+        "🤙 بخش پشتیبانی",
+        "💎 مالی و گزارشات",
+        "🛍 مدیریت محصولات",
+        "🗂 مدیریت دسته‌بندی",
+        "🎁 ساخت کد هدیه",
+        "❌ حذف کد هدیه",
+        "🎁 ساخت کد تخفیف",
+        "❌ حذف کد تخفیف",
+        "🛒 وضعیت قابلیت های فروشگاه",
+        "🎁 کش بک تمدید",
+        "📝 تنظیم متن ربات",
+        "⚙️ وضعیت قابلیت ها",
+        "🗑 بهینه سازی ربات",
+        "✅ پنل تحت وب",
+        "📷 تنظیمات کیو آر کد",
+        "💰 عضویت نمایندگی",
+        "🔋 قیمت سریع حجم",
+        "⏳ قیمت سریع زمان",
+        "💳 مدیریت شماره کارت",
+        "📯 تنظیمات کانال",
+        "🔌 کارت‌به‌کارت",
+    ];
+    $_fxLockedCbExact = [
+        'admin_panels', 'admin_shop', 'admin_settings', 'admin_support', 'admin_help', 'admin_finance',
+        'admin_managepanel', 'admin_addpanel', 'admin_timeprice', 'admin_volprice',
+        'shop_category', 'shop_products', 'shop_giftadd', 'shop_giftdel', 'shop_discountadd', 'shop_discountdel',
+        'shop_status', 'shop_minbulk', 'shop_renewcb',
+        'set_text', 'set_features', 'set_optimize', 'set_webpanel', 'set_qrsettings', 'set_qrbg', 'set_qr_toggle',
+        'set_webhook', 'set_agentprice', 'set_testlimit', 'set_channel', 'ch_list',
+        'cartsetting', 'carttocart', 'walletaddress', 'maxbalanceaccount', 'mainbalanceaccount',
+        'startelegram', 'affilnecurrencysetting', 'zarinpalsetting', 'atlaspaysetting', 'abangatewaysetting',
+        'varizasetting', 'blupalsetting', 'cubepaysetting', 'tonpaysetting', 'iranpay2setting',
+        'nowpaymentsetting', 'plisiosetting', 'nm_manager_menu',
+        'systemsms', 'balanceaddall', 'voloume_or_day_all', 'startgift',
+    ];
+    $_fxLockedCbPrefixes = [
+        'card_', 'ch_', 'help_', 'editpayment-', 'set_qr', 'qr_', 'webpanel', 'editstsuts-',
+        'fx_reseller_mgmt', 'fx_res_', 'nm_', 'trnado_', 'plisio_', 'cubepay_', 'blupal_', 'variza_',
+        'abangateway_', 'atlaspay_', 'tonpay_', 'zpal_',
+        'typeservice-', 'typebalanceall_', 'typecustomer_', 'typegift_', 'bulkgift_',
+    ];
+    $_fxLockedHit = is_string($text) && in_array($text, $_fxLockedTexts, true);
+    if (!$_fxLockedHit && is_string($datain) && $datain !== '') {
+        if (in_array($datain, $_fxLockedCbExact, true)) {
+            $_fxLockedHit = true;
+        } else {
+            foreach ($_fxLockedCbPrefixes as $_fxLockedPrefix) {
+                if (strpos($datain, $_fxLockedPrefix) === 0) {
+                    $_fxLockedHit = true;
+                    break;
+                }
+            }
+        }
+    }
+    if ($_fxLockedHit) {
+        nm_adminInstantReply($from_id, "⛔️ <b>این بخش در ربات نمایندگی در دسترس نیست.</b>\n\nمدیریت پنل‌ها و سرورها، محصولات فروشگاه و تنظیمات سراسری فقط از ربات اصلی انجام می‌شود.", $backadmin, 'HTML');
+        return;
+    }
+    unset($_fxLockedTexts, $_fxLockedCbExact, $_fxLockedCbPrefixes, $_fxLockedHit, $_fxLockedPrefix);
+}
+
 if (in_array($text, $textadmin) || $datain == "admin") {
     if ($datain == "admin")
         deletemessage($from_id, $message_id);
@@ -1026,6 +1099,25 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     nm_adminInstantReply($from_id, $textbotlang['Admin']['manageadmin']['addadminset'], $keyboardadmin, 'HTML');
     sendmessage($user['Processing_value'], $textbotlang['Admin']['manageadmin']['adminedsenduser'], null, 'HTML');
     step('home', $from_id);
+    // FX-RESELLER (2026-10-15): a reseller bot's admins live in botsaz.admin_ids,
+    // never in the global admin table (that row set grants admin in the MAIN bot).
+    if (defined('FX_RESELLER_ID')) {
+        $_fxAddAdminId = trim((string) $user['Processing_value']);
+        $_fxAddRow = select("botsaz", "admin_ids", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+        $_fxAddIds = is_array($_fxAddRow) ? json_decode((string) ($_fxAddRow['admin_ids'] ?? '[]'), true) : null;
+        if (!is_array($_fxAddIds)) {
+            $_fxAddIds = [];
+        }
+        $_fxAddIds = array_map('strval', $_fxAddIds);
+        if (!in_array('' . (int) FX_RESELLER_ID, $_fxAddIds, true)) {
+            $_fxAddIds[] = (string) (int) FX_RESELLER_ID;
+        }
+        if ($_fxAddAdminId !== '' && !in_array($_fxAddAdminId, $_fxAddIds, true)) {
+            $_fxAddIds[] = $_fxAddAdminId;
+            update("botsaz", "admin_ids", json_encode(array_values($_fxAddIds)), "id_user", FX_RESELLER_ID);
+        }
+        unset($_fxAddAdminId, $_fxAddRow, $_fxAddIds);
+    } else {
     $usernamepanel = "root";
     $randomString = bin2hex(random_bytes(5));
     $randomStringHash = password_hash($randomString, PASSWORD_DEFAULT);
@@ -1044,6 +1136,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
             'text' => $text_report,
             'parse_mode' => "HTML"
         ]);
+    }
     }
 } elseif (preg_match('/limitusertest_(\w+)/', $datain, $dataget)) {
     $iduser = $dataget[1];
@@ -4724,6 +4817,18 @@ $caption";
     $Bot_Status = json_encode(['inline_keyboard' => $rxFeatRows]);
     Editmessagetext($from_id, $message_id, $rxFeatTitle, $Bot_Status);
 } elseif (($text == "📣 گزارشات ربات" || (isset($datain) && $datain === 'set_reports')) && $adminrulecheck['rule'] == "administrator") {
+    // FX-RESELLER (2026-10-15): show the RESELLER's own report group id (botsaz
+    // setting), never the main bot's group id.
+    $__fxShownReportChat = (string) ($setting['Channel_Report'] ?? '');
+    if (defined('FX_RESELLER_ID')) {
+        $_fxRepRow = select("botsaz", "setting", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+        $_fxRepSet = is_array($_fxRepRow) ? json_decode((string) ($_fxRepRow['setting'] ?? ''), true) : null;
+        $__fxShownReportChat = is_array($_fxRepSet) ? (string) ($_fxRepSet['Channel_Report'] ?? '') : '';
+        if ($__fxShownReportChat === '') {
+            $__fxShownReportChat = '0';
+        }
+        unset($_fxRepRow, $_fxRepSet);
+    }
     $textreports = "📣 تنظیم گروه گزارشات ربات
 
 در این بخش می‌توانید آیدی عددی گروه موردنظر را برای ارسال اعلان‌ها و گزارشات ربات ثبت نمایید.
@@ -4737,7 +4842,7 @@ $caption";
 
 ⚠️ توجه داشته باشید که قبل از درخواست آیدی، تاپیک گروه باید فعال شده باشد.
 
-آیدی عددی فعلی شما: {$setting['Channel_Report']}";
+آیدی عددی فعلی شما: {$__fxShownReportChat}";
     step('addchannelid', $from_id);
     if (isset($user) && is_array($user)) {
         $user['step'] = 'addchannelid';
@@ -4788,6 +4893,55 @@ $caption";
     ];
 
     $extraReportKeys = ['porsantreport', 'reportnight', 'reportcron', 'backupfile'];
+
+    if (defined('FX_RESELLER_ID')) {
+        // FX-RESELLER (2026-10-15): a reseller's report group belongs to the RESELLER.
+        // Never touch the global setting.Channel_Report / topicid rows (those track
+        // the MAIN bot's group); persist the group + created topics inside
+        // botsaz.setting so reseller-aware senders can route there.
+        $fxTopics = [];
+        foreach ($reportTopics as $reportKey => $reportName) {
+            $topicResult = null;
+            for ($try = 1; $try <= 3; $try++) {
+                $topicResult = telegram('createForumTopic', [
+                    'chat_id' => $text,
+                    'name' => $reportName
+                ]);
+                if (!empty($topicResult['ok'])) {
+                    break;
+                }
+                $retryAfter = isset($topicResult['parameters']['retry_after']) ? (int)$topicResult['parameters']['retry_after'] : 2;
+                if ($retryAfter < 1) $retryAfter = 1;
+                if ($retryAfter > 10) $retryAfter = 10;
+                sleep($retryAfter);
+            }
+            if (!empty($topicResult['ok']) && isset($topicResult['result']['message_thread_id'])) {
+                $fxTopics[$reportKey] = (int)$topicResult['result']['message_thread_id'];
+                usleep(400000);
+            }
+        }
+        if (count($fxTopics) > 0) {
+            $fxBotsazRow = select("botsaz", "setting", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+            $fxJson = is_array($fxBotsazRow) ? json_decode((string)($fxBotsazRow['setting'] ?? ''), true) : null;
+            if (!is_array($fxJson)) {
+                $fxJson = [];
+            }
+            $fxJson['Channel_Report'] = $text;
+            $fxJson['topicid'] = $fxTopics;
+            update("botsaz", "setting", json_encode($fxJson, JSON_UNESCAPED_UNICODE), "id_user", FX_RESELLER_ID);
+            nm_adminInstantReply($from_id, "✅ گروه گزارش نمایندگی ثبت شد (" . count($fxTopics) . " از " . count($reportTopics) . " تاپیک ساخته شد).", $adminChannelMenu ?? $keyboardadmin, 'HTML');
+        } else {
+            nm_adminInstantReply($from_id, "❌ هیچ تاپیکی ساخته نشد. مطمئن شوید ربات در گروه ادمین است و دسترسی «مدیریت تاپیک‌ها» (Manage Topics) دارد، سپس دوباره تلاش کنید.", null, 'HTML');
+        }
+        step('channelhub', $from_id);
+        if (isset($user) && is_array($user)) {
+            $user['step'] = 'channelhub';
+        }
+        if (function_exists('rxNavSetState')) {
+            rxNavSetState($from_id, 'channelhub');
+        }
+        return;
+    }
 
     foreach ($reportTopics as $reportKey => $reportName) {
         update("topicid", "idreport", "0", "report", $reportKey);
@@ -4975,8 +5129,32 @@ $caption";
     nm_adminInstantReply($from_id, $textbotlang['Admin']['Product']['SaveProduct'], $shopkeyboard, 'HTML');
     step('home', $from_id);
 } elseif (($text == "👨‍🔧 بخش ادمین" || $datain == "admin_mgr") && $adminrulecheck['rule'] == "administrator") {
-    $list_admin = select("admin", "*", null, null, "fetchAll");
     $keyboardadmin = ['inline_keyboard' => []];
+    // FX-RESELLER (2026-10-15): a reseller bot's admins live in botsaz.admin_ids,
+    // never in the global admin table (that list belongs to the MAIN bot).
+    if (defined('FX_RESELLER_ID')) {
+        $_fxAdminRow = select("botsaz", "admin_ids", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+        $_fxAdminIds = is_array($_fxAdminRow) ? json_decode((string) ($_fxAdminRow['admin_ids'] ?? '[]'), true) : null;
+        if (!is_array($_fxAdminIds)) {
+            $_fxAdminIds = [];
+        }
+        $_fxOwnerId = (string) (int) FX_RESELLER_ID;
+        $_fxSeenAdminIds = [];
+        foreach ($_fxAdminIds as $_fxAdminId) {
+            $_fxAdminId = trim((string) $_fxAdminId);
+            if ($_fxAdminId === '' || isset($_fxSeenAdminIds[$_fxAdminId])) {
+                continue;
+            }
+            $_fxSeenAdminIds[$_fxAdminId] = true;
+            $_fxAdminRowKb = [['text' => $_fxAdminId, 'callback_data' => "adminlist"]];
+            if ($_fxAdminId !== $_fxOwnerId) {
+                array_unshift($_fxAdminRowKb, ['text' => "❌", 'callback_data' => "removeadmin_" . $_fxAdminId]);
+            }
+            $keyboardadmin['inline_keyboard'][] = $_fxAdminRowKb;
+        }
+        unset($_fxAdminRow, $_fxAdminIds, $_fxOwnerId, $_fxSeenAdminIds, $_fxAdminId, $_fxAdminRowKb);
+    } else {
+    $list_admin = select("admin", "*", null, null, "fetchAll");
     foreach ($list_admin as $admin) {
         $adminId = isset($admin['id_admin']) ? trim($admin['id_admin']) : '';
         if ($adminId === '') {
@@ -4986,6 +5164,7 @@ $caption";
             ['text' => "❌", 'callback_data' => "removeadmin_" . $adminId],
             ['text' => $adminId, 'callback_data' => "adminlist"],
         ];
+    }
     }
     $keyboardadmin['inline_keyboard'][] = [
         ['text' => "👨‍💻 اضافه کردن ادمین", 'callback_data' => "addnewadmin"],
@@ -5016,6 +5195,15 @@ $caption";
 } elseif (preg_match('/Confirm_pay_(\w+)/', $datain, $dataget) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
     $order_id = $dataget[1];
     $Payment_report = select("Payment_report", "*", "id_order", $order_id, "select");
+    if (is_array($Payment_report) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report)) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => "تراکنش یافت نشد",
+            'show_alert' => true,
+            'cache_time' => 5,
+        ));
+        return;
+    }
     if ($Payment_report == false) {
         telegram('answerCallbackQuery', array(
             'callback_query_id' => $callback_query_id,
@@ -5091,6 +5279,15 @@ $caption";
 } elseif (preg_match('/reject_pay_(\w+)/', $datain, $datagetr) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
     $id_order = $datagetr[1];
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
+    if (is_array($Payment_report) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report)) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => "تراکنش یافت نشد",
+            'show_alert' => true,
+            'cache_time' => 5,
+        ));
+        return;
+    }
     if ($Payment_report == false) {
         telegram('answerCallbackQuery', array(
             'callback_query_id' => $callback_query_id,
@@ -5145,6 +5342,15 @@ $caption";
     $id_order = $datagetc[1];
     $_receipt_chat_id = $update['callback_query']['message']['chat']['id'] ?? $from_id;
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
+    if (is_array($Payment_report) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report)) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => "تراکنش یافت نشد",
+            'show_alert' => true,
+            'cache_time' => 5,
+        ));
+        return;
+    }
     step('home', $from_id);
     telegram('answerCallbackQuery', array(
         'callback_query_id' => $callback_query_id,
@@ -5238,6 +5444,15 @@ $caption";
         ]);
         return;
     }
+    if (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($cmPayment)) {
+        telegram('answerCallbackQuery', [
+            'callback_query_id' => $callback_query_id,
+            'text' => 'تراکنش یافت نشد',
+            'show_alert' => true,
+            'cache_time' => 5,
+        ]);
+        return;
+    }
     if ($cmPayment['payment_Status'] == 'paid') {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
@@ -5277,6 +5492,10 @@ $caption";
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور یافت نشد', 'show_alert' => true]);
         return;
     }
+    if (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($cmPayment)) {
+        telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور یافت نشد', 'show_alert' => true]);
+        return;
+    }
     if ($cmPayment['payment_Status'] === 'paid') {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'این فاکتور قبلاً تایید شده', 'show_alert' => true]);
         return;
@@ -5287,6 +5506,10 @@ $caption";
     $cmOrderId = $cmMan[1];
     $cmPayment = select("Payment_report", "*", "id_order", $cmOrderId, "select");
     if (!$cmPayment) {
+        telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور یافت نشد', 'show_alert' => true]);
+        return;
+    }
+    if (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($cmPayment)) {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور یافت نشد', 'show_alert' => true]);
         return;
     }
@@ -5349,6 +5572,10 @@ $caption";
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'تراکنش یافت نشد', 'show_alert' => true]);
         return;
     }
+    if (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($cmPayment)) {
+        telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'تراکنش یافت نشد', 'show_alert' => true]);
+        return;
+    }
     $cmKb = json_encode([
         'inline_keyboard' => [
             [
@@ -5369,6 +5596,15 @@ $caption";
     $cmOrderId = $cmRej[1];
     $cmPayment = select("Payment_report", "*", "id_order", $cmOrderId, "select");
     if (!$cmPayment) {
+        telegram('answerCallbackQuery', [
+            'callback_query_id' => $callback_query_id,
+            'text' => 'تراکنش یافت نشد',
+            'show_alert' => true,
+            'cache_time' => 5,
+        ]);
+        return;
+    }
+    if (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($cmPayment)) {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
             'text' => 'تراکنش یافت نشد',
@@ -6075,6 +6311,11 @@ $caption";
         $id_user = $dataget[1];
     }
     if (!userExists($id_user)) {
+        nm_adminInstantReply($from_id, $textbotlang['Admin']['not-user'], null, 'HTML');
+        return;
+    }
+    // FX-RESELLER (2026-10-15): reseller admins may only view/manage their own users.
+    if (defined('FX_RESELLER_ID') && function_exists('rxUserInTenantScope') && !rxUserInTenantScope($id_user)) {
         nm_adminInstantReply($from_id, $textbotlang['Admin']['not-user'], null, 'HTML');
         return;
     }

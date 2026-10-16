@@ -3,7 +3,96 @@
 if (!function_exists('rxReceiptScopeSql')) {
     function rxReceiptScopeSql(): string
     {
-        return "Payment_Method = 'cart to cart'";
+        $sql = "Payment_Method = 'cart to cart'";
+        // FX-RESELLER (2026-10-15): inside a reseller bot process the receipt helpers
+        // must only ever touch rows belonging to THIS tenant. Legacy rows are stamped
+        // with the bot token (Payment_report.bottype / user.bottype); users created by
+        // the shared engine carry agent = reseller id (bootstrap.php registration).
+        // Main bot (FX_RESELLER_ID undefined) keeps the original unscoped behaviour.
+        if (defined('FX_RESELLER_ID')) {
+            $rid = (int) FX_RESELLER_ID;
+            $tok = (defined('FX_RESELLER_TOKEN') && FX_RESELLER_TOKEN !== '') ? (string) FX_RESELLER_TOKEN : '';
+            $tok = preg_replace('/[^A-Za-z0-9:_-]/', '', $tok);
+            $tokSql = $tok !== '' ? "'" . $tok . "'" : "''";
+            return $sql . " AND (Payment_report.id_user = " . $rid
+                . " OR (" . $tokSql . " <> '' AND Payment_report.bottype = " . $tokSql . ")"
+                . " OR EXISTS (SELECT 1 FROM user rxu WHERE rxu.id = Payment_report.id_user AND (rxu.agent = '" . $rid . "' OR (" . $tokSql . " <> '' AND rxu.bottype = " . $tokSql . "))))";
+        }
+        return $sql;
+    }
+}
+
+if (!function_exists('rxReceiptRowInTenant')) {
+    /**
+     * FX-RESELLER (2026-10-15): does this Payment_report row belong to the CURRENT
+     * (reseller) tenant? Always true for the main bot. Mirrors rxReceiptScopeSql().
+     */
+    function rxReceiptRowInTenant($row): bool
+    {
+        if (!defined('FX_RESELLER_ID')) {
+            return true;
+        }
+        if (!is_array($row)) {
+            return false;
+        }
+        $rid = (string) (int) FX_RESELLER_ID;
+        $tok = (defined('FX_RESELLER_TOKEN') && FX_RESELLER_TOKEN !== '') ? (string) FX_RESELLER_TOKEN : '';
+        if ((string) ($row['id_user'] ?? '') === $rid) {
+            return true;
+        }
+        if ($tok !== '' && (string) ($row['bottype'] ?? '') === $tok) {
+            return true;
+        }
+        global $pdo;
+        if (!($pdo instanceof PDO)) {
+            return false;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT agent, bottype FROM user WHERE id = :u LIMIT 1");
+            $stmt->execute([':u' => (string) ($row['id_user'] ?? '')]);
+            $u = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            return false;
+        }
+        if (!is_array($u)) {
+            return false;
+        }
+        return ((string) ($u['agent'] ?? '') === $rid) || ($tok !== '' && (string) ($u['bottype'] ?? '') === $tok);
+    }
+}
+
+if (!function_exists('rxUserInTenantScope')) {
+    /**
+     * FX-RESELLER (2026-10-15): does this user id belong to the CURRENT (reseller)
+     * tenant? True for the reseller's own customers (agent = reseller id) and for
+     * legacy users of this bot (bottype = this bot's token), plus the reseller
+     * admin himself. Always true for the main bot.
+     */
+    function rxUserInTenantScope($iduser): bool
+    {
+        if (!defined('FX_RESELLER_ID')) {
+            return true;
+        }
+        $rid = (string) (int) FX_RESELLER_ID;
+        if ((string) $iduser === $rid) {
+            return true;
+        }
+        $tok = (defined('FX_RESELLER_TOKEN') && FX_RESELLER_TOKEN !== '') ? (string) FX_RESELLER_TOKEN : '';
+        global $pdo;
+        if (!($pdo instanceof PDO)) {
+            return false;
+        }
+        try {
+            $stmt = $pdo->prepare("SELECT agent, bottype FROM user WHERE id = :u LIMIT 1");
+            $stmt->execute([':u' => (string) $iduser]);
+            $u = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            return false;
+        }
+        if (!is_array($u)) {
+            return false;
+        }
+        return ((string) ($u['agent'] ?? '') === $rid) || ($tok !== '' && (string) ($u['bottype'] ?? '') === $tok);
     }
 }
 

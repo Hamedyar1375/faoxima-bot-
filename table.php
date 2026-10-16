@@ -3734,6 +3734,29 @@ try {
         updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+    // FX-RES-VIS: per-reseller product show/hide for their customers (2026-10-10).
+    $connect->query("CREATE TABLE IF NOT EXISTS fx_res_visibility (
+        id INT NOT NULL AUTO_INCREMENT,
+        product_id INT NOT NULL,
+        reseller_id BIGINT NOT NULL,
+        hidden TINYINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (id),
+        UNIQUE KEY idx_pv_prod_res (product_id, reseller_id),
+        KEY idx_pv_reseller (reseller_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // FX-RETAIL: reseller retail-price override per product (2026-10-10).
+    // Mirrors the schema already live on prod (created 2026-10-10); idempotent.
+    $connect->query("CREATE TABLE IF NOT EXISTS fx_retail_prices (
+        id INT NOT NULL AUTO_INCREMENT,
+        product_id INT NOT NULL,
+        reseller_id BIGINT NOT NULL,
+        retail_price BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (id),
+        UNIQUE KEY idx_prod_res (product_id, reseller_id),
+        KEY idx_reseller (reseller_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
     $rxOwnTables = [
         'user','help','setting','admin','channels','marzban_panel','remnawave_users','remnawave_nodes_cache',
         'product','invoice','Payment_report','Discount','Giftcodeconsumed','textbot','PaySetting','DiscountSell',
@@ -3741,6 +3764,7 @@ try {
         'manualsell','departman','support_message','wheel_list','botsaz','app','logs_api','category',
         'reagent_report','crypto_wallets','crypto_verified_hashes','crypto_sender_locks','premium_emojis',
         'nm_config_stock','nm_stock_shelves','nm_config_stock_log','nm_stock_product_map','cron_runtime_state','processed_updates',
+        'fx_debt_log','fx_retail_prices','fx_res_visibility',
     ];
     $rxEngRes = $connect->query("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND ENGINE IS NOT NULL AND ENGINE <> 'InnoDB'");
     if ($rxEngRes) {
