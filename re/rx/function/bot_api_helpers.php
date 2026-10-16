@@ -1837,6 +1837,59 @@ function CreatePaymentNv($invoice_id, $amount)
     return json_decode($result, true);
 }
 
+if (!function_exists('rxTenantReportWarnUnset')) {
+    /**
+     * FX-RESELLER (2026-10-16): the reseller has not configured their own
+     * report group, so reports addressed to the MAIN group can never be
+     * delivered with the reseller's bot token ("chat not found"). Emit a
+     * deduplicated warning log + at most one admin DM per 6 hours.
+     */
+    function rxTenantReportWarnUnset(array $context = [], string $targetChat = '')
+    {
+        if (function_exists('rx_log_event')) {
+            rx_log_event('TOPIC_REPORT_SKIPPED', 'Reseller report group is not configured; report skipped', $context + ['target_chat' => $targetChat]);
+        }
+        if (!defined('FX_RESELLER_ID')) {
+            return;
+        }
+        $warnDir = sys_get_temp_dir() . '/faoxima_report_warn';
+        if (!is_dir($warnDir)) {
+            @mkdir($warnDir, 0700, true);
+        }
+        $flag = $warnDir . '/r' . md5((string) FX_RESELLER_ID);
+        if (is_file($flag) && (time() - (int) @filemtime($flag)) < 21600) {
+            return;
+        }
+        @touch($flag);
+        global $pdo;
+        $adminIds = [];
+        if ($pdo instanceof PDO) {
+            try {
+                $stmt = $pdo->prepare('SELECT admin_ids FROM botsaz WHERE id_user = ? LIMIT 1');
+                $stmt->execute([(string) (int) FX_RESELLER_ID]);
+                $decoded = json_decode((string) $stmt->fetchColumn(), true);
+                if (is_array($decoded)) {
+                    $adminIds = $decoded;
+                }
+            } catch (Throwable $e) {
+                $adminIds = [];
+            }
+        }
+        $warnText = "⚠️ <b>گروه گزارش تنظیم نشده</b>\n\nیک گزارش (خرید/تمدید) آماده ارسال بود، اما چون گروه گزارش نمایندگی تنظیم نشده ارسال نشد.\n\nبرای تنظیم: «📣 گزارشات ربات» ← ارسال آیدی عددی گروه گزارش.";
+        foreach ($adminIds as $aid) {
+            $aid = trim((string) $aid);
+            if ($aid === '') {
+                continue;
+            }
+            @telegram('sendmessage', [
+                'chat_id' => $aid,
+                'text' => $warnText,
+                'parse_mode' => 'HTML'
+            ]);
+        }
+    }
+}
+
 if (!function_exists('rx_sendTopicReport')) {
     function rx_sendTopicReport(array $params, array $context = [])
     {
@@ -1845,6 +1898,17 @@ if (!function_exists('rx_sendTopicReport')) {
             return false;
         }
         $params['chat_id'] = $chatId;
+        if (defined('FX_RESELLER_ID') && function_exists('rxTenantReportTarget')) {
+            global $setting;
+            $rxMainReport = is_array($setting ?? null) ? trim((string) ($setting['Channel_Report'] ?? '')) : '';
+            if ($rxMainReport !== '' && $chatId === $rxMainReport) {
+                $rxTenantTarget = rxTenantReportTarget();
+                if (($rxTenantTarget['chat'] ?? '') === '') {
+                    rxTenantReportWarnUnset($context, $chatId);
+                    return false;
+                }
+            }
+        }
         $maxAttempts = 3;
         $maxRetryAfter = 5;
         $timeBudget = 15.0;

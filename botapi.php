@@ -179,6 +179,31 @@ if (!function_exists('rxResolveTenantTokenForChat')) {
     }
 }
 
+if (!function_exists('rxTenantThreadTranslate')) {
+    /**
+     * FX-RESELLER (2026-10-16): translate a report thread id into the
+     * reseller's own group topic id.
+     * - main-group thread id -> tenant thread id via the report->topic map
+     * - a thread id already belonging to the tenant (bootstrap loads tenant
+     *   topic vars in reseller context) is kept as-is
+     * - unknown -> null (caller drops message_thread_id -> General topic)
+     */
+    function rxTenantThreadTranslate($threadId, array $threadMap)
+    {
+        $tid = (int) $threadId;
+        if ($tid <= 0) {
+            return null;
+        }
+        if (isset($threadMap[$tid])) {
+            return (int) $threadMap[$tid];
+        }
+        if (in_array($tid, array_map('intval', $threadMap), true)) {
+            return $tid;
+        }
+        return null;
+    }
+}
+
 if (!function_exists('rxTenantReportTarget')) {
     /**
      * FX-RESELLER (2026-10-15): chat + topic map of the RESELLER's own report
@@ -274,9 +299,9 @@ function telegram($method, $datas = [], $token = null)
             if ($rxTenantTarget['chat'] !== '') {
                 $datas['chat_id'] = $rxTenantTarget['chat'];
                 if (isset($datas['message_thread_id'])) {
-                    $rxTid = (int) $datas['message_thread_id'];
-                    if ($rxTid > 0 && isset($rxTenantTarget['threadMap'][$rxTid])) {
-                        $datas['message_thread_id'] = $rxTenantTarget['threadMap'][$rxTid];
+                    $rxTidResolved = rxTenantThreadTranslate($datas['message_thread_id'], $rxTenantTarget['threadMap']);
+                    if ($rxTidResolved !== null) {
+                        $datas['message_thread_id'] = $rxTidResolved;
                     } else {
                         unset($datas['message_thread_id']);
                     }
@@ -2985,6 +3010,8 @@ function isDuplicateUpdate($updateId)
 
     $now = time();
     $timeToLive = 120;
+    $scope = defined('FX_RESELLER_ID') ? ('r' . (string) FX_RESELLER_ID) : 'm';
+    $cacheKey = $scope . ':' . $updateId;
 
     foreach ($memoryCache as $id => $timestamp) {
         if (!is_numeric($timestamp) || ($now - (int)$timestamp) > $timeToLive) {
@@ -2992,19 +3019,20 @@ function isDuplicateUpdate($updateId)
         }
     }
 
-    if (isset($memoryCache[$updateId])) {
+    if (isset($memoryCache[$cacheKey])) {
         return true;
     }
 
     if (function_exists('rx_redis_set_nx')) {
-        $rxRedisResult = rx_redis_set_nx('faoxima:dedupe:update:' . $updateId, '1', $timeToLive * 1000);
-        if ($rxRedisResult === true) {
-            $memoryCache[$updateId] = $now;
-            return false;
-        }
+        $rxRedisResult = rx_redis_set_nx('faoxima:dedupe:update:' . $scope . ':' . $updateId, '1', $timeToLive * 1000);
         if ($rxRedisResult === false) {
+            $memoryCache[$cacheKey] = $now;
             return true;
         }
+        // true = first sight, null = redis unavailable: both fall through to
+        // the durable file + MySQL layers so dedupe state survives redis
+        // restarts / LRU eviction (the previous early-return made redis the
+        // only memory for 120s, which allowed Telegram retries to replay).
     }
 
     $isDuplicate = false;
@@ -3017,7 +3045,7 @@ function isDuplicateUpdate($updateId)
     }
 
     if ($cacheDirReady) {
-        $cacheFile = $cacheDir . '/recent_updates.json';
+        $cacheFile = $cacheDir . '/recent_updates_' . preg_replace('/[^A-Za-z0-9._-]/', '', $scope) . '.json';
         $handle = @fopen($cacheFile, 'c+');
 
         if ($handle !== false) {
@@ -3072,8 +3100,8 @@ function isDuplicateUpdate($updateId)
         $pdo = $GLOBALS['pdo'] ?? null;
         if ($pdo instanceof PDO) {
             try {
-                $stmtInsert = $pdo->prepare('INSERT IGNORE INTO processed_updates (update_id, processed_at) VALUES (:id, :ts)');
-                $stmtInsert->execute([':id' => $updateId, ':ts' => $now]);
+                $stmtInsert = $pdo->prepare('INSERT IGNORE INTO processed_updates (bot_scope, update_id, processed_at) VALUES (:scope, :id, :ts)');
+                $stmtInsert->execute([':scope' => $scope, ':id' => $updateId, ':ts' => $now]);
                 if ($stmtInsert->rowCount() === 0) {
                     $isDuplicate = true;
                 }
@@ -3088,7 +3116,14 @@ function isDuplicateUpdate($updateId)
     }
 
     if (!$isDuplicate) {
-        $memoryCache[$updateId] = $now;
+        $memoryCache[$cacheKey] = $now;
+        if ($pdo instanceof PDO && random_int(1, 50) === 1) {
+            try {
+                $stmtPrune = $pdo->prepare('DELETE FROM processed_updates WHERE processed_at < :cut LIMIT 500');
+                $stmtPrune->execute([':cut' => $now - 86400]);
+            } catch (Throwable $ignored) {
+            }
+        }
     }
 
     return $isDuplicate;

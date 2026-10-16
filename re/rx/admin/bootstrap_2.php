@@ -4925,6 +4925,7 @@ $caption";
         // the MAIN bot's group); persist the group + created topics inside
         // botsaz.setting so reseller-aware senders can route there.
         $fxTopics = [];
+        $fxLastTopicError = '';
         foreach ($reportTopics as $reportKey => $reportName) {
             $topicResult = null;
             for ($try = 1; $try <= 3; $try++) {
@@ -4943,6 +4944,8 @@ $caption";
             if (!empty($topicResult['ok']) && isset($topicResult['result']['message_thread_id'])) {
                 $fxTopics[$reportKey] = (int)$topicResult['result']['message_thread_id'];
                 usleep(400000);
+            } else {
+                $fxLastTopicError = is_array($topicResult) ? (string)($topicResult['description'] ?? 'unknown error') : 'empty response';
             }
         }
         if (count($fxTopics) > 0) {
@@ -4956,7 +4959,8 @@ $caption";
             update("botsaz", "setting", json_encode($fxJson, JSON_UNESCAPED_UNICODE), "id_user", FX_RESELLER_ID);
             nm_adminInstantReply($from_id, "✅ گروه گزارش نمایندگی ثبت شد (" . count($fxTopics) . " از " . count($reportTopics) . " تاپیک ساخته شد).", $adminChannelMenu ?? $keyboardadmin, 'HTML');
         } else {
-            nm_adminInstantReply($from_id, "❌ هیچ تاپیکی ساخته نشد. مطمئن شوید ربات در گروه ادمین است و دسترسی «مدیریت تاپیک‌ها» (Manage Topics) دارد، سپس دوباره تلاش کنید.", null, 'HTML');
+            $fxErrHint = $fxLastTopicError !== '' ? "\n\nخطای تلگرام: " . htmlspecialchars($fxLastTopicError, ENT_QUOTES, 'UTF-8') : '';
+            nm_adminInstantReply($from_id, "❌ هیچ تاپیکی ساخته نشد. مطمئن شوید ربات در گروه ادمین است و دسترسی «مدیریت تاپیک‌ها» (Manage Topics) دارد، سپس دوباره تلاش کنید." . $fxErrHint, null, 'HTML');
         }
         step('channelhub', $from_id);
         if (isset($user) && is_array($user)) {
@@ -4977,6 +4981,7 @@ $caption";
     update("setting", "Channel_Report", $text);
 
     $createdCount = 0;
+    $lastTopicError = '';
     foreach ($reportTopics as $reportKey => $reportName) {
         $topicResult = null;
         for ($try = 1; $try <= 3; $try++) {
@@ -4996,6 +5001,8 @@ $caption";
             update("topicid", "idreport", $topicResult['result']['message_thread_id'], "report", $reportKey);
             $createdCount++;
             usleep(400000);
+        } else {
+            $lastTopicError = is_array($topicResult) ? (string)($topicResult['description'] ?? 'unknown error') : 'empty response';
         }
     }
 
@@ -5013,7 +5020,8 @@ $caption";
             rxNavSetState($from_id, 'channelhub');
         }
     } elseif ($createdCount == 0) {
-        nm_adminInstantReply($from_id, "❌ هیچ تاپیکی ساخته نشد. مطمئن شوید ربات در گروه ادمین است و دسترسی «مدیریت تاپیک‌ها» (Manage Topics) دارد، سپس دوباره تلاش کنید.", null, 'HTML');
+        $errHint = $lastTopicError !== '' ? "\n\nخطای تلگرام: " . htmlspecialchars($lastTopicError, ENT_QUOTES, 'UTF-8') : '';
+        nm_adminInstantReply($from_id, "❌ هیچ تاپیکی ساخته نشد. مطمئن شوید ربات در گروه ادمین است و دسترسی «مدیریت تاپیک‌ها» (Manage Topics) دارد، سپس دوباره تلاش کنید." . $errHint, null, 'HTML');
     } else {
         nm_adminInstantReply($from_id, "⚠️ ساخت تاپیک‌ها کامل نشد ({$createdCount} از {$totalTopics} ساخته شد). علت معمولاً کندی یا محدودیت موقت تلگرام است. چند لحظه صبر کنید و دوباره همین گزینه («📣 گزارشات ربات») را بزنید.", null, 'HTML');
     }

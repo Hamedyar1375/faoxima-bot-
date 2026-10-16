@@ -389,12 +389,12 @@ if (isset($update['pre_checkout_query'])) {
     $timejalali = jdate('Y/m/d H:i:s');
     $text_report = sprintf($textbotlang['Admin']['reportgroup']['renewaldetails'], $from_id, $username, $usernamePanelExtends, $first_name, $marzban_list_get['name_panel'], $prodcut['name_product'], $prodcut['Volume_constraint'], $prodcut['Service_time'], $prodcut['price_product'], $balanceformatsell, $timejalali);
     if (strlen($setting['Channel_Report'] ?? '') > 0) {
-        telegram('sendmessage', [
+        rx_sendTopicReport([
             'chat_id' => $setting['Channel_Report'],
             'message_thread_id' => $otherservice,
             'text' => $text_report,
             'parse_mode' => "HTML"
-        ]);
+        ], ['flow' => 'renewal', 'user_id' => (string) $from_id]);
     }
 }
 if (in_array($from_id, $admin_ids))

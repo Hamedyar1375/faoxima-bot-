@@ -12,4 +12,11 @@ error_log
 cronbot/error_log
 cron/cron.lock
 cronbot/.runtime/
+cronbot/users*
+cronbot/info*
+cronbot/startaction*
+cronbot/broadcast*
+cronbot/*.wlock
+cronbot/*.report
+cron/.cron_internal_auth
 .fxres_backup_*/
