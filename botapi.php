@@ -240,10 +240,25 @@ function telegram($method, $datas = [], $token = null)
 
     // FX-RESELLER (2026-10-15): tenant routing — send to reseller customers via
     // the reseller's own bot token (no-op for main-bot users and group chats).
+    // FX-RESELLER FIX (2026-10-16): NEVER reroute a direct reply to the user who
+    // is currently talking to THIS bot — they obviously have a live chat here, so
+    // the current token is correct. Without this, the main bot looked dead for
+    // any tenant user (bottype/agent = reseller) because their replies were
+    // delivered through the reseller bot instead.
     if ($token === $APIKEY && !empty($datas['chat_id'])) {
-        $rxTenantToken = rxResolveTenantTokenForChat($datas['chat_id'], $APIKEY);
-        if (is_string($rxTenantToken) && $rxTenantToken !== '' && $rxTenantToken !== $APIKEY) {
-            $token = $rxTenantToken;
+        $rxCurrentFrom = $GLOBALS['from_id'] ?? null;
+        if ($rxCurrentFrom === null && isset($GLOBALS['update']) && is_array($GLOBALS['update'])) {
+            $rxCurrentFrom = $GLOBALS['update']['message']['from']['id']
+                ?? $GLOBALS['update']['callback_query']['from']['id']
+                ?? null;
+        }
+        $rxIsDirectReply = $rxCurrentFrom !== null && (int) $rxCurrentFrom > 0
+            && (string) (int) $datas['chat_id'] === (string) (int) $rxCurrentFrom;
+        if (!$rxIsDirectReply) {
+            $rxTenantToken = rxResolveTenantTokenForChat($datas['chat_id'], $APIKEY);
+            if (is_string($rxTenantToken) && $rxTenantToken !== '' && $rxTenantToken !== $APIKEY) {
+                $token = $rxTenantToken;
+            }
         }
     }
 
