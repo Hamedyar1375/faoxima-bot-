@@ -142,10 +142,13 @@ if (!defined('FX_MYPRICES_LOADED')) {
         global $pdo;
         if (!$pdo || $pid <= 0 || $rid <= 0) return null;
         try {
+            $scope = function_exists('fx_res_product_scope_sql')
+                ? fx_res_product_scope_sql('p', ':agent')
+                : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
             $stmt = $pdo->prepare(
                 "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
                 "FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid " .
-                "WHERE p.id = :pid AND (FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent = 'all') LIMIT 1"
+                "WHERE p.id = :pid AND {$scope} LIMIT 1"
             );
             $stmt->execute([':rid' => $rid, ':pid' => $pid, ':agent' => (string)$rid]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -170,10 +173,13 @@ if (!defined('FX_MYPRICES_LOADED')) {
         $hiddenIds = function_exists('fx_res_visibility_hidden_ids') ? fx_res_visibility_hidden_ids($rid) : []; // FX-RES-VIS
         if (!$rows) {
             try {
+                $scope = function_exists('fx_res_product_scope_sql')
+                    ? fx_res_product_scope_sql('p', ':agent')
+                    : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
                 $stmt = $pdo->prepare(
                     "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
                     "FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid " .
-                    "WHERE FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent = 'all'"
+                    "WHERE {$scope}"
                 );
                 $stmt->execute([':rid' => $rid, ':agent' => (string)$rid]);
                 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];

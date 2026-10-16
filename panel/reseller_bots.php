@@ -11,6 +11,9 @@ require_once __DIR__ . '/../function.php';
 // index-module helper. Load it in the panel web context too (function defs only,
 // no side effects, guarded by require_once so no redeclare).
 require_once __DIR__ . '/../re/rx/index/fx_reseller_mgmt.php';
+// FX-RESELLER (2026-10-16): per-reseller product manager (retail override + visibility).
+require_once __DIR__ . '/../re/rx/index/fx_retail_override.php';
+require_once __DIR__ . '/../re/rx/index/fx_res_visibility.php';
 require_once __DIR__ . '/lib/icons.php';
 require_once __DIR__ . '/lib/csrf.php';
 
@@ -110,6 +113,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         : '❌ خطا در تنظیم API Key.';
                 }
             }
+        } elseif ($action === 'whprice') {
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $amount = (int)($_POST['amount'] ?? 0);
+            if ($pid <= 0) {
+                $fxFlash = '❌ محصول نامعتبر است.';
+            } elseif ($amount < 0) {
+                $fxFlash = '❌ مبلغ نامعتبر است.';
+            } else {
+                $st = $pdo->prepare("UPDATE product SET fx_wholesale_price = :w WHERE id = :pid");
+                $st->execute([':w' => ($amount > 0 ? $amount : null), ':pid' => $pid]);
+                $fxFlash = ($amount > 0)
+                    ? "✅ قیمت عمده‌فروشی محصول {$pid} روی " . number_format($amount) . " تومان تنظیم شد."
+                    : "✅ قیمت عمده‌فروشی محصول {$pid} پاک شد (برگشت به قیمت پایه).";
+            }
+        } elseif ($action === 'retail') {
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $amount = (int)($_POST['amount'] ?? 0);
+            if ($pid <= 0) {
+                $fxFlash = '❌ محصول نامعتبر است.';
+            } elseif ($amount > 0) {
+                $fxFlash = fx_set_retail_price($pid, $uid, $amount)
+                    ? "✅ قیمت فروش اختصاصی نماینده {$uid} برای محصول {$pid} روی " . number_format($amount) . " تومان تنظیم شد."
+                    : '❌ خطا در تنظیم قیمت فروش.';
+            } else {
+                $fxFlash = fx_delete_retail_price($pid, $uid)
+                    ? "✅ قیمت اختصاصی نماینده برای محصول {$pid} حذف شد (برگشت به قیمت پایه)."
+                    : '❌ خطا در حذف قیمت اختصاصی.';
+            }
+        } elseif ($action === 'vis') {
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $hidden = ((string)($_POST['hidden'] ?? '0') === '1');
+            if ($pid <= 0) {
+                $fxFlash = '❌ محصول نامعتبر است.';
+            } elseif (fx_res_visibility_set($pid, $uid, $hidden)) {
+                $fxFlash = $hidden
+                    ? "🚫 محصول {$pid} برای مشتریان نماینده {$uid} پنهان شد."
+                    : "👁 محصول {$pid} دوباره برای مشتریان نماینده {$uid} نمایش داده می‌شود.";
+            } else {
+                $fxFlash = '❌ خطا در تغییر وضعیت نمایش.';
+            }
+        } elseif ($action === 'release') {
+            $pid = (int)($_POST['product_id'] ?? 0);
+            if ($pid <= 0) {
+                $fxFlash = '❌ محصول نامعتبر است.';
+            } else {
+                $st = $pdo->prepare("SELECT agent FROM product WHERE id = :pid LIMIT 1");
+                $st->execute([':pid' => $pid]);
+                $curAg = (string)($st->fetchColumn() ?? '');
+                $parts = array_values(array_filter(
+                    array_map('trim', explode(',', str_replace(' ', '', $curAg))),
+                    static function ($x) use ($uid) { return $x !== '' && $x !== (string)$uid; }
+                ));
+                $newAg = $parts ? implode(',', $parts) : 'all';
+                if ($newAg === $curAg) {
+                    $fxFlash = 'ℹ️ این محصول اختصاصی این نماینده نیست.';
+                } else {
+                    $up = $pdo->prepare("UPDATE product SET agent = :a WHERE id = :pid");
+                    $up->execute([':a' => $newAg, ':pid' => $pid]);
+                    $fxFlash = "♻️ محصول {$pid} از نماینده {$uid} آزاد شد (agent: {$newAg}).";
+                }
+            }
         } elseif ($action === 'del') {
             $res = fx_reseller_delete_bot($uid);
             $fxFlash = $res[1];
@@ -118,7 +182,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $fxFlash = '❌ خطای غیرمنتظره: ' . $e->getMessage();
         error_log('[panel/reseller_bots] ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
     }
-    header('Location: reseller_bots.php?msg=' . rawurlencode($fxFlash), true, 302);
+    $fxRedir = 'reseller_bots.php?msg=' . rawurlencode($fxFlash);
+    if (in_array($action, ['whprice', 'retail', 'vis', 'release'], true) && $uid > 0) {
+        $fxRedir .= '&products=' . $uid;
+    }
+    header('Location: ' . $fxRedir, true, 302);
     exit;
 }
 if (isset($_GET['msg']) && $_GET['msg'] !== '') {
@@ -129,6 +197,46 @@ if (isset($_GET['msg']) && $_GET['msg'] !== '') {
 $bots = fx_reseller_get_all();
 $prods = $pdo->query("SELECT id, name_product, agent FROM product ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
 $panels = $pdo->query("SELECT id, name_panel, agent, username_panel, password_panel, api_key, pasarguard_auth_mode FROM marzban_panel ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+
+// FX-RESELLER (2026-10-16): per-reseller product counts + products manager data.
+$fxAgentProdCounts = [];
+$fxSharedProdCount = 0;
+try {
+    foreach ($pdo->query("SELECT agent, COUNT(*) AS c FROM product GROUP BY agent")->fetchAll(PDO::FETCH_ASSOC) as $ar) {
+        $ag = str_replace(' ', '', (string)($ar['agent'] ?? ''));
+        if ($ag === '') {
+            $fxSharedProdCount += (int)$ar['c'];
+            continue;
+        }
+        foreach (explode(',', $ag) as $oneAg) {
+            if ($oneAg === '') continue;
+            if (in_array($oneAg, ['all', 'allusers', 'f', 'n', 'n2'], true)) {
+                $fxSharedProdCount += (int)$ar['c'];
+            } else {
+                $fxAgentProdCounts[$oneAg] = ($fxAgentProdCounts[$oneAg] ?? 0) + (int)$ar['c'];
+            }
+        }
+    }
+} catch (\Throwable $e) {}
+
+$fxProdRid = isset($_GET['products']) ? (int)$_GET['products'] : 0;
+$fxProdRows = [];
+$fxProdHidden = [];
+if ($fxProdRid > 0) {
+    try {
+        $fxProdScope = function_exists('fx_res_product_scope_sql')
+            ? fx_res_product_scope_sql('p', ':rid2')
+            : "(FIND_IN_SET(:rid2, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
+        $st = $pdo->prepare(
+            "SELECT p.id, p.name_product, p.agent, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
+            "FROM product p LEFT JOIN fx_retail_prices r ON r.product_id = p.id AND r.reseller_id = :rid " .
+            "WHERE {$fxProdScope} ORDER BY p.id ASC LIMIT 300"
+        );
+        $st->execute([':rid' => $fxProdRid, ':rid2' => (string)$fxProdRid]);
+        $fxProdRows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (\Throwable $e) {}
+    $fxProdHidden = fx_res_visibility_hidden_ids($fxProdRid);
+}
 
 $fxMaskToken = static function ($t): string {
     $t = (string)$t;
@@ -205,6 +313,8 @@ $fxMaskToken = static function ($t): string {
                                         <button type="button" class="btn btn-sm btn-soft-info" title="شارژ موجودی" onclick="fxOpenAmount('charge', <?php echo $rid; ?>)"><?php echo icon('plus', 'svg-icon'); ?> شارژ</button>
                                         <button type="button" class="btn btn-sm btn-soft-warning" title="کسر موجودی" onclick="fxOpenAmount('debit', <?php echo $rid; ?>)"><?php echo icon('arrow-down', 'svg-icon'); ?> کسر</button>
                                         <button type="button" class="btn btn-sm btn-soft-info" title="اختصاص محصول" onclick="fxOpenAssign('prod', <?php echo $rid; ?>)"><?php echo icon('package', 'svg-icon'); ?> محصول</button>
+                                        <?php $fxCnt = (int)($fxAgentProdCounts[(string)$rid] ?? 0) + $fxSharedProdCount; ?>
+                                        <a class="btn btn-sm btn-soft-success" title="مدیریت محصولات این نماینده (قیمت عمده، قیمت فروش، نمایش، آزادسازی)" href="reseller_bots.php?products=<?php echo $rid; ?>"><?php echo icon('package', 'svg-icon'); ?> محصولات<?php echo $fxCnt > 0 ? ' (' . $fxCnt . ')' : ''; ?></a>
                                         <button type="button" class="btn btn-sm btn-soft-info" title="اختصاص پنل" onclick="fxOpenAssign('panel', <?php echo $rid; ?>)"><?php echo icon('grid', 'svg-icon'); ?> پنل</button>
                                         <button type="button" class="btn btn-sm btn-soft-warning" title="اعتبار پنل پاسارگاد" onclick="fxOpenPasargad(<?php echo $rid; ?>)"><?php echo icon('key', 'svg-icon'); ?> پاسارگاد</button>
                                         <form method="POST" action="reseller_bots.php" style="display:inline;" onsubmit="return confirm('وبهوک ربات نماینده ریست شود؟');">
@@ -392,6 +502,108 @@ $fxMaskToken = static function ($t): string {
         </form>
     </div>
 </div>
+
+<?php if ($fxProdRid > 0): ?>
+<!-- Modal: reseller products manager (FX-RESELLER 2026-10-16) -->
+<div id="modal-products" class="modal-overlay" style="display:flex;overflow:auto;">
+    <div class="modal-box" style="max-width:980px;width:96%;">
+        <div class="modal-head">
+            <span class="modal-head__title">🛍 محصولات نماینده <?php echo $fxProdRid; ?></span>
+            <a class="modal-close" href="reseller_bots.php" style="text-decoration:none;">&times;</a>
+        </div>
+        <?php if ($fxFlash !== ''): ?>
+            <div class="flash" style="padding:10px 12px;border-radius:10px;margin:0 0 12px;background:var(--accent-soft,#eef2ff);color:var(--text,#111);">
+                <?php echo htmlspecialchars($fxFlash, ENT_QUOTES, 'UTF-8'); ?>
+            </div>
+        <?php endif; ?>
+        <div class="table-wrap" style="max-height:65vh;overflow:auto;">
+            <table class="display app-table" style="width:100%">
+                <thead>
+                    <tr>
+                        <th>محصول</th>
+                        <th>نوع</th>
+                        <th>قیمت پایه</th>
+                        <th>عمده‌فروشی (هزینه نماینده)</th>
+                        <th>فروش نماینده (مشتری)</th>
+                        <th>نمایش</th>
+                        <th>آزادسازی</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php if (!$fxProdRows): ?>
+                    <tr><td colspan="7" style="text-align:center;padding:24px;color:#888;">محصولی برای این نماینده یافت نشد. از دکمه «محصول» در فهرست، محصول اختصاص دهید.</td></tr>
+                <?php endif; ?>
+                <?php foreach ($fxProdRows as $pr):
+                    $prPid = (int)$pr['id'];
+                    $prBase = (int)($pr['base_price'] ?? 0);
+                    $prWh = (int)($pr['wholesale'] ?? 0);
+                    $prRet = (int)($pr['retail'] ?? 0);
+                    $prExc = in_array((string)$fxProdRid, array_filter(array_map('trim', explode(',', (string)$pr['agent']))), true);
+                    $prHid = in_array($prPid, $fxProdHidden, true);
+                    $prCur = $prRet > 0 ? $prRet : $prBase;
+                    $prWhEff = $prWh > 0 ? $prWh : $prBase;
+                ?>
+                    <tr>
+                        <td data-label="محصول">
+                            <div style="font-weight:600;"><?php echo htmlspecialchars((string)$pr['name_product'], ENT_QUOTES, 'UTF-8'); ?></div>
+                            <div style="font-size:12px;color:#888;">ID: <?php echo $prPid; ?> — سود تقریبی هر فروش: <?php echo number_format($prCur - $prWhEff); ?> تومان</div>
+                        </td>
+                        <td data-label="نوع"><?php echo $prExc ? '<span style="color:#0a7">اختصاصی</span>' : '<span style="color:#888">مشترک</span>'; ?></td>
+                        <td data-label="پایه" style="font-variant-numeric:tabular-nums;"><?php echo number_format($prBase); ?></td>
+                        <td data-label="عمده">
+                            <form method="POST" action="reseller_bots.php" style="display:flex;gap:6px;align-items:center;">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="whprice">
+                                <input type="hidden" name="uid" value="<?php echo $fxProdRid; ?>">
+                                <input type="hidden" name="product_id" value="<?php echo $prPid; ?>">
+                                <input type="number" name="amount" class="form-control" style="width:110px;" min="0" step="1" value="<?php echo $prWh > 0 ? $prWh : ''; ?>" placeholder="پایه: <?php echo $prBase; ?>">
+                                <button type="submit" class="btn btn-sm btn-soft-info" title="ذخیره عمده (خالی/0 = قیمت پایه)">💾</button>
+                            </form>
+                        </td>
+                        <td data-label="فروش">
+                            <form method="POST" action="reseller_bots.php" style="display:flex;gap:6px;align-items:center;">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="retail">
+                                <input type="hidden" name="uid" value="<?php echo $fxProdRid; ?>">
+                                <input type="hidden" name="product_id" value="<?php echo $prPid; ?>">
+                                <input type="number" name="amount" class="form-control" style="width:110px;" min="0" step="1" value="<?php echo $prRet > 0 ? $prRet : ''; ?>" placeholder="پایه: <?php echo $prBase; ?>">
+                                <button type="submit" class="btn btn-sm btn-soft-info" title="ذخیره فروش نماینده (خالی/0 = حذف قیمت سفارشی)">💾</button>
+                            </form>
+                        </td>
+                        <td data-label="نمایش">
+                            <form method="POST" action="reseller_bots.php">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="vis">
+                                <input type="hidden" name="uid" value="<?php echo $fxProdRid; ?>">
+                                <input type="hidden" name="product_id" value="<?php echo $prPid; ?>">
+                                <input type="hidden" name="hidden" value="<?php echo $prHid ? '0' : '1'; ?>">
+                                <button type="submit" class="btn btn-sm <?php echo $prHid ? 'btn-soft-success' : 'btn-soft-warning'; ?>"><?php echo $prHid ? '👁 نمایش' : '🚫 پنهان'; ?></button>
+                            </form>
+                        </td>
+                        <td data-label="آزادسازی">
+                            <?php if ($prExc): ?>
+                            <form method="POST" action="reseller_bots.php" onsubmit="return confirm('محصول <?php echo $prPid; ?> آزاد شود (به کاتالوگ مشترک برگردد)؟');">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="release">
+                                <input type="hidden" name="uid" value="<?php echo $fxProdRid; ?>">
+                                <input type="hidden" name="product_id" value="<?php echo $prPid; ?>">
+                                <button type="submit" class="btn btn-sm btn-soft-danger">♻️ آزادسازی</button>
+                            </form>
+                            <?php else: ?><span style="color:#bbb;">—</span><?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <p style="font-size:12px;color:#888;margin-top:10px;line-height:1.9;">
+            💵 <strong>عمده‌فروشی</strong> = هزینه‌ای که با هر خرید مشتری، به حساب نماینده (بدهی/موجودی) ثبت می‌شود — خالی بگذارید تا از قیمت پایه استفاده شود.<br>
+            💰 <strong>فروش نماینده</strong> = قیمت اختصاصی همین نماینده برای مشتریان ربات خودش — خالی/0 یعنی قیمت پایه.<br>
+            🚫 <strong>پنهان</strong> = محصول برای مشتریان این نماینده نمایش داده نمی‌شود (اثر روی بقیه ندارد). ♻️ <strong>آزادسازی</strong> = محصول از حالت اختصاصی خارج و به کاتالوگ مشترک برمی‌گردد.
+        </p>
+    </div>
+</div>
+<?php endif; ?>
 
 <script>
 function fxOpenAmount(kind, uid) {

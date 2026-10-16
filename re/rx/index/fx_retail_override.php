@@ -8,6 +8,23 @@
 if (!defined('FX_RETAIL_OVERRIDE_LOADED')) {
     define('FX_RETAIL_OVERRIDE_LOADED', true);
 
+    /**
+     * FX-RESELLER (2026-10-16): SQL fragment for "products a reseller's
+     * customers can actually see/buy". Union of:
+     *   - rows exclusive to this reseller (agent CSV contains the rid)
+     *   - shared rows ('all','allusers')
+     *   - main customer groups ('f','n','n2' — the only groups the buy flow
+     *     accepts, see rx_product_allows_agent)
+     *   - rows without an agent
+     * $ridParam must be bound exactly once by the caller.
+     */
+    function fx_res_product_scope_sql(string $alias = 'p', string $ridParam = ':rid'): string {
+        $a = preg_replace('/[^A-Za-z0-9_]/', '', (string)$alias);
+        if ($a === '') { $a = 'p'; }
+        $param = preg_match('/^:[A-Za-z0-9_]+$/', (string)$ridParam) ? (string)$ridParam : ':rid';
+        return "(FIND_IN_SET({$param}, REPLACE({$a}.agent, ' ', '')) OR {$a}.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR {$a}.agent = '')";
+    }
+
     function fx_apply_retail_override(array &$product): void {
         if (!defined('FX_RESELLER_ID') || !FX_RESELLER_ID) return;
         if (empty($product['id'])) return;
@@ -58,10 +75,12 @@ if (!defined('FX_RETAIL_OVERRIDE_LOADED')) {
         global $pdo;
         if (!$pdo) return [];
         try {
-            $agentStr = (string)$resellerId;
-            $sql = "SELECT p.id, p.name_product, p.price_product AS base_price, r.retail_price FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid WHERE FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent = 'all'";
+            $scope = function_exists('fx_res_product_scope_sql')
+                ? fx_res_product_scope_sql('p', ':rid2')
+                : "(FIND_IN_SET(:rid2, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
+            $sql = "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid WHERE {$scope}";
             $stmt = $pdo->prepare($sql);
-            $stmt->execute([':rid' => $resellerId, ':agent' => $agentStr]);
+            $stmt->execute([':rid' => $resellerId, ':rid2' => (string)$resellerId]);
             return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
         } catch (\Throwable $e) { return []; }
     }

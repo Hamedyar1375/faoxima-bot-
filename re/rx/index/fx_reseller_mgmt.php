@@ -11,6 +11,13 @@
  */
 require_once REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_debt.php'; // FX-DEBT helpers (2026-10-03)
 require_once (defined('REFACTORED_LEGACY_ROOT') ? REFACTORED_LEGACY_ROOT : dirname(__DIR__, 3)) . '/re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
+// FX-RESELLER (2026-10-16): per-reseller product manager needs retail override + visibility helpers.
+if (!function_exists('fx_set_retail_price') && is_file(__DIR__ . '/fx_retail_override.php')) {
+    require_once __DIR__ . '/fx_retail_override.php';
+}
+if (!function_exists('fx_res_visibility_set') && is_file(__DIR__ . '/fx_res_visibility.php')) {
+    require_once __DIR__ . '/fx_res_visibility.php';
+}
 
 function fx_reseller_db_credit(int $uid, int $amount, string $method = 'reseller_credit', ?string $bottype = null): bool {
     global $pdo;
@@ -344,6 +351,86 @@ function fx_res_panel_rows(string $rid, int $page = 1): array {
     $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
     return $rows;
 }
+
+// =====================================================================
+// FX-RESELLER (2026-10-16): per-reseller PRODUCT MANAGER (admin view).
+// Lists products visible to a reseller (exclusive + shared), with the
+// effective wholesale/retail/profit, visibility toggle and release.
+// =====================================================================
+
+function fx_res_admin_products_data(string $rid, int $page = 1, int $per = 10): array {
+    global $pdo;
+
+    $ridI = (int)$rid;
+    $page = max(1, $page);
+    $per = max(1, $per);
+    $off = ($page - 1) * $per;
+    $rows = [];
+    $total = 0;
+    if ($ridI <= 0) return [$rows, $total, $page, $per];
+    try {
+        $scope = function_exists('fx_res_product_scope_sql')
+            ? fx_res_product_scope_sql('p', ':rid')
+            : "(FIND_IN_SET(:rid, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
+        $cnt = $pdo->prepare("SELECT COUNT(*) FROM product p WHERE {$scope}");
+        $cnt->execute([':rid' => (string)$ridI]);
+        $total = (int)$cnt->fetchColumn();
+        $stmt = $pdo->prepare(
+            "SELECT p.id, p.name_product, p.agent, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
+            "FROM product p LEFT JOIN fx_retail_prices r ON r.product_id = p.id AND r.reseller_id = :rid2 " .
+            "WHERE {$scope} " .
+            "ORDER BY p.id ASC LIMIT {$per} OFFSET {$off}"
+        );
+        $stmt->execute([':rid' => (string)$ridI, ':rid2' => $ridI]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (\Throwable $e) {}
+    return [$rows, $total, $page, $per];
+}
+
+function fx_res_render_admin_products(int $from_id, int $message_id, int $rid, int $page = 1): void {
+    global $pdo;
+
+    $ridS = (string)$rid;
+    [$rows, $total, $page, $per] = fx_res_admin_products_data($ridS, $page);
+    $hidden = function_exists('fx_res_visibility_hidden_ids') ? fx_res_visibility_hidden_ids($rid) : [];
+    $pages = max(1, (int)ceil($total / $per));
+
+    $msg = "🛍 محصولات نماینده {$ridS} — صفحه {$page} از {$pages}\n"
+        . "━━━━━━━━━━━━━━\n";
+    $kbRows = [];
+    if (!$rows) {
+        $msg .= "📭 محصولی برای این نماینده یافت نشد.\nاز «📦 اختصاص محصول» اقدام کنید.";
+    } else {
+        foreach ($rows as $row) {
+            $pid = (int)$row['id'];
+            $base = (int)($row['base_price'] ?? 0);
+            $whRaw = (int)($row['wholesale'] ?? 0);
+            $wh = $whRaw > 0 ? $whRaw : $base;
+            $ret = (int)($row['retail'] ?? 0);
+            $cur = $ret > 0 ? $ret : $base;
+            $isExc = in_array($ridS, array_filter(array_map('trim', explode(',', (string)$row['agent']))), true);
+            $isHid = in_array($pid, $hidden, true);
+            $msg .= ($isHid ? "🚫" : "▫️") . " " . (string)$row['name_product']
+                . " [" . ($isExc ? 'اختصاصی' : 'مشترک') . "]\n"
+                . "   💵 عمده: " . number_format($wh) . " | 💰 فروش: " . number_format($cur)
+                . ($ret > 0 ? " (سفارشی)" : " (پایه)") . " | 📈 سود: " . number_format($cur - $wh) . "\n";
+            $line = [['text' => "🏷️ " . mb_substr((string)$row['name_product'], 0, 18), 'callback_data' => "fx_res_set_wh_{$ridS}_{$pid}"]];
+            $line[] = ['text' => $isHid ? '👁 نمایش' : '🚫 پنهان', 'callback_data' => "fx_res_pvis_{$ridS}_{$pid}_" . ($isHid ? '0' : '1') . "_{$page}"];
+            if ($isExc) {
+                $line[] = ['text' => '♻️ آزادسازی', 'callback_data' => "fx_res_prelease_{$ridS}_{$pid}_{$page}"];
+            }
+            $kbRows[] = $line;
+        }
+    }
+    $nav = [];
+    if ($page > 1) $nav[] = ['text' => '⬅️ صفحه قبل', 'callback_data' => "fx_res_products_{$ridS}_" . ($page - 1)];
+    if ($page < $pages) $nav[] = ['text' => 'صفحه بعد ➡️', 'callback_data' => "fx_res_products_{$ridS}_" . ($page + 1)];
+    if ($nav) $kbRows[] = $nav;
+    $kbRows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$ridS}"]];
+
+    Editmessagetext($from_id, (int)$message_id, $msg, fx_res_inline_kb($kbRows), 'HTML');
+}
+
 
 // =====================================================================
 // FX-BUYERS-SECTION (2026-10-04): per-reseller buyer/service list with
@@ -830,6 +917,7 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
              ['text' => '🔑 اعتبار پاسارگاد', 'callback_data' => "fx_res_pasargad_{$rid}"]],
             [['text' => '👥 خریداران (سرویس‌ها)', 'callback_data' => "fx_res_buyers_{$rid}"],
              ['text' => '🏷️ قیمت عمده‌فروشی', 'callback_data' => "fx_res_whprice_{$rid}"]],
+            [['text' => '🛍 محصولات نماینده', 'callback_data' => "fx_res_products_{$rid}"]],
             [['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"],
              ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
             [['text' => '⚙️ تنظیم سقف بدهی', 'callback_data' => "fx_res_debt_ceiling_{$rid}"],
@@ -1074,6 +1162,49 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         update("user", "Processing_value", $rid, "id", $from_id);
         update("user", "Processing_value_one", $pid, "id", $from_id);
         Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای محصول {$pid} وارد کنید:\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel", null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- per-reseller product manager (FX-RESELLER 2026-10-16) ---
+    if (preg_match('/^fx_res_products_(\d+)(?:_(\d+))?$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        step('fx_res_view', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        fx_res_render_admin_products($from_id, (int)$message_id, $rid, max(1, (int)($m[2] ?? 1)));
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_pvis_(\d+)_(\d+)_([01])_(\d+)$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        $pid = (int)$m[2];
+        $hide = ($m[3] === '1');
+        $page = max(1, (int)$m[4]);
+        if (function_exists('fx_res_visibility_set')) {
+            fx_res_visibility_set($pid, $rid, $hide);
+        }
+        fx_res_render_admin_products($from_id, (int)$message_id, $rid, $page);
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_prelease_(\d+)_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        $pid = (int)$m[2];
+        $page = max(1, (int)$m[3]);
+        try {
+            $st = $pdo->prepare("SELECT agent FROM product WHERE id = :pid LIMIT 1");
+            $st->execute([':pid' => $pid]);
+            $curAg = (string)($st->fetchColumn() ?? '');
+            $parts = array_values(array_filter(
+                array_map('trim', explode(',', str_replace(' ', '', $curAg))),
+                static function ($x) use ($rid) { return $x !== '' && $x !== (string)$rid; }
+            ));
+            $newAg = $parts ? implode(',', $parts) : 'all';
+            if ($newAg !== $curAg) {
+                $pdo->prepare("UPDATE product SET agent = :a WHERE id = :pid")->execute([':a' => $newAg, ':pid' => $pid]);
+            }
+        } catch (\Throwable $e) {}
+        fx_res_render_admin_products($from_id, (int)$message_id, $rid, $page);
         fx_res_answer_cb();
         return true;
     }
