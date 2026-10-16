@@ -19,6 +19,9 @@ usage() {
 case "${1:-}" in
     snapshot)
         msg="${2:-manual snapshot}"
+        if [ -x "$REPO_DIR/tools/parsecheck.sh" ]; then
+            "$REPO_DIR/tools/parsecheck.sh" || { echo "❌ parsecheck failed — snapshot aborted"; exit 1; }
+        fi
         git add -A
         if ! git diff --cached --quiet; then
             git commit -q -m "snapshot: ${msg} ($(date '+%Y-%m-%d %H:%M'))"

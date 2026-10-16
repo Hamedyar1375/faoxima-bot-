@@ -4038,7 +4038,7 @@ $textonebuy
         $stmt->bindParam(':type', $type);
         $stmt->bindParam(':time', $dateacc);
         $stmt->bindParam(':price', $Payment_report['price']);
-        $stmt->bindParam(':output', json_encode($extra_volume));
+        $stmt->bindValue(':output', json_encode($extra_volume));
         $stmt->execute();
         $keyboardextrafnished = json_encode([
             'inline_keyboard' => [
@@ -4240,7 +4240,7 @@ $textonebuy
         $stmt->bindParam(':type', $type);
         $stmt->bindParam(':time', $dateacc);
         $stmt->bindParam(':price', $Payment_report['price']);
-        $stmt->bindParam(':output', json_encode($extra_time));
+        $stmt->bindValue(':output', json_encode($extra_time));
         $stmt->execute();
         $keyboardextrafnished = json_encode([
             'inline_keyboard' => [
