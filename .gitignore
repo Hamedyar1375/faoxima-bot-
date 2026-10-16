@@ -8,3 +8,8 @@ re/rx/*/.compiled.map
 *.bak*
 vendor/
 node_modules/
+error_log
+cronbot/error_log
+cron/cron.lock
+cronbot/.runtime/
+.fxres_backup_*/
