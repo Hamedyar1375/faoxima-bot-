@@ -355,6 +355,28 @@ $agent_display = isset($agent_types[$user['agent']]) ? $agent_types[$user['agent
                         <span class="info-label">نوع کاربری</span>
                         <span class="info-value"><?php echo $agent_display; ?></span>
                     </div>
+                    <?php
+                    // FX-RESELLER (2026-10-16): reseller-bot membership badge.
+                    $fxBotRow = null;
+                    if (!empty($user['bottype'])) {
+                        try {
+                            $fxb = $pdo->prepare("SELECT id_user, username FROM botsaz WHERE bot_token = :t LIMIT 1");
+                            $fxb->execute([':t' => trim((string)$user['bottype'])]);
+                            $fxBotRow = $fxb->fetch(PDO::FETCH_ASSOC) ?: null;
+                        } catch (\Throwable $e) { $fxBotRow = null; }
+                    }
+                    ?>
+                    <?php if ($fxBotRow): ?>
+                    <div class="info-row">
+                        <span class="info-label">عضو ربات نماینده</span>
+                        <span class="info-value">
+                            <a href="reseller_bots.php" style="text-decoration:none;">
+                                <span class="badge badge-success" style="direction:ltr;display:inline-block;">🤖 @<?php echo htmlspecialchars((string)$fxBotRow['username'], ENT_QUOTES, 'UTF-8'); ?></span>
+                            </a>
+                            <small class="text-muted">(نماینده <?php echo (int)$fxBotRow['id_user']; ?>)</small>
+                        </span>
+                    </div>
+                    <?php endif; ?>
                     <div class="info-row">
                         <span class="info-label">درصد تخفیف اختصاصی</span>
                         <span class="info-value text-accent"><?php echo (int)($user['pricediscount'] ?? 0); ?>٪</span>

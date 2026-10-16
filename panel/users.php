@@ -65,6 +65,16 @@ $query->bindValue(':perPage', $pg['perPage'], PDO::PARAM_INT);
 $query->bindValue(':offset', $pg['offset'], PDO::PARAM_INT);
 $query->execute();
 $listusers = $query->fetchAll();
+
+// FX-RESELLER (2026-10-16): user type + reseller-bot membership badge.
+$fxAgentTypes = ['f' => 'کاربر عادی', 'n' => 'نماینده معمولی', 'n2' => 'نماینده پیشرفته'];
+$fxBotByToken = [];
+try {
+    foreach ($pdo->query("SELECT id_user, username, bot_token FROM botsaz")->fetchAll(PDO::FETCH_ASSOC) as $fb) {
+        $tk = trim((string)($fb['bot_token'] ?? ''));
+        if ($tk !== '') { $fxBotByToken[$tk] = $fb; }
+    }
+} catch (\Throwable $e) {}
 ?>
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -146,6 +156,7 @@ $listusers = $query->fetchAll();
                                 <th>شماره تلفن</th>
                                 <th>موجودی</th>
                                 <th>زیرمجموعه</th>
+                                <th>نوع کاربری</th>
                                 <th>وضعیت</th>
                                 <th data-no-sort="1">عملیات</th>
                             </tr>
@@ -178,6 +189,20 @@ $listusers = $query->fetchAll();
                                 <td data-label="شماره تلفن"><?php echo $number; ?></td>
                                 <td data-label="موجودی"><?php echo number_format($list['Balance']); ?> <small class="text-muted">T</small></td>
                                 <td data-label="زیرمجموعه"><?php echo (int)$list['affiliatescount']; ?> <small class="text-muted">نفر</small></td>
+                                <td data-label="نوع کاربری" data-summary="1">
+                                    <?php
+                                    $fxAgentLabel = $fxAgentTypes[(string)($list['agent'] ?? '')] ?? 'نامشخص';
+                                    $fxBotRow = $fxBotByToken[trim((string)($list['bottype'] ?? ''))] ?? null;
+                                    ?>
+                                    <span class="badge badge-info"><?php echo htmlspecialchars($fxAgentLabel, ENT_QUOTES, 'UTF-8'); ?></span>
+                                    <?php if ($fxBotRow): ?>
+                                        <div style="margin-top:4px;">
+                                            <a href="reseller_bots.php" style="text-decoration:none;" title="ربات نمایندگی این کاربر (نماینده <?php echo (int)$fxBotRow['id_user']; ?>)">
+                                                <span class="badge badge-success" style="direction:ltr;display:inline-block;">🤖 @<?php echo htmlspecialchars((string)$fxBotRow['username'], ENT_QUOTES, 'UTF-8'); ?></span>
+                                            </a>
+                                        </div>
+                                    <?php endif; ?>
+                                </td>
                                 <td data-label="وضعیت" data-summary="1" data-filter-value="<?php echo $statusText; ?>"><span class="badge <?php echo $statusClass; ?>"><?php echo $statusText; ?></span></td>
                                 <td data-label="عملیات" class="cell-actions">
                                     <a href="user.php?id=<?php echo $list['id']; ?>" class="btn-action" title="مدیریت" aria-label="مدیریت">
