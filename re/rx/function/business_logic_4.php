@@ -571,6 +571,7 @@ if (!function_exists('rx_normalizeAdminButtonText')) {
                 'set_qr_toggle'         => "🔄 وضعیت کیوآرکد",
                 'set_webhook'           => "🔗 وبهوک ربات‌های نماینده",
                 'fx_myprices_menu'      => "🏷️ قیمت‌های من",
+                'fx_myaccount_menu'     => "🏦 حساب من",
                 'shop_status'           => "🛒 وضعیت قابلیت های فروشگاه",
                 'shop_category'         => "🗂 مدیریت دسته‌بندی",
                 'shop_products'         => "🛍 مدیریت محصولات",

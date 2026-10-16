@@ -373,6 +373,15 @@ if (defined('FX_RESELLER_ID')) {
             ${$__fxTopicKey} = (int)($__fxTopicSetting['topicid'][$__fxTopicKey] ?? 0);
         }
     }
+    // FX-RESELLER (2026-10-16): central «⏸ توقف ربات» — hard-stop every user of
+    // this bot except its own admins (they keep panel access to see status).
+    if (is_array($__fxTopicSetting) && (string)($__fxTopicSetting['bot_disabled'] ?? '0') === '1'
+        && !in_array((string)$from_id, array_map('strval', (array)($admin_ids ?? [])), true)) {
+        if (isset($text) && is_string($text) && trim($text) !== '' && empty($datain)) {
+            sendmessage($from_id, "⛔️ این ربات موقتاً توسط مدیریت غیرفعال شده است.\nلطفاً بعداً تلاش کنید.", null, 'HTML');
+        }
+        return;
+    }
     unset($__fxTopicRow, $__fxTopicSetting);
 } else {
     createForumTopicIfMissing($porsantreport, 'porsantreport', $textbotlang['Admin']['affiliates']['titletopic'], $setting['Channel_Report']);

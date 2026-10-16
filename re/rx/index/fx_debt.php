@@ -178,7 +178,11 @@ if (!function_exists('fx_debt_commit')) {
             return [false, 'db', 0, ''];
         }
         $row = is_array($st['bot']) ? $st['bot'] : [];
-        return [true, '', $after, fx_debt_alert_eval($rid, $after, $row)];
+        $alert = fx_debt_alert_eval($rid, $after, $row);
+        if (function_exists('fx_reseller_sale_notify')) {
+            fx_reseller_sale_notify($rid, $amount, $method, (string)$ref, $after);
+        }
+        return [true, '', $after, $alert];
     }
 }
 
@@ -231,7 +235,11 @@ if (!function_exists('fx_debt_inc')) {
             return [false, 'db', 0, ''];
         }
         $row = is_array($st['bot']) ? $st['bot'] : [];
-        return [true, '', $after, fx_debt_alert_eval($rid, $after, $row)];
+        $alert = fx_debt_alert_eval($rid, $after, $row);
+        if (function_exists('fx_reseller_sale_notify')) {
+            fx_reseller_sale_notify($rid, $amount, $method, (string)$ref, $after);
+        }
+        return [true, '', $after, $alert];
     }
 }
 
@@ -435,5 +443,266 @@ if (!function_exists('fx_reseller_reprice_custom')) {
         }
         $newPrice = ((int)$volume * $uv) + ((int)$days * $ut);
         $price = $newPrice;
+    }
+}
+
+if (!function_exists('fx_res_setting_get')) {
+    /**
+     * FX-RESELLER (2026-10-16): read botsaz.setting JSON for a reseller.
+     * Used by the reseller-facing features (sale notify toggle, bot stop flag,
+     * weekly statement cadence) from both bot processes and cron.
+     */
+    function fx_res_setting_get(int $rid): array {
+        global $pdo;
+        if ($rid <= 0) {
+            return [];
+        }
+        if ($pdo instanceof PDO) {
+            try {
+                $stmt = $pdo->prepare("SELECT setting FROM botsaz WHERE id_user = :rid LIMIT 1");
+                $stmt->execute([':rid' => (string)$rid]);
+                $raw = (string)$stmt->fetchColumn();
+                $s = json_decode($raw, true);
+                return is_array($s) ? $s : [];
+            } catch (\Throwable $e) {
+                return [];
+            }
+        }
+        return [];
+    }
+}
+
+if (!function_exists('fx_res_setting_patch')) {
+    /**
+     * Merge $patch keys into botsaz.setting (JSON). null value removes the key.
+     * Returns true when the row was updated.
+     */
+    function fx_res_setting_patch(int $rid, array $patch): bool {
+        global $pdo;
+        if ($rid <= 0 || !($pdo instanceof PDO)) {
+            return false;
+        }
+        $s = fx_res_setting_get($rid);
+        foreach ($patch as $k => $v) {
+            if ($v === null) {
+                unset($s[$k]);
+            } else {
+                $s[$k] = $v;
+            }
+        }
+        try {
+            $stmt = $pdo->prepare("UPDATE botsaz SET setting = :s WHERE id_user = :rid");
+            $stmt->execute([':s' => json_encode($s, JSON_UNESCAPED_UNICODE), ':rid' => (string)$rid]);
+            return $stmt->rowCount() >= 0;
+        } catch (\Throwable $e) {
+            error_log('[FX_RES] setting patch failed rid=' . $rid . ': ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+if (!function_exists('fx_sale_notify_enabled')) {
+    /** Sale notifications are ON by default; botsaz.setting.sale_notify='0' disables. */
+    function fx_sale_notify_enabled(int $rid): bool {
+        $s = fx_res_setting_get($rid);
+        return (string)($s['sale_notify'] ?? '1') !== '0';
+    }
+}
+
+if (!function_exists('fx_reseller_sale_notify')) {
+    /**
+     * FX-RESELLER (2026-10-16): notify the reseller (via their own bot token) about
+     * every charged sale. Best-effort: never throws into the payment flow.
+     */
+    function fx_reseller_sale_notify(int $rid, int $amount, string $method, string $ref, int $after): void {
+        global $pdo;
+        if ($rid <= 0 || $amount <= 0) {
+            return;
+        }
+        try {
+            if (!fx_sale_notify_enabled($rid)) {
+                return;
+            }
+            $typeLabel = [
+                'purchase' => '🛒 خرید سرویس جدید',
+                'bulk_purchase' => '🛒 خرید عمده (چند سرویس)',
+                'renewal' => '🔁 تمدید سرویس',
+                'renewal_gateway' => '🔁 تمدید سرویس (درگاه)',
+                'extra_volume' => '🔋 خرید حجم اضافه',
+                'extra_volume_gateway' => '🔋 خرید حجم اضافه (درگاه)',
+                'extra_time' => '⏳ خرید زمان اضافه',
+                'extra_time_gateway' => '⏳ خرید زمان اضافه (درگاه)',
+            ][$method] ?? ('🧾 فروش (' . $method . ')');
+
+            $buyerId = '';
+            $product = '';
+            $paidTxt = '';
+            if ($pdo instanceof PDO && $ref !== '') {
+                try {
+                    if (in_array($method, ['renewal_gateway', 'extra_volume_gateway', 'extra_time_gateway'], true)) {
+                        $stmt = $pdo->prepare("SELECT id_user, price FROM Payment_report WHERE id_order = :ref LIMIT 1");
+                        $stmt->execute([':ref' => $ref]);
+                        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                        if (is_array($row)) {
+                            $buyerId = (string)$row['id_user'];
+                            $paid = (int)round((float)$row['price']);
+                            if ($paid > 0) $paidTxt = number_format($paid) . ' تومان';
+                        }
+                    } else {
+                        $stmt = $pdo->prepare("SELECT id_user, name_product, price_product FROM invoice WHERE id_invoice = :ref LIMIT 1");
+                        $stmt->execute([':ref' => $ref]);
+                        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                        if (is_array($row)) {
+                            $buyerId = (string)$row['id_user'];
+                            $product = trim((string)($row['name_product'] ?? ''));
+                            $paid = (int)round((float)($row['price_product'] ?? 0));
+                            if ($paid > 0) $paidTxt = number_format($paid) . ' تومان';
+                        }
+                    }
+                } catch (\Throwable $e) { /* context is best-effort */ }
+            }
+
+            $st = fx_debt_state($rid);
+            $ceiling = (int)($st['ceiling'] ?? 0);
+
+            $msg = "🛒 <b>فروش جدید!</b>\n"
+                . $typeLabel . "\n";
+            if ($buyerId !== '') $msg .= "👤 خریدار: " . $buyerId . "\n";
+            if ($product !== '') $msg .= "📦 محصول: " . $product . "\n";
+            if ($paidTxt !== '') $msg .= "💵 پرداختی مشتری: " . $paidTxt . "\n";
+            $msg .= "🏷️ هزینه عمده (بدهی شما): +" . number_format($amount) . " تومان\n";
+            $msg .= "💸 بدهی فعلی: " . number_format($after) . " تومان\n";
+            if ($ceiling > 0) {
+                $remain = max(0, $ceiling - $after);
+                $msg .= "🌟 اعتبار باقی‌مانده: " . number_format($remain) . " تومان";
+            }
+
+            $token = fx_reseller_bot_token($rid);
+            if (function_exists('sendmessage')) {
+                sendmessage($rid, $msg, null, 'HTML', $token);
+            } elseif ($token) {
+                @file_get_contents("https://api.telegram.org/bot{$token}/sendMessage?" . http_build_query([
+                    'chat_id' => $rid, 'text' => $msg, 'parse_mode' => 'HTML',
+                ]));
+            }
+        } catch (\Throwable $e) {
+            error_log('[FX_RES] sale notify failed rid=' . $rid . ' ref=' . $ref . ': ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('fx_reseller_statement_build')) {
+    /**
+     * FX-RESELLER (2026-10-16): weekly statement text for one reseller since $sinceTs.
+     * Sales counted from invoice rows in tenant scope (agent OR bottype).
+     */
+    function fx_reseller_statement_build(int $rid, int $sinceTs): string {
+        global $pdo;
+        $st = fx_debt_state($rid);
+        $cur = (int)($st['current'] ?? 0);
+        $ceiling = (int)($st['ceiling'] ?? 0);
+
+        $bal = 0;
+        if ($pdo instanceof PDO) {
+            try {
+                $stmt = $pdo->prepare("SELECT Balance FROM user WHERE id = :rid LIMIT 1");
+                $stmt->execute([':rid' => (string)$rid]);
+                $bal = (int)round((float)$stmt->fetchColumn());
+            } catch (\Throwable $e) {}
+        }
+
+        $salesCount = 0;
+        $salesSum = 0;
+        $settledSum = 0;
+        if ($pdo instanceof PDO) {
+            try {
+                $since = date('Y-m-d H:i:s', $sinceTs);
+                $stmt = $pdo->prepare("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND direction = 'in' AND time >= :since AND method IN ('purchase','bulk_purchase','renewal','renewal_gateway','extra_volume','extra_volume_gateway','extra_time','extra_time_gateway')");
+                $stmt->execute([':rid' => $rid, ':since' => $since]);
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (is_array($row)) {
+                    $salesCount = (int)$row['c'];
+                    $salesSum = (int)$row['s'];
+                }
+                $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND direction = 'out' AND time >= :since AND method IN ('settlement','credit')");
+                $stmt->execute([':rid' => $rid, ':since' => $since]);
+                $settledSum = (int)round((float)$stmt->fetchColumn());
+
+                $rtok = fx_reseller_bot_token($rid);
+                if ($rtok) {
+                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM invoice i JOIN user u ON u.id = i.id_user WHERE i.time_sell >= :since AND (u.agent = :rid OR u.bottype = :rtok)");
+                    $stmt->execute([':rid' => (string)$rid, ':rtok' => $rtok, ':since' => $sinceTs]);
+                    $salesCount = max($salesCount, (int)$stmt->fetchColumn());
+                }
+            } catch (\Throwable $e) { /* keep ledger-based numbers */ }
+        }
+
+        $fmtDate = function (int $ts): string {
+            return function_exists('jdate') ? jdate('Y/m/d', $ts) : date('Y/m/d', $ts);
+        };
+
+        $msg = "🧾 <b>صورتحساب هفتگی نمایندگی</b>\n"
+            . "🗓 از " . $fmtDate($sinceTs) . " تا " . $fmtDate(time()) . "\n"
+            . "━━━━━━━━━━━━━━\n"
+            . "🛒 فروش‌های هفته: " . $salesCount . " سرویس | " . number_format($salesSum) . " تومان (عمده)\n"
+            . "💳 تسویه‌های ثبت‌شده: " . number_format($settledSum) . " تومان\n"
+            . "━━━━━━━━━━━━━━\n"
+            . "💸 بدهی فعلی: " . number_format($cur) . " تومان\n";
+        if ($ceiling > 0) {
+            $msg .= "🏦 سقف اعتبار: " . number_format($ceiling) . " تومان\n"
+                . "🌟 اعتبار باقی‌مانده: " . number_format(max(0, $ceiling - $cur)) . " تومان\n";
+        }
+        $msg .= "💰 موجودی کیف‌پول: " . number_format($bal) . " تومان\n";
+        if ($cur > 0) {
+            $msg .= "\n⚠️ لطفاً برای جلوگیری از توقف فروش، بدهی خود را تسویه کنید.";
+        }
+        return $msg;
+    }
+}
+
+if (!function_exists('fx_reseller_statement_send')) {
+    /**
+     * Send the weekly statement via the reseller's own bot token and stamp
+     * botsaz.setting.last_stmt_ts. Returns true when sent.
+     */
+    function fx_reseller_statement_send(int $rid, int $sinceTs): bool {
+        $token = fx_reseller_bot_token($rid);
+        if (!$token) {
+            $row = null;
+            global $pdo;
+            if ($pdo instanceof PDO) {
+                try {
+                    $stmt = $pdo->prepare("SELECT bot_token FROM botsaz WHERE id_user = :rid LIMIT 1");
+                    $stmt->execute([':rid' => (string)$rid]);
+                    $token = trim((string)$stmt->fetchColumn());
+                } catch (\Throwable $e) {}
+            }
+            if (!$token) {
+                return false;
+            }
+        }
+        $msg = fx_reseller_statement_build($rid, $sinceTs);
+        $kb = json_encode(['inline_keyboard' => [
+            [
+                ['text' => '💳 تسویه', 'callback_data' => 'fx_myacc_settle'],
+                ['text' => '📒 گردش حساب', 'callback_data' => 'fx_myacc_ledger'],
+            ],
+            [['text' => '🏦 حساب من', 'callback_data' => 'fx_myaccount_menu']],
+        ]], JSON_UNESCAPED_UNICODE);
+        $ok = false;
+        if (function_exists('sendmessage')) {
+            sendmessage($rid, $msg, $kb, 'HTML', $token);
+            $ok = true;
+        } else {
+            $res = @file_get_contents("https://api.telegram.org/bot{$token}/sendMessage?" . http_build_query([
+                'chat_id' => $rid, 'text' => $msg, 'parse_mode' => 'HTML', 'reply_markup' => $kb,
+            ]));
+            $dec = json_decode((string)$res, true);
+            $ok = is_array($dec) && !empty($dec['ok']);
+        }
+        if ($ok) {
+            fx_res_setting_patch($rid, ['last_stmt_ts' => time()]);
+        }
+        return $ok;
     }
 }

@@ -11,10 +11,20 @@ if (function_exists('fx_myprices_gate') && defined('FX_RESELLER_ID') && FX_RESEL
         return;
     }
 }
+// === FX-MYACCOUNT: reseller «حساب من» (live require, NOT in any manifest) ===
+if (!defined('FX_MYACCOUNT_LOADED')) {
+    $__fx_ma = REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_myaccount.php';
+    if (is_file($__fx_ma)) require_once $__fx_ma;
+}
+if (function_exists('fx_myaccount_gate') && defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
+    if (fx_myaccount_gate((string)($datain ?? ''), (string)($text ?? ''), $from_id, (int)($message_id ?? 0), (array)$user, $backadmin)) {
+        return;
+    }
+}
 if (fx_res_mgmt_gate($datain ?? '', $from_id, $admin_ids, $message_id, $user, $backadmin)) {
     return;
 }
-if (!defined('FX_RESELLER_ID') && in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val'])) {
+if (!defined('FX_RESELLER_ID') && in_array($from_id, $admin_ids) && in_array((string)($user['step'] ?? ''), ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_do_addadmin'])) {
     if (fx_reseller_text_handler((string)($text ?? ''), $user, $from_id, $backadmin)) {
         return;
     }
@@ -886,6 +896,7 @@ if (!empty($datain) && in_array($from_id, $admin_ids ?? [])) {
 
         'set_features'   => "⚙️ وضعیت قابلیت ها",
         'set_reports'    => "📣 گزارشات ربات",
+        'fx_myaccount_menu' => "🏦 حساب من",
         'set_channel'    => "📯 تنظیمات کانال",
         'set_webpanel'   => "✅ پنل تحت وب",
         'set_optimize'   => "🗑 بهینه سازی ربات",

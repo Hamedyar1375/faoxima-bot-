@@ -526,6 +526,10 @@ $__fx_mgmt_rows_adm = defined('FX_RESELLER_ID') ? [] : [
 $__fx_myprices_rows_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
     [rx_kb_style(['text' => "🏷️ قیمت‌های من", 'callback_data' => 'fx_myprices_menu'], 'fx_myprices_menu', $_rx_adm_styles)],
 ] : [];
+// FX-MYACCOUNT: reseller-bot-only «حساب من» entry (owner account, additive)
+$__fx_myacc_rows_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
+    [rx_kb_style(['text' => "🏦 حساب من", 'callback_data' => 'fx_myaccount_menu'], 'fx_myaccount_menu', $_rx_adm_styles)],
+] : [];
 if($adminrulecheck['rule'] == "administrator"){
 // FX-RESELLER (2026-10-16): full administrator menu RESTORED for reseller owners.
 // The reduced (locked) menu is only used when FX_RESELLER_LOCK is explicitly
@@ -540,6 +544,7 @@ $__fx_menu_rows_adm = [
         [rx_kb_style(['text' => "👥 مدیریت کاربران", 'callback_data' => 'admin_usershub'], 'admin_usershub', $_rx_adm_styles)],
         ...$__fx_mgmt_rows_adm,
         ...$__fx_myprices_rows_adm,
+        ...$__fx_myacc_rows_adm,
         [
             rx_kb_style(['text' => "🤙 بخش پشتیبانی", 'callback_data' => 'admin_support'], 'admin_support', $_rx_adm_styles),
             rx_kb_style(['text' => "📚 بخش آموزش", 'callback_data' => 'admin_help'], 'admin_help', $_rx_adm_styles)
@@ -553,6 +558,7 @@ $keyboardadmin = rx_kb_encode([
         [rx_kb_style(['text' => $textbotlang['Admin']['Status']['btn'], 'callback_data' => 'admin_status'], 'admin_status', $_rx_adm_styles)],
         [rx_kb_style(['text' => "👥 مدیریت کاربران", 'callback_data' => 'admin_usershub'], 'admin_usershub', $_rx_adm_styles)],
         ...$__fx_myprices_rows_adm,
+        ...$__fx_myacc_rows_adm,
         [rx_kb_style(['text' => "📢 کانال و اطلاع‌رسانی", 'callback_data' => 'admin_channelhub'], 'admin_channelhub', $_rx_adm_styles)],
         [rx_kb_style(['text' => $textbotlang['users']['backbtn'], 'callback_data' => 'admin_back'], 'admin_back', $_rx_adm_styles)]
     ]);

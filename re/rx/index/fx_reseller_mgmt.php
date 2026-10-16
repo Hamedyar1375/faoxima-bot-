@@ -185,6 +185,7 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
     // Clone the main bot's command menu onto the new reseller bot (best-effort).
     try {
         $mainTok = (string)($GLOBALS['ApiToken'] ?? '');
+        if ($mainTok === '') $mainTok = (string)($GLOBALS['APIKEY'] ?? '');
         $cmds = null;
         if ($mainTok !== '') {
             $gm = telegram('getMyCommands', [], $mainTok);
@@ -205,6 +206,20 @@ function fx_reseller_create_bot(int $targetUid, string $tokenRaw): array {
             . "2️⃣ از منوی مدیریت ربات، «گزارشات» را باز کرده و گروه گزارشات را ثبت کنید.\n"
             . "3️⃣ برای دریافت محصول/پنل، قیمت‌های فروش و شارژ با مدیریت مرکزی در تماس باشید.";
         @telegram('sendMessage', ['chat_id' => $targetUid, 'text' => $welcome, 'parse_mode' => 'HTML'], $tokenRaw);
+    } catch (\Throwable $e) { /* non-fatal */ }
+
+    // FX-RESELLER (2026-10-16): remember the CENTRAL bot's username in
+    // botsaz.setting.main_bot — the reseller «تسویه» screen deep-links to it.
+    try {
+        $mainTok = (string)($GLOBALS['ApiToken'] ?? '');
+        if ($mainTok === '') $mainTok = (string)($GLOBALS['APIKEY'] ?? '');
+        if ($mainTok !== '' && function_exists('fx_res_setting_patch')) {
+            $gmMe = telegram('getMe', [], $mainTok);
+            $mainUserName = (is_array($gmMe) && !empty($gmMe['ok'])) ? (string)($gmMe['result']['username'] ?? '') : '';
+            if ($mainUserName !== '') {
+                fx_res_setting_patch($targetUid, ['main_bot' => $mainUserName]);
+            }
+        }
     } catch (\Throwable $e) { /* non-fatal */ }
 
     return [true, "✅ ربات نماینده @{$remoteUsername} برای کاربر {$targetUid} ساخته و فعال شد."];
@@ -568,6 +583,54 @@ function fx_res_render_ledger(int $from_id, int $message_id, string $rid): void 
 }
 
 /**
+ * FX-RESELLER (2026-10-16): build the bot-admin list view (text + rows) for the
+ * central reseller management panel. Owner is always #1 and not removable.
+ */
+function fx_res_bot_admins_view(int $rid): array {
+    $bot = select("botsaz", "admin_ids, id_user, username", "id_user", $rid, "select", ['cache' => false]);
+    if (!is_array($bot)) {
+        return [
+            'txt' => "❌ رباتی برای نماینده {$rid} ثبت نشده است.",
+            'rows' => [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]],
+        ];
+    }
+    $owner = (string)$bot['id_user'];
+    $ids = json_decode((string)($bot['admin_ids'] ?? '[]'), true);
+    if (!is_array($ids)) $ids = [];
+    $ids = array_values(array_unique(array_map('strval', $ids)));
+    if (!in_array($owner, $ids, true)) array_unshift($ids, $owner);
+
+    $txt = "👥 <b>مدیران ربات نماینده {$rid}</b>\n"
+        . "🤖 @{$bot['username']}\n\n";
+    $rows = [];
+    foreach ($ids as $i => $aid) {
+        $tag = ($aid === $owner) ? ' (مالک)' : '';
+        $txt .= ($i + 1) . ". <code>{$aid}</code>{$tag}\n";
+        if ($aid !== $owner) {
+            $rows[] = [['text' => "🗑 حذف {$aid}", 'callback_data' => "fx_res_admdel_{$rid}_{$i}"]];
+        }
+    }
+    $txt .= "\nℹ️ مدیران می‌توانند وارد پنل مدیریت این ربات شوند. («حساب من» مخصوص مالک است.)";
+    $rows[] = [['text' => '➕ افزودن مدیر', 'callback_data' => "fx_res_admadd_{$rid}"]];
+    $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
+    return ['txt' => $txt, 'rows' => $rows];
+}
+
+function fx_res_render_bot_admins(int $from_id, int $message_id, int $rid): void {
+    $v = fx_res_bot_admins_view($rid);
+    step('fx_res_admins', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    Editmessagetext($from_id, $message_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
+}
+
+function fx_res_send_bot_admins(int $from_id, int $rid): void {
+    $v = fx_res_bot_admins_view($rid);
+    step('fx_res_admins', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    sendmessage($from_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
+}
+
+/**
  * Render the buyer/service list for a reseller (edit-in-place, glass UI).
  */
 function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
@@ -743,6 +806,21 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         $bal = number_format(fx_reseller_db_balance($rid));
         step('fx_res_view', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
+        $__fxDebtSt = fx_debt_state($rid);
+        $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
+            ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
+            : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
+        $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
+        $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
+        $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
+            ? "\n🤖 ربات: @{$__fxBot['username']} | https://t.me/{$__fxBot['username']}"
+            : "\n⚠️ رباتی برای این نماینده ثبت نشده";
+        // FX-RESELLER (2026-10-16): bot stop/start from the central panel + status line.
+        $__fxBotSet = function_exists('fx_res_setting_get') ? fx_res_setting_get($rid) : [];
+        $__fxBotStopped = ((string)($__fxBotSet['bot_disabled'] ?? '0') === '1');
+        if ($__fxBotStopped) {
+            $__fxBotLine .= "\n⏸ ربات متوقف است (کاربران نمی‌توانند استفاده کنند)";
+        }
         $kb = fx_res_inline_kb([
             [['text' => '➕ شارژ موجودی', 'callback_data' => "fx_res_credit_{$rid}"],
              ['text' => '➖ کسر موجودی', 'callback_data' => "fx_res_debit_{$rid}"]],
@@ -758,19 +836,57 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
              ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
             [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"],
              ['text' => '📒 دفتر حساب', 'callback_data' => "fx_res_ledger_{$rid}"]],
+            [['text' => '👥 مدیران ربات', 'callback_data' => "fx_res_admins_{$rid}"],
+             ['text' => ($__fxBotStopped ? '▶️ فعال‌سازی ربات' : '⏸ توقف ربات'), 'callback_data' => "fx_res_bottoggle_{$rid}"]],
             [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
         ]);
-        $__fxDebtSt = fx_debt_state($rid);
-        $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
-            ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
-            : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
-        $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
-        $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
-        $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
-            ? "\n🤖 ربات: @{$__fxBot['username']} | https://t.me/{$__fxBot['username']}"
-            : "\n⚠️ رباتی برای این نماینده ثبت نشده";
         $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان" . $__fxBotLine . $__fxDebtLine;
         Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+
+    // --- bot admins + stop/start (FX-RESELLER 2026-10-16, central panel) ---
+    if (preg_match('/^fx_res_admins_(\d+)$/', $datain, $m)) {
+        fx_res_render_bot_admins($from_id, (int)$message_id, (int)$m[1]);
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_bottoggle_(\d+)$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        $cur = function_exists('fx_res_setting_get') ? fx_res_setting_get($rid) : [];
+        $stopped = ((string)($cur['bot_disabled'] ?? '0') === '1');
+        fx_res_setting_patch($rid, ['bot_disabled' => $stopped ? '0' : '1']);
+        // re-render the detail screen in place (button + status reflect the new state)
+        return fx_reseller_mgmt_dispatch("fx_res_sel_{$rid}", $from_id, (int)$message_id, $user, $backuser);
+    }
+    if (preg_match('/^fx_res_admadd_(\d+)$/', $datain, $m)) {
+        step('fx_res_do_addadmin', $from_id);
+        update("user", "Processing_value", $m[1], "id", $from_id);
+        Editmessagetext($from_id, (int)$message_id, "👥 آیدی عددی مدیر جدید را برای ربات نماینده {$m[1]} وارد کنید:\nانصراف: /cancel", null, 'html');
+        fx_res_answer_cb();
+        return true;
+    }
+    if (preg_match('/^fx_res_admdel_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        $idx = (int)$m[2];
+        $bot = select("botsaz", "admin_ids, id_user", "id_user", $rid, "select", ['cache' => false]);
+        if (is_array($bot)) {
+            $owner = (string)$bot['id_user'];
+            $ids = json_decode((string)($bot['admin_ids'] ?? '[]'), true);
+            if (!is_array($ids)) $ids = [];
+            $ids = array_values(array_unique(array_map('strval', $ids)));
+            if (!in_array($owner, $ids, true)) array_unshift($ids, $owner);
+            if (isset($ids[$idx]) && $ids[$idx] !== $owner) {
+                unset($ids[$idx]);
+                $ids = array_values($ids);
+                try {
+                    $pdo->prepare("UPDATE botsaz SET admin_ids = :a WHERE id_user = :u")
+                        ->execute([':a' => json_encode($ids), ':u' => (string)$rid]);
+                } catch (\Throwable $e) {}
+            }
+        }
+        fx_res_render_bot_admins($from_id, (int)$message_id, $rid);
         fx_res_answer_cb();
         return true;
     }
@@ -1328,6 +1444,66 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         fx_res_exit_to_hub($from_id);
         return true;
     }
+
+    if ($user['step'] === 'fx_res_do_addadmin') {
+        $rid = intval($user['Processing_value']);
+        if (trim($text) === '/cancel') {
+            sendmessage($from_id, "لغو شد.", $backuser, 'html');
+            step('home', $from_id);
+            update("user", "Processing_value", 0, "id", $from_id);
+            if ($rid > 0) fx_res_send_bot_admins($from_id, $rid);
+            return true;
+        }
+        $aid = trim($text);
+        if (!ctype_digit($aid) || strlen($aid) < 5) {
+            sendmessage($from_id, "❌ آیدی عددی معتبر وارد کنید (مثال: 123456789).\nانصراف: /cancel", $backuser, 'html');
+            return true;
+        }
+        if ($rid <= 0) {
+            sendmessage($from_id, "❌ نماینده مشخص نیست؛ دوباره از فهرست وارد شوید.", $backuser, 'html');
+            fx_res_exit_to_hub($from_id);
+            return true;
+        }
+        $bot = select("botsaz", "admin_ids, id_user", "id_user", $rid, "select", ['cache' => false]);
+        if (!is_array($bot)) {
+            sendmessage($from_id, "❌ رباتی برای این نماینده ثبت نشده است.", $backuser, 'html');
+            fx_res_exit_to_hub($from_id);
+            return true;
+        }
+        $owner = (string)$bot['id_user'];
+        $ids = json_decode((string)($bot['admin_ids'] ?? '[]'), true);
+        if (!is_array($ids)) $ids = [];
+        $ids = array_values(array_unique(array_map('strval', $ids)));
+        if (!in_array($owner, $ids, true)) array_unshift($ids, $owner);
+        if (in_array($aid, $ids, true)) {
+            sendmessage($from_id, "ℹ️ این آیدی از قبل مدیر این ربات است.", $backuser, 'html');
+            step('home', $from_id);
+            update("user", "Processing_value", 0, "id", $from_id);
+            fx_res_send_bot_admins($from_id, $rid);
+            return true;
+        }
+        $ids[] = $aid;
+        $ok = false;
+        try {
+            $stmt = $pdo->prepare("UPDATE botsaz SET admin_ids = :a WHERE id_user = :u");
+            $stmt->execute([':a' => json_encode($ids, JSON_UNESCAPED_UNICODE), ':u' => (string)$rid]);
+            $ok = true;
+        } catch (\Throwable $e) {
+            error_log('[FX_RES] add admin failed rid=' . $rid . ' aid=' . $aid . ': ' . $e->getMessage());
+        }
+        if ($ok) {
+            sendmessage($from_id, "✅ کاربر {$aid} به مدیران ربات نماینده {$rid} اضافه شد.", $backuser, 'html');
+            try {
+                sendmessage((int)$aid, "🎉 شما به عنوان مدیر ربات نمایندگی @{$bot['username']} اضافه شدید.", null, 'HTML', fx_reseller_bot_token($rid));
+            } catch (\Throwable $e) { /* admin may not have started the bot yet */ }
+        } else {
+            sendmessage($from_id, "❌ خطا در ذخیره مدیر. دوباره تلاش کنید.", $backuser, 'html');
+        }
+        step('home', $from_id);
+        update("user", "Processing_value", 0, "id", $from_id);
+        fx_res_send_bot_admins($from_id, $rid);
+        return true;
+    }
     return false;
 }
 
@@ -1370,7 +1546,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
 
     // --- text-entry steps (primary consumer: bootstrap_1 gate; this is a net) ---
     // (fx_res_my_do_retail is consumed by fx_myprices_gate in fx_myprices.php)
-    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend'], true)) {
+    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend', 'fx_res_do_addadmin'], true)) {
         if (fx_reseller_text_handler($text, (array)$user, $from_id, $backadmin)) {
             return true;
         }
