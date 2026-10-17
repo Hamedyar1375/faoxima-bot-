@@ -3220,6 +3220,21 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
                 if ($rxCompletion !== 'completed') {
                     return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
                 }
+                if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
+                    $__fxRid = (int)FX_RESELLER_ID;
+                    if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+                        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
+                        if ($__fxDebtWholesale <= 0) {
+                            $__fxDebtWholesale = (int)$get_invoice['price_product'];
+                        }
+                        if ($__fxDebtWholesale > 0) {
+                            list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'purchase_gateway', (string)$order_id);
+                            if (!$__fxIncOk) {
+                                error_log('[FX_DEBT] gateway purchase ledger (national) failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
+                            }
+                        }
+                    }
+                }
                 sendmessage($Balance_id['id'], $textbotlang['users']['selectoption'], $keyboard, 'HTML');
                 return rx_pf_result('completed', 'national_stock');
             }
@@ -3373,6 +3388,26 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
         }
+
+        // FX-RESELLER (2026-10-17): gateway-paid new purchase fulfilled → record the
+        // reseller's wholesale debt (same formula as the wallet path in user_flow;
+        // idempotent because fulfillment may re-run/reconcile).
+        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
+            $__fxRid = (int)FX_RESELLER_ID;
+            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
+                $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
+                if ($__fxDebtWholesale <= 0) {
+                    $__fxDebtWholesale = (int)$get_invoice['price_product'];
+                }
+                if ($__fxDebtWholesale > 0) {
+                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'purchase_gateway', (string)$order_id);
+                    if (!$__fxIncOk) {
+                        error_log('[FX_DEBT] gateway purchase ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
+                    }
+                }
+            }
+        }
+
         $Shoppinginfo = json_encode([
             'inline_keyboard' => [
                 [

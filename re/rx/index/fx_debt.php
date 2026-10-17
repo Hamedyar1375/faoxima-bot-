@@ -557,7 +557,9 @@ if (!function_exists('fx_reseller_sale_notify')) {
             }
             $typeLabel = [
                 'purchase' => '🛒 خرید سرویس جدید',
+                'purchase_gateway' => '🛒 خرید سرویس جدید (درگاه)',
                 'bulk_purchase' => '🛒 خرید عمده (چند سرویس)',
+                'change_location' => '📍 تغییر موقعیت سرویس',
                 'renewal' => '🔁 تمدید سرویس',
                 'renewal_gateway' => '🔁 تمدید سرویس (درگاه)',
                 'extra_volume' => '🔋 خرید حجم اضافه',
@@ -571,7 +573,7 @@ if (!function_exists('fx_reseller_sale_notify')) {
             $paidTxt = '';
             if ($pdo instanceof PDO && $ref !== '') {
                 try {
-                    if (in_array($method, ['renewal_gateway', 'extra_volume_gateway', 'extra_time_gateway'], true)) {
+                    if (in_array($method, ['renewal_gateway', 'extra_volume_gateway', 'extra_time_gateway', 'purchase_gateway'], true)) {
                         $stmt = $pdo->prepare("SELECT id_user, price FROM Payment_report WHERE id_order = :ref LIMIT 1");
                         $stmt->execute([':ref' => $ref]);
                         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -649,7 +651,7 @@ if (!function_exists('fx_reseller_statement_build')) {
         if ($pdo instanceof PDO) {
             try {
                 $since = date('Y-m-d H:i:s', $sinceTs);
-                $stmt = $pdo->prepare("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND scope = 'bot' AND direction = 'in' AND time >= :since AND method IN ('purchase','bulk_purchase','renewal','renewal_gateway','extra_volume','extra_volume_gateway','extra_time','extra_time_gateway')");
+                $stmt = $pdo->prepare("SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM fx_debt_log WHERE reseller_id = :rid AND scope = 'bot' AND direction = 'in' AND time >= :since AND method IN ('purchase','purchase_gateway','bulk_purchase','change_location','renewal','renewal_gateway','extra_volume','extra_volume_gateway','extra_time','extra_time_gateway')");
                 $stmt->execute([':rid' => $rid, ':since' => $since]);
                 $row = $stmt->fetch(PDO::FETCH_ASSOC);
                 if (is_array($row)) {

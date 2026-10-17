@@ -30,6 +30,46 @@ if (isset($update_id) && isDuplicateUpdate($update_id)) {
     }
     exit;
 }
+// === FX-ACCOUNT (2026-10-17, session 5): per-user money-callback lock ===
+// جلوگیری از پردازش هم‌زمان دو عملیات مالی برای یک کاربر (دابل‌کلیک/ریتِری)
+// که می‌تواند به سرویس بدون کسر یا ثبت بدهی ناقص منجر شود.
+// آزادسازی با register_shutdown_function انجام می‌شود چون اتصال PDO persistent است.
+$_rxMoneyCallbackPrefixes = [
+    'confirmandgetservice',
+    'confirmserivce', 'confirmserdiscount', 'confirmserivces-',
+    'confirmaextra-', 'confirmaextradiscount-', 'confirmaextras_',
+    'confirmaextratime-', 'confirmaextratimediscount-',
+    'confirmchangeloccha_',
+    'transferbal_confirm',
+    'fx_myacc_settle',
+];
+$_rxMoneyNeedLock = false;
+if (is_string($datain) && $datain !== '') {
+    foreach ($_rxMoneyCallbackPrefixes as $_rxPfx) {
+        if (strpos($datain, $_rxPfx) === 0) {
+            $_rxMoneyNeedLock = true;
+            break;
+        }
+    }
+}
+if ($_rxMoneyNeedLock && !empty($from_id) && function_exists('rx_callback_lock_acquire')) {
+    $_rxMoneyLockName = rx_callback_lock_acquire($from_id, 'money', 2.5);
+    if ($_rxMoneyLockName === false) {
+        if (function_exists('rx_callback_busy_reply')) {
+            rx_callback_busy_reply($callback_query_id);
+        }
+        if (!headers_sent()) {
+            http_response_code(200);
+        }
+        exit;
+    }
+    if (is_string($_rxMoneyLockName) && $_rxMoneyLockName !== '' && function_exists('rx_callback_lock_release')) {
+        register_shutdown_function(function () use ($_rxMoneyLockName) {
+            rx_callback_lock_release($_rxMoneyLockName);
+        });
+    }
+}
+// === end money lock ===
 require_once 'keyboard.php';
 require_once 'vendor/autoload.php';
 require_once 'panels.php';
@@ -4398,6 +4438,28 @@ $nameconfig";
             return;
         }
     }
+    // ===== FX-DEBT GUARD (2026-10-17, session 5): reserve changeloc wholesale =====
+    // گپ شناسایی‌شده: تغییر موقعیت سرویس هیچ بدهی عمده‌ای برای نماینده ثبت نمی‌کرد.
+    $__fxDebtModeCl = false;
+    $__fxRidCl = 0;
+    $__fxReservedCl = 0;
+    $__fxClRef = (string)($nameloc['id_invoice'] ?? '');
+    if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
+        $__fxRidCl = (int)FX_RESELLER_ID;
+        if (fx_debt_state($__fxRidCl)['mode'] === 'debt') {
+            $__fxDebtModeCl = true;
+            $__fxClWholesale = (int)$Pricechange;
+            if ($__fxClWholesale > 0) {
+                $__fxClRes = fx_debt_reserve($__fxRidCl, $__fxClWholesale);
+                if (empty($__fxClRes[0])) {
+                    sendmessage($from_id, "⛔ امکان ثبت تغییر موقعیت اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                    return;
+                }
+                $__fxReservedCl = $__fxClWholesale;
+            }
+        }
+    }
+    // ===== END FX-DEBT GUARD =====
     $keyboardextend = json_encode([
         'inline_keyboard' => [
             [
@@ -4461,6 +4523,9 @@ $nameconfig";
                     'parse_mode' => "HTML"
                 ]);
             }
+            if (!empty($__fxReservedCl) && function_exists('fx_debt_release')) {
+                fx_debt_release($__fxRidCl, $__fxReservedCl, $__fxClRef);
+            }
             return;
         }
         $remove = $ManagePanel->RemoveUser($nameloc['Service_location'], $nameloc['username']);
@@ -4494,12 +4559,21 @@ $nameconfig";
             : 0;
         $__chargePc = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $Pricechange, $__allowNegPc) : ['ok' => false];
         if (empty($__chargePc['ok'])) {
+            if (!empty($__fxReservedCl) && function_exists('fx_debt_release')) {
+                fx_debt_release($__fxRidCl, $__fxReservedCl, $__fxClRef);
+            }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
         }
         $Balance_Low_user = $__chargePc['new_balance'];
         if (function_exists('wallet_ledger_record')) {
             wallet_ledger_record($from_id, 'debit', $Pricechange, 'service_action', 'تغییر موقعیت سرویس', null, 'invoice', (string)($nameloc['id_invoice'] ?? ''));
+        }
+        if (!empty($__fxReservedCl) && function_exists('fx_debt_commit')) {
+            list($__fxIncOkCl, $__fxIncReasonCl) = fx_debt_commit($__fxRidCl, $__fxReservedCl, 'change_location', $__fxClRef);
+            if (empty($__fxIncOkCl)) {
+                error_log('[FX_DEBT] changeloc ledger commit failed rid=' . $__fxRidCl . ' amt=' . $__fxReservedCl . ' invoice=' . $__fxClRef . ' reason=' . $__fxIncReasonCl);
+            }
         }
     }
     update("invoice", "Service_location", $marzban_list_get_new['name_panel'], "username", $nameloc['username']);
