@@ -387,7 +387,7 @@ function fx_res_admin_products_data(string $rid, int $page = 1, int $per = 10): 
     return [$rows, $total, $page, $per];
 }
 
-function fx_res_render_admin_products(int $from_id, int $message_id, int $rid, int $page = 1): void {
+function fx_res_admin_products_view(string $rid, int $page = 1): array {
     global $pdo;
 
     $ridS = (string)$rid;
@@ -427,8 +427,20 @@ function fx_res_render_admin_products(int $from_id, int $message_id, int $rid, i
     if ($page < $pages) $nav[] = ['text' => 'صفحه بعد ➡️', 'callback_data' => "fx_res_products_{$ridS}_" . ($page + 1)];
     if ($nav) $kbRows[] = $nav;
     $kbRows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$ridS}"]];
+    return ['txt' => $msg, 'rows' => $kbRows];
+}
 
-    Editmessagetext($from_id, (int)$message_id, $msg, fx_res_inline_kb($kbRows), 'HTML');
+function fx_res_render_admin_products(int $from_id, int $message_id, int $rid, int $page = 1): void {
+    $v = fx_res_admin_products_view((string)$rid, $page);
+    Editmessagetext($from_id, (int)$message_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
+}
+
+function fx_res_send_admin_products(int $from_id, int $rid, int $page = 1): void {
+    $v = fx_res_admin_products_view((string)$rid, $page);
+    step('fx_res_view', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    update("user", "Processing_value_four", 'prod:' . max(1, (int)$page), "id", $from_id);
+    sendmessage($from_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
 }
 
 
@@ -730,11 +742,112 @@ function fx_res_send_bot_admins(int $from_id, int $rid): void {
 }
 
 /**
+ * FX-NAV (2026-10-17): detail-screen builder shared by the edit-in-place
+ * renderer and the send-variant used when a text step must RETURN to the
+ * reseller menu instead of exiting the whole section.
+ */
+function fx_res_bot_detail_view(int $rid): array {
+    if ($rid <= 0) {
+        return ['ok' => false, 'txt' => "❌ نماینده یافت نشد.", 'rows' => [fx_res_back_admin_row()]];
+    }
+    $rUser = select("user", "*", "id", $rid, "select");
+    if (!$rUser) {
+        return ['ok' => false, 'txt' => "❌ نماینده یافت نشد.", 'rows' => [fx_res_back_admin_row()]];
+    }
+    $bal = number_format(fx_reseller_db_balance($rid));
+    $__fxDebtSt = fx_debt_state($rid);
+    $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
+        ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
+        : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
+    $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
+    $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
+    $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
+        ? "\n🤖 ربات: @{$__fxBot['username']} | https://t.me/{$__fxBot['username']}"
+        : "\n⚠️ رباتی برای این نماینده ثبت نشده";
+    $__fxBotSet = function_exists('fx_res_setting_get') ? fx_res_setting_get($rid) : [];
+    $__fxBotStopped = ((string)($__fxBotSet['bot_disabled'] ?? '0') === '1');
+    if ($__fxBotStopped) {
+        $__fxBotLine .= "\n⏸ ربات متوقف است (کاربران نمی‌توانند استفاده کنند)";
+    }
+    $rows = [
+        [['text' => '➕ شارژ موجودی', 'callback_data' => "fx_res_credit_{$rid}"],
+         ['text' => '➖ کسر موجودی', 'callback_data' => "fx_res_debit_{$rid}"]],
+        [['text' => '📦 اختصاص محصول', 'callback_data' => "fx_res_asgn_prod_{$rid}"],
+         ['text' => '🔌 اختصاص پنل', 'callback_data' => "fx_res_asgn_panel_{$rid}"]],
+        [['text' => '💳 اعتباری (بدهی)', 'callback_data' => "fx_res_debt_{$rid}"],
+         ['text' => '🔑 اعتبار پاسارگاد', 'callback_data' => "fx_res_pasargad_{$rid}"]],
+        [['text' => '👥 خریداران (سرویس‌ها)', 'callback_data' => "fx_res_buyers_{$rid}"],
+         ['text' => '🏷️ قیمت عمده‌فروشی', 'callback_data' => "fx_res_whprice_{$rid}"]],
+        [['text' => '🛍 محصولات نماینده', 'callback_data' => "fx_res_products_{$rid}"]],
+        [['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"],
+         ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
+        [['text' => '⚙️ تنظیم سقف بدهی', 'callback_data' => "fx_res_debt_ceiling_{$rid}"],
+         ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
+        [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"],
+         ['text' => '📒 دفتر حساب', 'callback_data' => "fx_res_ledger_{$rid}"]],
+        [['text' => '👥 مدیران ربات', 'callback_data' => "fx_res_admins_{$rid}"],
+         ['text' => ($__fxBotStopped ? '▶️ فعال‌سازی ربات' : '⏸ توقف ربات'), 'callback_data' => "fx_res_bottoggle_{$rid}"]],
+        [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
+    ];
+    $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان" . $__fxBotLine . $__fxDebtLine;
+    return ['ok' => true, 'txt' => $txt, 'rows' => $rows];
+}
+
+function fx_res_send_bot_detail(int $from_id, int $rid): void {
+    if ($rid <= 0) {
+        fx_res_exit_to_hub($from_id);
+        return;
+    }
+    $v = fx_res_bot_detail_view($rid);
+    if (empty($v['ok'])) {
+        fx_res_exit_to_hub($from_id);
+        return;
+    }
+    step('fx_res_view', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    sendmessage($from_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
+}
+
+function fx_res_send_list(int $from_id): void {
+    step('home', $from_id);
+    update("user", "Processing_value", 0, "id", $from_id);
+    sendmessage($from_id, "🏢 <b>مدیریت ربات‌های نماینده</b>\nیک نماینده را انتخاب کنید یا ربات جدید بسازید:", fx_res_inline_kb(fx_res_list_rows(fx_reseller_get_all())), 'HTML');
+}
+
+function fx_res_send_whlist(int $from_id, string $rid, int $page = 1): void {
+    if ((int)$rid <= 0) {
+        fx_res_exit_to_hub($from_id);
+        return;
+    }
+    $page = max(1, $page);
+    step('fx_res_whprice_list', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    update("user", "Processing_value_four", 'whlist:' . $page, "id", $from_id);
+    $title = "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید (صفحه {$page}):";
+    sendmessage($from_id, $title, fx_res_inline_kb(fx_res_product_rows($rid, $page)), 'HTML');
+}
+
+/**
+ * FX-NAV (2026-10-17): route back from the wholesale-price text step to its
+ * logical origin — 'prod:N' = products manager page, 'whlist:N' = wholesale
+ * product list page, anything else = reseller detail menu.
+ */
+function fx_res_send_wh_origin(int $from_id, int $rid, string $origin): void {
+    if (preg_match('/^whlist:(\d+)$/', $origin, $m)) {
+        fx_res_send_whlist($from_id, (string)$rid, max(1, (int)$m[1]));
+        return;
+    }
+    if (preg_match('/^prod:(\d+)$/', $origin, $m)) {
+        fx_res_send_admin_products($from_id, $rid, max(1, (int)$m[1]));
+        return;
+    }
+    fx_res_send_bot_detail($from_id, $rid);
+}
+
+/**
  * Render the buyer/service list for a reseller (edit-in-place, glass UI).
  */
-function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
-    step('fx_res_buyers', $from_id);
-    update("user", "Processing_value", $rid, "id", $from_id);
+function fx_res_buyers_view(string $rid): array {
     $svcs = fx_res_buyer_services($rid);
     $rows = [];
     $txt = "👥 <b>سرویس‌های خریداران نماینده {$rid}</b>\n";
@@ -766,7 +879,25 @@ function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void 
         $txt .= "\n\n" . count($svcs) . " سرویس فعال نمایش داده شد.";
     }
     $rows[] = [['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]];
-    Editmessagetext($from_id, $message_id, $txt, fx_res_inline_kb($rows), 'HTML');
+    return ['txt' => $txt, 'rows' => $rows];
+}
+
+function fx_res_render_buyers(int $from_id, int $message_id, string $rid): void {
+    step('fx_res_buyers', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    $v = fx_res_buyers_view($rid);
+    Editmessagetext($from_id, $message_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
+}
+
+function fx_res_send_buyers(int $from_id, string $rid): void {
+    if ((int)$rid <= 0) {
+        fx_res_exit_to_hub($from_id);
+        return;
+    }
+    step('fx_res_buyers', $from_id);
+    update("user", "Processing_value", $rid, "id", $from_id);
+    $v = fx_res_buyers_view($rid);
+    sendmessage($from_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
 }
 
 /**
@@ -896,52 +1027,15 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
     // --- detail ---
     if (preg_match('/^fx_res_sel_(\d+)$/', $datain, $m)) {
         $rid = intval($m[1]);
-        $rUser = select("user", "*", "id", $rid, "select");
-        if (!$rUser) {
-            Editmessagetext($from_id, $message_id, "❌ نماینده یافت نشد.", fx_res_inline_kb(fx_res_back_admin_row()), 'HTML');
+        $v = fx_res_bot_detail_view($rid);
+        if (empty($v['ok'])) {
+            Editmessagetext($from_id, $message_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
             fx_res_answer_cb();
             return true;
         }
-        $bal = number_format(fx_reseller_db_balance($rid));
         step('fx_res_view', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
-        $__fxDebtSt = fx_debt_state($rid);
-        $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
-            ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
-            : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
-        $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
-        $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
-        $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
-            ? "\n🤖 ربات: @{$__fxBot['username']} | https://t.me/{$__fxBot['username']}"
-            : "\n⚠️ رباتی برای این نماینده ثبت نشده";
-        // FX-RESELLER (2026-10-16): bot stop/start from the central panel + status line.
-        $__fxBotSet = function_exists('fx_res_setting_get') ? fx_res_setting_get($rid) : [];
-        $__fxBotStopped = ((string)($__fxBotSet['bot_disabled'] ?? '0') === '1');
-        if ($__fxBotStopped) {
-            $__fxBotLine .= "\n⏸ ربات متوقف است (کاربران نمی‌توانند استفاده کنند)";
-        }
-        $kb = fx_res_inline_kb([
-            [['text' => '➕ شارژ موجودی', 'callback_data' => "fx_res_credit_{$rid}"],
-             ['text' => '➖ کسر موجودی', 'callback_data' => "fx_res_debit_{$rid}"]],
-            [['text' => '📦 اختصاص محصول', 'callback_data' => "fx_res_asgn_prod_{$rid}"],
-             ['text' => '🔌 اختصاص پنل', 'callback_data' => "fx_res_asgn_panel_{$rid}"]],
-            [['text' => '💳 اعتباری (بدهی)', 'callback_data' => "fx_res_debt_{$rid}"],
-             ['text' => '🔑 اعتبار پاسارگاد', 'callback_data' => "fx_res_pasargad_{$rid}"]],
-            [['text' => '👥 خریداران (سرویس‌ها)', 'callback_data' => "fx_res_buyers_{$rid}"],
-             ['text' => '🏷️ قیمت عمده‌فروشی', 'callback_data' => "fx_res_whprice_{$rid}"]],
-            [['text' => '🛍 محصولات نماینده', 'callback_data' => "fx_res_products_{$rid}"]],
-            [['text' => '⚙ وبهوک ربات', 'callback_data' => "fx_res_wh_{$rid}"],
-             ['text' => '🗑 حذف ربات', 'callback_data' => "fx_res_delconfirm_{$rid}"]],
-            [['text' => '⚙️ تنظیم سقف بدهی', 'callback_data' => "fx_res_debt_ceiling_{$rid}"],
-             ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
-            [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"],
-             ['text' => '📒 دفتر حساب', 'callback_data' => "fx_res_ledger_{$rid}"]],
-            [['text' => '👥 مدیران ربات', 'callback_data' => "fx_res_admins_{$rid}"],
-             ['text' => ($__fxBotStopped ? '▶️ فعال‌سازی ربات' : '⏸ توقف ربات'), 'callback_data' => "fx_res_bottoggle_{$rid}"]],
-            [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
-        ]);
-        $txt = "👤 {$__fxNameG}\n💰 موجودی: {$bal} تومان" . $__fxBotLine . $__fxDebtLine;
-        Editmessagetext($from_id, $message_id, $txt, $kb, 'HTML');
+        Editmessagetext($from_id, $message_id, $v['txt'], fx_res_inline_kb($v['rows']), 'HTML');
         fx_res_answer_cb();
         return true;
     }
@@ -961,9 +1055,11 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         return fx_reseller_mgmt_dispatch("fx_res_sel_{$rid}", $from_id, (int)$message_id, $user, $backuser);
     }
     if (preg_match('/^fx_res_admadd_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
         step('fx_res_do_addadmin', $from_id);
-        update("user", "Processing_value", $m[1], "id", $from_id);
-        Editmessagetext($from_id, (int)$message_id, "👥 آیدی عددی مدیر جدید را برای ربات نماینده {$m[1]} وارد کنید:\nانصراف: /cancel", null, 'html');
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, (int)$message_id, "👥 آیدی عددی مدیر جدید را برای ربات نماینده {$rid} وارد کنید:\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به مدیران ربات', 'callback_data' => "fx_res_admins_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -993,16 +1089,20 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
 
     // --- charge / debit (text-entry steps) ---
     if (preg_match('/^fx_res_credit_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
         step('fx_res_do_credit', $from_id);
-        update("user", "Processing_value", $m[1], "id", $from_id);
-        Editmessagetext($from_id, $message_id, "💰 مبلغ شارژ (تومان) را برای نماینده {$m[1]} وارد کنید:\nانصراف: /cancel", null, 'html');
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "💰 مبلغ شارژ (تومان) را برای نماینده {$rid} وارد کنید:\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
     if (preg_match('/^fx_res_debit_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
         step('fx_res_do_debit', $from_id);
-        update("user", "Processing_value", $m[1], "id", $from_id);
-        Editmessagetext($from_id, $message_id, "➖ مبلغ کسر (تومان) را برای نماینده {$m[1]} وارد کنید:\nانصراف: /cancel", null, 'html');
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "➖ مبلغ کسر (تومان) را برای نماینده {$rid} وارد کنید:\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1027,10 +1127,17 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
             $st = $pdo->prepare("SELECT price_product FROM product WHERE id = :pid LIMIT 1");
             $st->execute([':pid' => $pidI]);
             $retail = $st->fetchColumn();
+            // FX-NAV (2026-10-17): keep whprice-list page so /cancel & back return there.
+            $__whPage = 1;
+            if (preg_match('/^whlist:(\d+)$/', (string)($user['Processing_value_four'] ?? ''), $__wm)) {
+                $__whPage = max(1, (int)$__wm[1]);
+            }
             step('fx_res_do_whprice_val', $from_id);
             update("user", "Processing_value", $rid, "id", $from_id);
             update("user", "Processing_value_one", $pidI, "id", $from_id);
-            Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای این محصول وارد کنید:\n💵 قیمت فروش مشتری: " . number_format((float)($retail ?: 0)) . " تومان\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel", null, 'html');
+            update("user", "Processing_value_four", 'whlist:' . $__whPage, "id", $from_id);
+            Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای این محصول وارد کنید:\n💵 قیمت فروش مشتری: " . number_format((float)($retail ?: 0)) . " تومان\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel",
+                fx_res_inline_kb([['text' => '⬅️ بازگشت به انتخاب محصول', 'callback_data' => "fx_res_whpage_{$rid}_{$__whPage}"]]), 'html');
             fx_res_answer_cb();
             return true;
         }
@@ -1070,6 +1177,9 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         $isWh = ((string)($user['step'] ?? '') === 'fx_res_whprice_list');
         step($isWh ? 'fx_res_whprice_list' : 'fx_res_prod_list', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
+        if ($isWh) {
+            update("user", "Processing_value_four", 'whlist:' . $page, "id", $from_id);
+        }
         $title = $isWh
             ? "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید (صفحه {$page}):"
             : "📦 محصول را برای اختصاص به نماینده {$rid} انتخاب کنید (صفحه {$page}):";
@@ -1089,9 +1199,11 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
 
     // --- pasargad (text-entry step) ---
     if (preg_match('/^fx_res_pasargad_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
         step('fx_res_do_pasargad', $from_id);
-        update("user", "Processing_value", $m[1], "id", $from_id);
-        Editmessagetext($from_id, $message_id, "🔑 فرمت: <code>panel_id|username|password</code>\nمثال: <code>3|admin|secret123</code>\nانصراف: /cancel", null, 'html');
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🔑 فرمت: <code>panel_id|username|password</code>\nمثال: <code>3|admin|secret123</code>\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1131,7 +1243,8 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
         step('fx_res_do_debt_ceiling', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
-        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار (به تومان) را وارد کنید:\nمثال: 50000000\n(هر خرید تا این سقف به‌حساب ثبت می‌شود)", null, 'html');
+        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار (به تومان) را وارد کنید:\nمثال: 50000000\n(هر خرید تا این سقف به‌حساب ثبت می‌شود)\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1154,7 +1267,8 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         step('fx_res_do_debt_ceiling', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
         $st = fx_debt_state($rid);
-        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار جدید (به تومان) را وارد کنید:\nسقف فعلی: " . number_format($st['ceiling']), null, 'html');
+        Editmessagetext($from_id, $message_id, "🏦 سقف اعتبار جدید (به تومان) را وارد کنید:\nسقف فعلی: " . number_format($st['ceiling']) . "\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1164,16 +1278,39 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         $rid = $m[1];
         step('fx_res_whprice_list', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
+        update("user", "Processing_value_four", 'whlist:1', "id", $from_id);
         Editmessagetext($from_id, $message_id, "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید:", fx_res_inline_kb(fx_res_product_rows($rid)), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+    // FX-NAV (2026-10-17): explicit wholesale-list page callback so BACK from the
+    // price prompt always re-renders the wholesale list (not the assign list),
+    // regardless of the current step.
+    if (preg_match('/^fx_res_whpage_(\d+)_(\d+)$/', $datain, $m)) {
+        $rid = $m[1];
+        $page = max(1, intval($m[2]));
+        step('fx_res_whprice_list', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        update("user", "Processing_value_four", 'whlist:' . $page, "id", $from_id);
+        $title = "🏷️ محصولی که قیمت عمده‌فروشی (هزینه نماینده) آن را می‌خواهید تنظیم کنید انتخاب کنید (صفحه {$page}):";
+        Editmessagetext($from_id, $message_id, $title, fx_res_inline_kb(fx_res_product_rows($rid, $page)), 'HTML');
         fx_res_answer_cb();
         return true;
     }
     if (preg_match('/^fx_res_set_wh_(\d+)_(\d+)$/', $datain, $m)) {
         $rid = $m[1]; $pid = intval($m[2]);
+        // FX-NAV (2026-10-17): remember which products-manager page we came from
+        // so BACK / /cancel return there instead of exiting the section.
+        $__prodPage = 1;
+        if (preg_match('/^prod:(\d+)$/', (string)($user['Processing_value_four'] ?? ''), $__pm)) {
+            $__prodPage = max(1, (int)$__pm[1]);
+        }
         step('fx_res_do_whprice_val', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
         update("user", "Processing_value_one", $pid, "id", $from_id);
-        Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای محصول {$pid} وارد کنید:\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel", null, 'html');
+        update("user", "Processing_value_four", 'prod:' . $__prodPage, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "🏷️ قیمت عمده‌فروشی (هزینه هر خرید نماینده، به تومان) را برای محصول {$pid} وارد کنید:\nتا زمانی تنظیم نکنید، هزینه = قیمت فروش (حاشیه صفر).\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به محصولات نماینده', 'callback_data' => "fx_res_products_{$rid}_{$__prodPage}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1181,9 +1318,11 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
     // --- per-reseller product manager (FX-RESELLER 2026-10-16) ---
     if (preg_match('/^fx_res_products_(\d+)(?:_(\d+))?$/', $datain, $m)) {
         $rid = (int)$m[1];
+        $__page = max(1, (int)($m[2] ?? 1));
         step('fx_res_view', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
-        fx_res_render_admin_products($from_id, (int)$message_id, $rid, max(1, (int)($m[2] ?? 1)));
+        update("user", "Processing_value_four", 'prod:' . $__page, "id", $from_id);
+        fx_res_render_admin_products($from_id, (int)$message_id, $rid, $__page);
         fx_res_answer_cb();
         return true;
     }
@@ -1195,6 +1334,7 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         if (function_exists('fx_res_visibility_set')) {
             fx_res_visibility_set($pid, $rid, $hide);
         }
+        update("user", "Processing_value_four", 'prod:' . $page, "id", $from_id);
         fx_res_render_admin_products($from_id, (int)$message_id, $rid, $page);
         fx_res_answer_cb();
         return true;
@@ -1216,6 +1356,7 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
                 $pdo->prepare("UPDATE product SET agent = :a WHERE id = :pid")->execute([':a' => $newAg, ':pid' => $pid]);
             }
         } catch (\Throwable $e) {}
+        update("user", "Processing_value_four", 'prod:' . $page, "id", $from_id);
         fx_res_render_admin_products($from_id, (int)$message_id, $rid, $page);
         fx_res_answer_cb();
         return true;
@@ -1314,7 +1455,8 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         step('fx_res_do_settle', $from_id);
         update("user", "Processing_value", $rid, "id", $from_id);
         $st = fx_debt_state($rid);
-        Editmessagetext($from_id, $message_id, "💳 <b>ثبت تسویه‌حساب / واریزی</b>\nمبلغ واریزی (به تومان) را برای نماینده {$rid} وارد کنید:\n💸 بدهی فعلی: " . number_format($st['current']) . " تومان\n(مبلغ تا سقف بدهی از Current_Debt کسر می‌شود؛ مازاد به موجودی اضافه می‌گردد.)\nانصراف: /cancel", null, 'html');
+        Editmessagetext($from_id, $message_id, "💳 <b>ثبت تسویه‌حساب / واریزی</b>\nمبلغ واریزی (به تومان) را برای نماینده {$rid} وارد کنید:\n💸 بدهی فعلی: " . number_format($st['current']) . " تومان\n(مبلغ تا سقف بدهی از Current_Debt کسر می‌شود؛ مازاد به موجودی اضافه می‌گردد.)\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به منوی نماینده', 'callback_data' => "fx_res_sel_{$rid}"]]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1346,7 +1488,8 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
     if ($datain === 'fx_res_create_start') {
         step('fx_res_do_create', $from_id);
         update("user", "Processing_value", 0, "id", $from_id);
-        Editmessagetext($from_id, $message_id, "➕ <b>ساخت ربات نماینده (مدیریت مرکزی)</b>\n\nفرمت:\n<code>آیدی_نماینده|توکن_ربات</code>\n\nمثال:\n<code>6327424512|123456:AAxxx</code>\n\nانصراف: /cancel", null, 'html');
+        Editmessagetext($from_id, $message_id, "➕ <b>ساخت ربات نماینده (مدیریت مرکزی)</b>\n\nفرمت:\n<code>آیدی_نماینده|توکن_ربات</code>\n\nمثال:\n<code>6327424512|123456:AAxxx</code>\n\nانصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']]), 'html');
         fx_res_answer_cb();
         return true;
     }
@@ -1369,7 +1512,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
     global $ApiToken, $pdo;
 
     if ($user['step'] === 'fx_res_do_credit') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $rid = intval($user['Processing_value']);
         $amt = intval($text);
@@ -1398,7 +1541,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             if ($pdo->inTransaction()) $pdo->rollBack();
             error_log('[FX_RES] credit step failed rid=' . $rid . ': ' . $e->getMessage());
             sendmessage($from_id, "❌ خطا در شارژ. عملیات انجام نشد.", $backuser, 'html');
-            fx_res_exit_to_hub($from_id);
+            fx_res_send_bot_detail($from_id, $rid);
             return true;
         }
         $msg = $debtUsed > 0
@@ -1407,12 +1550,12 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         sendmessage($from_id, $msg, $backuser, 'html');
         // FX-ROUTE: notify the agent through the RESELLER bot's own token
         sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML', fx_reseller_bot_token($rid));
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_settle') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $amt = intval($text);
         if ($amt <= 0) { sendmessage($from_id, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", $backuser, 'html'); return true; }
@@ -1448,7 +1591,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             if ($pdo->inTransaction()) $pdo->rollBack();
             error_log('[FX_DEBT] settle failed rid=' . $rid . ' amt=' . $amt . ': ' . $e->getMessage());
             sendmessage($from_id, "❌ خطا در ثبت تسویه‌حساب.", $backuser, 'html');
-            fx_res_exit_to_hub($from_id);
+            fx_res_send_bot_detail($from_id, $rid);
             return true;
         }
         $creditLeft = max(0, $ceiling - $after);
@@ -1468,12 +1611,12 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         sendmessage($from_id, $msgAdmin, $backuser, 'html');
         // FX-ROUTE: notify the agent through the RESELLER bot's own token
         sendmessage($rid, $msgAgent, null, 'HTML', fx_reseller_bot_token($rid));
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_debit') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $rid = intval($user['Processing_value']);
         if (fx_reseller_db_debit($rid, intval($text), 'admin_debit', $ApiToken)) {
@@ -1483,12 +1626,12 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         } else {
             sendmessage($from_id, "❌ موجودی کافی نیست یا خطا رخ داد.", $backuser, 'html');
         }
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_debt_ceiling') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $amt = intval($text);
         if ($amt <= 0) { sendmessage($from_id, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", $backuser, 'html'); return true; }
@@ -1499,25 +1642,28 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         sendmessage($from_id, "✅ سقف اعتبار نماینده {$rid} روی " . number_format($amt) . " تومان تنظیم شد.", $backuser, 'html');
         // FX-ROUTE: notify the agent through the RESELLER bot's own token
         sendmessage($rid, "🏦 سقف اعتبار (فروش به‌حساب) شما روی " . number_format($amt) . " تومان تنظیم شد.", null, 'HTML', fx_reseller_bot_token($rid));
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_whprice_val') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        // FX-NAV (2026-10-17): return to the screen the admin came from.
+        $__whOrigin = (string)($user['Processing_value_four'] ?? '');
+        $__whRid = intval($user['Processing_value']);
+        if (trim($text) === '/cancel') { fx_res_send_wh_origin($from_id, $__whRid, $__whOrigin); return true; }
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $amt = intval($text);
-        $rid = intval($user['Processing_value']);
+        $rid = $__whRid;
         $pid = intval($user['Processing_value_one'] ?? 0);
-        if ($pid <= 0) { sendmessage($from_id, "❌ محصول مشخص نیست؛ دوباره از «🏷️ قیمت عمده‌فروشی» وارد شوید.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        if ($pid <= 0) { sendmessage($from_id, "❌ محصول مشخص نیست؛ دوباره از «🏷️ قیمت عمده‌فروشی» وارد شوید.", $backuser, 'html'); fx_res_send_wh_origin($from_id, $__whRid, $__whOrigin); return true; }
         $pdo->prepare("UPDATE product SET fx_wholesale_price = :w WHERE id = :pid")->execute([':w' => $amt, ':pid' => $pid]);
         sendmessage($from_id, "✅ قیمت عمده‌فروشی محصول {$pid} روی " . number_format($amt) . " تومان تنظیم شد.\n💵 از این به بعد هر خرید مشتری از این محصول، به‌عنوان هزینه به نماینده {$rid} محاسبه می‌شود (در حالت اعتباری: به بدهی).", $backuser, 'html');
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_wh_origin($from_id, $__whRid, $__whOrigin);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_pasargad') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
         $parts = explode('|', $text);
         if (count($parts) !== 3) { sendmessage($from_id, "❌ فرمت: panel_id|username|password", $backuser, 'html'); return true; }
         $panelId = intval(trim($parts[0]));
@@ -1528,20 +1674,20 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         } else {
             sendmessage($from_id, "❌ خطا در تنظیم اعتبار.", $backuser, 'html');
         }
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_bot_detail($from_id, intval($user['Processing_value']));
         return true;
     }
 
     if ($user['step'] === 'fx_res_buyer_extend') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
-        if (!ctype_digit(trim($text)) || intval(trim($text)) <= 0) { sendmessage($from_id, "❌ فقط تعداد روز (عدد) وارد کنید.", $backuser, 'html'); return true; }
-        $days = intval(trim($text));
         $iid = (string)$user['Processing_value'];
         $rid = (string)fx_res_buyer_rid($iid);
+        if (trim($text) === '/cancel') { fx_res_send_buyers($from_id, $rid); return true; }
+        if (!ctype_digit(trim($text)) || intval(trim($text)) <= 0) { sendmessage($from_id, "❌ فقط تعداد روز (عدد) وارد کنید.", $backuser, 'html'); return true; }
+        $days = intval(trim($text));
         $nameloc = select("invoice", "*", "id_invoice", $iid, "select");
-        if (!is_array($nameloc)) { sendmessage($from_id, "❌ فاکتور یافت نشد.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        if (!is_array($nameloc)) { sendmessage($from_id, "❌ فاکتور یافت نشد.", $backuser, 'html'); fx_res_send_buyers($from_id, $rid); return true; }
         $marzban_list_get = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
-        if (!is_array($marzban_list_get)) { sendmessage($from_id, "❌ پنل سرویس یافت نشد.", $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        if (!is_array($marzban_list_get)) { sendmessage($from_id, "❌ پنل سرویس یافت نشد.", $backuser, 'html'); fx_res_send_buyers($from_id, $rid); return true; }
         $ext = null;
         $extErr = '';
         try {
@@ -1572,19 +1718,19 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
             $msg = is_array($ext) ? ($ext['msg'] ?? 'نامشخص') : $extErr;
             sendmessage($from_id, "❌ تمدید ناموفق بود: " . $msg, $backuser, 'html');
         }
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_buyers($from_id, (string)$rid);
         return true;
     }
 
     if ($user['step'] === 'fx_res_do_create') {
-        if (trim($text) === '/cancel') { fx_res_exit_to_hub($from_id); return true; }
+        if (trim($text) === '/cancel') { fx_res_send_list($from_id); return true; }
         $parts = explode('|', $text);
         if (count($parts) !== 2) { sendmessage($from_id, '❌ فرمت: <code>آیدی_نماینده|توکن_ربات</code>', $backuser, 'html'); return true; }
         $uid = trim($parts[0]);
-        if (!ctype_digit($uid)) { sendmessage($from_id, '❌ آیدی نماینده باید عددی باشد.', $backuser, 'html'); fx_res_exit_to_hub($from_id); return true; }
+        if (!ctype_digit($uid)) { sendmessage($from_id, '❌ آیدی نماینده باید عددی باشد.', $backuser, 'html'); fx_res_send_list($from_id); return true; }
         $res = fx_reseller_create_bot(intval($uid), trim($parts[1]));
         sendmessage($from_id, $res[1], $backuser, 'html');
-        fx_res_exit_to_hub($from_id);
+        fx_res_send_list($from_id);
         return true;
     }
 
@@ -1610,7 +1756,7 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         $bot = select("botsaz", "admin_ids, id_user", "id_user", $rid, "select", ['cache' => false]);
         if (!is_array($bot)) {
             sendmessage($from_id, "❌ رباتی برای این نماینده ثبت نشده است.", $backuser, 'html');
-            fx_res_exit_to_hub($from_id);
+            fx_res_send_bot_detail($from_id, $rid);
             return true;
         }
         $owner = (string)$bot['id_user'];
@@ -1696,7 +1842,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
     }
 
     // --- /cancel inside the section ---
-    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm', 'fx_res_report', 'fx_res_ledger'], true)) {
+    if ($text === '/cancel' && in_array($step, ['fx_res_view', 'fx_res_prod_list', 'fx_res_panel_list', 'fx_res_delbot_confirm', 'fx_res_buyers', 'fx_res_bdel_confirm', 'fx_res_report', 'fx_res_ledger', 'fx_res_admins', 'fx_res_whprice_list'], true)) {
         fx_res_exit_to_hub($from_id);
         return true;
     }

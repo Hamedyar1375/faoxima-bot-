@@ -1229,7 +1229,11 @@ if ($text == "/start" || $datain == "start" || $text == "start" || $rxStartLandi
     return;
 }
 /* FX-GLOBAL-CANCEL: universal /cancel — resets any stuck input step back to home (main + reseller bots) */
-if ($text === "/cancel" && !empty($user['step']) && $user['step'] != 'home') {
+/* FX-NAV (2026-10-17): /cancel inside reseller-management input steps (main admins only) is
+   handled by the section itself so it can return to the logical parent screen instead of
+   kicking the admin out to the main menu. */
+$_rxGlobalCancelSkip = (!defined('FX_RESELLER_ID') && strpos((string)($user['step'] ?? ''), 'fx_res_') === 0);
+if ($text === "/cancel" && !empty($user['step']) && $user['step'] != 'home' && !$_rxGlobalCancelSkip) {
     update("user", "Processing_value", "0", "id", $from_id);
     update("user", "Processing_value_one", "0", "id", $from_id);
     update("user", "Processing_value_tow", "0", "id", $from_id);
