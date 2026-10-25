@@ -55,6 +55,7 @@ final class ServicesHandler extends BaseHandler
 
         $list = [];
         foreach ($rows as $row) {
+            if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($row)) continue;
             if (!$this->productIsAllowedForAgent($row, $this->user['agent'])) continue;
             if ($nationalPanel && function_exists('nmStockHasAvailableForProduct')
                 && !nmStockHasAvailableForProduct($panel, $row)) {

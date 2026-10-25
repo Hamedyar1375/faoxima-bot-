@@ -1253,8 +1253,9 @@ if (mysqli_num_rows($locationproduct) == 1) {
         $Balance_prim = $datafactor['price_product'] - $user['Balance'];
         if ($Balance_prim <= 1)
             $Balance_prim = 0;
-        $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$userbot['agent']]);
-        $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$userbot['agent']]);
+        [$minbalance, $maxbalance] = function_exists('rx_getDepositLimits') ? rx_getDepositLimits($userbot['agent']) : [10000, 50000000];
+        $minbalance = number_format($minbalance);
+        $maxbalance = number_format($maxbalance);
         $bakinfos = json_encode([
             'inline_keyboard' => [
                 [
@@ -2074,8 +2075,9 @@ $textonebuy
         $Balance_prim = $datafactor['price_product'] - $user['Balance'];
         if ($Balance_prim <= 1)
             $Balance_prim = 0;
-        $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$userbot['agent']]);
-        $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$userbot['agent']]);
+        [$minbalance, $maxbalance] = function_exists('rx_getDepositLimits') ? rx_getDepositLimits($userbot['agent']) : [10000, 50000000];
+        $minbalance = number_format($minbalance);
+        $maxbalance = number_format($maxbalance);
         $bakinfos = json_encode([
             'inline_keyboard' => [
                 [

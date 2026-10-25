@@ -3129,6 +3129,9 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
             $stmt->execute([':name' => $get_invoice['name_product'], ':loc' => $get_invoice['Service_location'], ':agent' => $userAgent]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
+        if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $Balance_id['id'], $keyboard)) {
+            return rx_pf_abort($order_id, $rxToken, 'product_hidden_for_reseller', false);
+        }
         $username_ac = $get_invoice['username'];
         $randomString = bin2hex(random_bytes(2));
         $marzban_list_get = select("marzban_panel", "*", "name_panel", $get_invoice['Service_location'], "select");
@@ -3212,28 +3215,47 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
             if ($rxPhase === 'reconcile') {
                 return rx_pf_manual_review($order_id, $rxToken, 'national_stock_buy_unverifiable', ['username' => (string) $username_ac]);
             }
+            // FX-DEBT-P1: in credit mode resolve the authoritative wholesale BEFORE any
+            // side effect; missing wholesale = safe refund + stop (no retail fallback).
+            $__fxGwWhNational = null;
+            if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && function_exists('fx_credit_wholesale_product') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt') {
+                $__fxWhRes = fx_credit_wholesale_product($info_product, $marzban_list_get, (string)($Balance_id['agent'] ?? 'f'));
+                if (empty($__fxWhRes['ok'])) {
+                    if (function_exists('fx_credit_log_stop')) {
+                        fx_credit_log_stop('gateway_national_purchase', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $info_product['code_product'] ?? '', 'user' => $Balance_id['id'], 'reason' => $__fxWhRes['reason'] ?? '']);
+                    }
+                    $__refundWh = rx_refund_payment_once($order_id, $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - قیمت عمده این محصول تعریف نشده است', (string)$get_invoice['id_invoice']);
+                    sendmessage($Balance_id['id'], "❌ فروش اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است)." . ($__refundWh === 'refunded' ? " مبلغ پرداختی به کیف پول شما برگشت خورد." : " لطفاً با پشتیبانی در ارتباط باشید."), $keyboard, 'HTML');
+                    return rx_pf_fail($order_id, $rxToken, 'fx_wholesale_missing', $__refundWh);
+                }
+                $__fxGwWhNational = (int)$__fxWhRes['amount'];
+            }
             if (!rx_pf_prepare($order_id, $rxToken, null, ['national_stock' => true, 'username' => (string) $username_ac])) {
                 return rx_pf_abort($order_id, $rxToken, 'fulfillment_prepare_failed', true);
             }
             if (is_array($info_product) && nmStockCompleteBuyFromInventory($Balance_id['id'], $Balance_id, $marzban_list_get, $info_product, $get_invoice['id_invoice'], $username_ac, false, 'paid_national_buy')) {
+                // FX-DEBT-P2: record the wholesale debt BEFORE rx_pf_complete, so a
+                // ledger failure keeps the order in manual_review instead of
+                // completing it debt-less. The stock delivery already happened above
+                // and a national-stock buy cannot be re-verified in reconcile.
+                if (function_exists('fx_debt_gateway_record_once')) {
+                    $__fxRecNs = fx_debt_gateway_record_once((string)$order_id, 'purchase_gateway', $info_product, (array)$marzban_list_get, (string)($Balance_id['agent'] ?? 'f'), (int)($__fxGwWhNational ?? 0));
+                    if ($__fxRecNs['action'] === 'db_failed' || $__fxRecNs['action'] === 'ceiling_exceeded') {
+                        error_log('[FX_DEBT] gateway purchase ledger (national) failed order=' . $order_id . ' amt=' . $__fxRecNs['amount'] . ' reason=' . $__fxRecNs['reason']);
+                        return rx_pf_manual_review($order_id, $rxToken, 'fx_debt_record_failed', ['amount' => $__fxRecNs['amount'], 'username' => (string)$username_ac]);
+                    }
+                    if ($__fxRecNs['action'] === 'missing_wholesale') {
+                        // FX-DEBT-P1: no traceable wholesale even at fulfillment — trace,
+                        // never fall back to retail/zero.
+                        if (function_exists('fx_credit_log_stop')) {
+                            fx_credit_log_stop('gateway_national_fulfilled', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $info_product['code_product'] ?? '', 'user' => $Balance_id['id']]);
+                        }
+                        return rx_pf_manual_review($order_id, $rxToken, 'fx_wholesale_missing_after_delivery', ['username' => (string)$username_ac]);
+                    }
+                }
                 $rxCompletion = rx_pf_complete($order_id, $rxToken, ['national_stock' => true, 'username' => (string) $username_ac]);
                 if ($rxCompletion !== 'completed') {
                     return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
-                }
-                if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
-                    $__fxRid = (int)FX_RESELLER_ID;
-                    if (fx_debt_state($__fxRid)['mode'] === 'debt') {
-                        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
-                        if ($__fxDebtWholesale <= 0) {
-                            $__fxDebtWholesale = (int)$get_invoice['price_product'];
-                        }
-                        if ($__fxDebtWholesale > 0) {
-                            list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'purchase_gateway', (string)$order_id);
-                            if (!$__fxIncOk) {
-                                error_log('[FX_DEBT] gateway purchase ledger (national) failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
-                            }
-                        }
-                    }
                 }
                 sendmessage($Balance_id['id'], $textbotlang['users']['selectoption'], $keyboard, 'HTML');
                 return rx_pf_result('completed', 'national_stock');
@@ -3286,6 +3308,21 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
                 $rxBeforeState['exists'] = !empty($rxSnap['exists']);
             }
             $rxTargetState = ['username' => (string) $username_ac, 'panel' => (string) $marzban_list_get['name_panel']];
+            // FX-DEBT-P1: credit mode — resolve authoritative wholesale BEFORE any
+            // side effect; missing wholesale = safe refund + stop (no retail fallback).
+            $__fxGwWhPanel = null;
+            if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && function_exists('fx_credit_wholesale_product') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt') {
+                $__fxWhResP = fx_credit_wholesale_product($info_product, $marzban_list_get, (string)($Balance_id['agent'] ?? 'f'));
+                if (empty($__fxWhResP['ok'])) {
+                    if (function_exists('fx_credit_log_stop')) {
+                        fx_credit_log_stop('gateway_panel_purchase', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $info_product['code_product'] ?? '', 'user' => $Balance_id['id'], 'reason' => $__fxWhResP['reason'] ?? '']);
+                    }
+                    $__refundWhP = rx_refund_payment_once($order_id, $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - قیمت عمده این محصول تعریف نشده است', (string)$get_invoice['id_invoice']);
+                    sendmessage($Balance_id['id'], "❌ فروش اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است)." . ($__refundWhP === 'refunded' ? " مبلغ پرداختی به کیف پول شما برگشت خورد." : " لطفاً با پشتیبانی در ارتباط باشید."), $keyboard, 'HTML');
+                    return rx_pf_fail($order_id, $rxToken, 'fx_wholesale_missing', $__refundWhP);
+                }
+                $__fxGwWhPanel = (int)$__fxWhResP['amount'];
+            }
             if (!rx_pf_prepare($order_id, $rxToken, $rxBeforeState, $rxTargetState)) {
                 return rx_pf_abort($order_id, $rxToken, 'fulfillment_prepare_failed', true);
             }
@@ -3384,28 +3421,27 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
         if (!empty($get_invoice['id_invoice'])) {
             $rxStatements[] = ["UPDATE invoice SET Status = 'active' WHERE id_invoice = ?", [$get_invoice['id_invoice']]];
         }
+        // FX-DEBT-P2: record the wholesale debt BEFORE rx_pf_complete, so the order
+        // can never complete debt-less; a db failure keeps it reconcilable (the
+        // panel service exists and is verifiable, so reconcile can retry safely).
+        if (function_exists('fx_debt_gateway_record_once')) {
+            $__fxRecPn = fx_debt_gateway_record_once((string)$order_id, 'purchase_gateway', $info_product, (array)$marzban_list_get, (string)($Balance_id['agent'] ?? 'f'), (int)($__fxGwWhPanel ?? 0));
+            if ($__fxRecPn['action'] === 'db_failed' || $__fxRecPn['action'] === 'ceiling_exceeded') {
+                error_log('[FX_DEBT] gateway purchase ledger failed order=' . $order_id . ' amt=' . $__fxRecPn['amount'] . ' reason=' . $__fxRecPn['reason']);
+                return rx_pf_reconcile_later($order_id, $rxToken, 'fx_debt_record_failed: ' . $__fxRecPn['reason']);
+            }
+            if ($__fxRecPn['action'] === 'missing_wholesale') {
+                // FX-DEBT-P1: no traceable wholesale at fulfillment (e.g. reconcile
+                // after a product edit) — trace, never fall back to retail/zero.
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('gateway_panel_fulfilled', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $info_product['code_product'] ?? '', 'user' => $Balance_id['id']]);
+                }
+                return rx_pf_manual_review($order_id, $rxToken, 'fx_wholesale_missing_after_delivery', ['username' => (string)$dataoutput['username']]);
+            }
+        }
         $rxCompletion = rx_pf_complete($order_id, $rxToken, ['username' => (string) $dataoutput['username'], 'renamed_from' => $dataoutput['renamed_from'] ?? null], $rxStatements);
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
-        }
-
-        // FX-RESELLER (2026-10-17): gateway-paid new purchase fulfilled → record the
-        // reseller's wholesale debt (same formula as the wallet path in user_flow;
-        // idempotent because fulfillment may re-run/reconcile).
-        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
-            $__fxRid = (int)FX_RESELLER_ID;
-            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
-                $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
-                if ($__fxDebtWholesale <= 0) {
-                    $__fxDebtWholesale = (int)$get_invoice['price_product'];
-                }
-                if ($__fxDebtWholesale > 0) {
-                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'purchase_gateway', (string)$order_id);
-                    if (!$__fxIncOk) {
-                        error_log('[FX_DEBT] gateway purchase ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
-                    }
-                }
-            }
         }
 
         $Shoppinginfo = json_encode([
@@ -3602,6 +3638,13 @@ $textonebuy
             $stmt->execute([':loc' => (string) $nameloc['Service_location']]);
             $prodcut = $stmt->fetch(PDO::FETCH_ASSOC);
         }
+        if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($prodcut)) {
+            $__refundPr = rx_refund_payment_once($Payment_report['id_order'], $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - محصول تمدید در دسترس نیست', (string)($nameloc['id_invoice'] ?? ''));
+            if ($__refundPr === 'refunded') {
+                sendmessage($Balance_id['id'], "🚫 این محصول در حال حاضر توسط نماینده غیرفعال شده است و خرید یا تمدید آن امکان‌پذیر نیست؛ مبلغ پرداختی به کیف پول شما بازگردانده شد.", $keyboard, 'HTML');
+            }
+            return rx_pf_fail($order_id, $rxToken, 'product_hidden_for_reseller', $__refundPr);
+        }
         if (!is_array($prodcut)) {
             $__refundPr = rx_refund_payment_once($Payment_report['id_order'], $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - محصول تمدید در دسترس نیست', (string)($nameloc['id_invoice'] ?? ''));
             if ($__refundPr === 'refunded') {
@@ -3611,9 +3654,33 @@ $textonebuy
             }
             return rx_pf_fail($order_id, $rxToken, 'renewal_product_unavailable', $__refundPr);
         }
-        $fxOrderValue = json_decode((string) ($data_order['value'] ?? ''), true);
-        if (is_array($fxOrderValue) && isset($fxOrderValue['pricing_snapshot']) && is_numeric($data_order['price'] ?? null)) {
+        // FX-DEBT-P1: credit mode — resolve authoritative wholesale BEFORE any side
+        // effect; missing wholesale = safe refund + stop (no retail fallback).
+        $__fxGwWhRenewal = null;
+        if ($rxPhase !== 'reconcile' && defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && function_exists('fx_credit_wholesale_product') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt') {
+            $__fxWhResR = fx_credit_wholesale_product($prodcut, $marzban_list_get, (string)($Balance_id['agent'] ?? 'f'));
+            if (empty($__fxWhResR['ok'])) {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('gateway_renewal', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $prodcut['code_product'] ?? '', 'user' => $Balance_id['id'], 'reason' => $__fxWhResR['reason'] ?? '']);
+                }
+                $__refundWhR = rx_refund_payment_once($order_id, $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - قیمت عمده تمدید تعریف نشده است', (string)($nameloc['id_invoice'] ?? ''));
+                sendmessage($Balance_id['id'], "❌ تمدید اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است)." . ($__refundWhR === 'refunded' ? " مبلغ پرداختی به کیف پول شما برگشت خورد." : " لطفاً با پشتیبانی در ارتباط باشید."), $keyboard, 'HTML');
+                return rx_pf_fail($order_id, $rxToken, 'fx_wholesale_missing', $__refundWhR);
+            }
+            $__fxGwWhRenewal = (int)$__fxWhResR['amount'];
+        }
+        if (is_numeric($data_order['price'] ?? null) && (float) $data_order['price'] >= 0) {
+            // Prefer the renewal order's stored amount: it is the retail price
+            // captured when the order was created (and the invoice's pre-discount
+            // price), so a later retail edit cannot rewrite the placed order.
             $prodcut['price_product'] = $data_order['price'];
+        } elseif (function_exists('fx_apply_retail_override')) {
+            // Legacy/live renewal order without a stored amount: fall back to
+            // the reseller's own retail price, not the base price. The helper
+            // resolves the tenant from FX_RESELLER_ID, the customer's agent/
+            // bottype token, or an exclusively assigned product — so this also
+            // works when the renewal is served by the main bot/mini-app.
+            fx_apply_retail_override($prodcut);
         }
         if ($nameloc['name_product'] == "سرویس تست") {
             update("invoice", "name_product", $prodcut['name_product'], "id_invoice", $nameloc['id_invoice']);
@@ -3777,29 +3844,31 @@ $textonebuy
         }
             $rxStatements[] = ["UPDATE user SET Balance = ? WHERE id = ?", [$Balance_Low_user, $Balance_id['id']]];
         }
+        // FX-DEBT-P2: record the wholesale debt BEFORE rx_pf_complete, so the order
+        // can never complete debt-less. Stock renewals deliver from the national
+        // warehouse (unverifiable in reconcile) → manual_review on ledger failure;
+        // panel renewals are verifiable → stay reconcilable for a safe retry.
+        if (function_exists('fx_debt_gateway_record_once')) {
+            $__fxRecRn = fx_debt_gateway_record_once((string)$order_id, 'renewal_gateway', $prodcut, (array)$marzban_list_get, (string)($Balance_id['agent'] ?? 'f'), (int)($__fxGwWhRenewal ?? 0));
+            if ($__fxRecRn['action'] === 'db_failed' || $__fxRecRn['action'] === 'ceiling_exceeded') {
+                error_log('[FX_DEBT] gateway renewal ledger failed order=' . $order_id . ' amt=' . $__fxRecRn['amount'] . ' reason=' . $__fxRecRn['reason']);
+                if (!empty($extend['stock'])) {
+                    return rx_pf_manual_review($order_id, $rxToken, 'fx_debt_record_failed', ['amount' => $__fxRecRn['amount'], 'username' => (string) $nameloc['username']]);
+                }
+                return rx_pf_reconcile_later($order_id, $rxToken, 'fx_debt_record_failed: ' . $__fxRecRn['reason']);
+            }
+            if ($__fxRecRn['action'] === 'missing_wholesale') {
+                // FX-DEBT-P1: no traceable wholesale at fulfillment — trace only,
+                // never fall back to retail/zero.
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('gateway_renewal_fulfilled', (int)FX_RESELLER_ID, ['order' => $order_id, 'product' => $prodcut['code_product'] ?? '', 'user' => $Balance_id['id']]);
+                }
+                return rx_pf_manual_review($order_id, $rxToken, 'fx_wholesale_missing_after_delivery', ['username' => (string) $nameloc['username']]);
+            }
+        }
         $rxCompletion = rx_pf_complete($order_id, $rxToken, ['operation' => 'getextenduser', 'panel' => $extend, 'target' => $rxTargetState ?? null], $rxStatements);
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
-        }
-
-        // FX-RESELLER (2026-10-15): gateway-paid renewal fulfilled → record the
-        // reseller's wholesale debt (idempotent; fulfilment may re-run/reconcile).
-        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
-            $__fxRid = (int)FX_RESELLER_ID;
-            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
-                $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
-                if ($__fxDebtWholesale <= 0) {
-                    $__fxDebtWholesale = ((string)($prodcut['code_product'] ?? '') === 'custom_volume' && function_exists('fx_custom_base_price'))
-                        ? (int)round(fx_custom_base_price($marzban_list_get, $Balance_id['agent'], $prodcut['Volume_constraint'], $prodcut['Service_time']))
-                        : (int)$data_order['price'];
-                }
-                if ($__fxDebtWholesale > 0) {
-                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'renewal_gateway', (string)$order_id);
-                    if (!$__fxIncOk) {
-                        error_log('[FX_DEBT] gateway renewal ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
-                    }
-                }
-            }
         }
 
         MiniDiscount::logSale([
@@ -3983,6 +4052,21 @@ $textonebuy
                     $rxTargetState = rx_pf_extra_volume_target($rxBeforeState, $volume);
                 }
             }
+            // FX-DEBT-P1: credit mode — resolve authoritative wholesale BEFORE any
+            // side effect; missing wholesale = safe refund + stop (no retail fallback).
+            $__fxGwWhVx = null;
+            if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && function_exists('fx_credit_wholesale_unit') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt') {
+                $__fxWhResVx = fx_credit_wholesale_unit($marzban_list_get, 'priceextravolume', (string)($Balance_id['agent'] ?? 'f'), $volume);
+                if (empty($__fxWhResVx['ok'])) {
+                    if (function_exists('fx_credit_log_stop')) {
+                        fx_credit_log_stop('gateway_extra_volume', (int)FX_RESELLER_ID, ['order' => $order_id, 'user' => $Balance_id['id'], 'qty' => $volume, 'reason' => $__fxWhResVx['reason'] ?? '']);
+                    }
+                    $__refundWhVx = rx_refund_payment_once($order_id, $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - قیمت عمده حجم اضافه تعریف نشده است', (string)($nameloc['id_invoice'] ?? ''));
+                    sendmessage($nameloc['id_user'], "❌ خرید حجم اضافه در حالت اعتباری فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است)." . ($__refundWhVx === 'refunded' ? " مبلغ پرداختی به کیف پول برگشت خورد." : " لطفاً با پشتیبانی در ارتباط باشید."), $keyboard, 'HTML');
+                    return rx_pf_fail($order_id, $rxToken, 'fx_wholesale_missing', $__refundWhVx);
+                }
+                $__fxGwWhVx = (int)$__fxWhResVx['amount'];
+            }
             if (!rx_pf_prepare($order_id, $rxToken, $rxBeforeState, $rxTargetState)) {
                 return rx_pf_abort($order_id, $rxToken, 'fulfillment_prepare_failed', true);
             }
@@ -4037,25 +4121,24 @@ $textonebuy
             }
             return rx_pf_fail($order_id, $rxToken, 'extra_volume_failed', $__refundVx);
         }
+        // FX-DEBT-P2: record the wholesale debt BEFORE rx_pf_complete, so the order
+        // can never complete debt-less; panel is verifiable → reconcilable retry.
+        if (function_exists('fx_debt_gateway_record_once')) {
+            $__fxRecVx = fx_debt_gateway_record_once((string)$order_id, 'extra_volume_gateway', null, (array)$marzban_list_get, (string)($Balance_id['agent'] ?? 'f'), (int)($__fxGwWhVx ?? 0), ['column' => 'priceextravolume', 'qty' => $volume]);
+            if ($__fxRecVx['action'] === 'db_failed' || $__fxRecVx['action'] === 'ceiling_exceeded') {
+                error_log('[FX_DEBT] gateway extra volume ledger failed order=' . $order_id . ' amt=' . $__fxRecVx['amount'] . ' reason=' . $__fxRecVx['reason']);
+                return rx_pf_reconcile_later($order_id, $rxToken, 'fx_debt_record_failed: ' . $__fxRecVx['reason']);
+            }
+            if ($__fxRecVx['action'] === 'missing_wholesale') {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('gateway_extra_volume_fulfilled', (int)FX_RESELLER_ID, ['order' => $order_id, 'user' => $Balance_id['id'], 'qty' => $volume]);
+                }
+                return rx_pf_manual_review($order_id, $rxToken, 'fx_wholesale_missing_after_delivery', ['username' => (string) ($nameloc['username'] ?? '')]);
+            }
+        }
         $rxCompletion = rx_pf_complete($order_id, $rxToken, ['operation' => 'getextravolumeuser', 'panel' => $extra_volume, 'target' => $rxTargetState], [["UPDATE user SET Balance = ? WHERE id = ?", [$Balance_Low_user, $Balance_id['id']]]]);
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
-        }
-        // FX-RESELLER (2026-10-15): gateway-paid extra volume fulfilled → debt.
-        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
-            $__fxRid = (int)FX_RESELLER_ID;
-            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
-                $__fxDebtWholesale = (int)round((float)$volume * (fx_panel_raw_unit_price($marzban_list_get, 'priceextravolume', $Balance_id['agent']) ?? 0));
-                if ($__fxDebtWholesale <= 0) {
-                    $__fxDebtWholesale = (int)$Payment_report['price'];
-                }
-                if ($__fxDebtWholesale > 0) {
-                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'extra_volume_gateway', (string)$order_id);
-                    if (!$__fxIncOk) {
-                        error_log('[FX_DEBT] gateway extra volume ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
-                    }
-                }
-            }
         }
         MiniDiscount::logSale([
             'id_user' => $Balance_id['id'],
@@ -4183,6 +4266,21 @@ $textonebuy
                     $rxTargetState = rx_pf_extra_time_target($rxBeforeState, $tmieextra, time());
                 }
             }
+            // FX-DEBT-P1: credit mode — resolve authoritative wholesale BEFORE any
+            // side effect; missing wholesale = safe refund + stop (no retail fallback).
+            $__fxGwWhEt = null;
+            if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && function_exists('fx_credit_wholesale_unit') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt') {
+                $__fxWhResEt = fx_credit_wholesale_unit($marzban_list_get, 'priceextratime', (string)($Balance_id['agent'] ?? 'f'), $tmieextra);
+                if (empty($__fxWhResEt['ok'])) {
+                    if (function_exists('fx_credit_log_stop')) {
+                        fx_credit_log_stop('gateway_extra_time', (int)FX_RESELLER_ID, ['order' => $order_id, 'user' => $Balance_id['id'], 'qty' => $tmieextra, 'reason' => $__fxWhResEt['reason'] ?? '']);
+                    }
+                    $__refundWhEt = rx_refund_payment_once($order_id, $Balance_id['id'], $Payment_report['price'], 'بازگشت وجه - قیمت عمده زمان اضافه تعریف نشده است', (string)($nameloc['id_invoice'] ?? ''));
+                    sendmessage($nameloc['id_user'], "❌ خرید زمان اضافه در حالت اعتباری فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است)." . ($__refundWhEt === 'refunded' ? " مبلغ پرداختی به کیف پول برگشت خورد." : " لطفاً با پشتیبانی در ارتباط باشید."), $keyboard, 'HTML');
+                    return rx_pf_fail($order_id, $rxToken, 'fx_wholesale_missing', $__refundWhEt);
+                }
+                $__fxGwWhEt = (int)$__fxWhResEt['amount'];
+            }
             if (!rx_pf_prepare($order_id, $rxToken, $rxBeforeState, $rxTargetState)) {
                 return rx_pf_abort($order_id, $rxToken, 'fulfillment_prepare_failed', true);
             }
@@ -4239,25 +4337,24 @@ $textonebuy
             }
             return rx_pf_fail($order_id, $rxToken, 'extra_time_failed', $__refundEt);
         }
+        // FX-DEBT-P2: record the wholesale debt BEFORE rx_pf_complete, so the order
+        // can never complete debt-less; panel is verifiable → reconcilable retry.
+        if (function_exists('fx_debt_gateway_record_once')) {
+            $__fxRecEt = fx_debt_gateway_record_once((string)$order_id, 'extra_time_gateway', null, (array)$marzban_list_get, (string)($Balance_id['agent'] ?? 'f'), (int)($__fxGwWhEt ?? 0), ['column' => 'priceextratime', 'qty' => $tmieextra]);
+            if ($__fxRecEt['action'] === 'db_failed' || $__fxRecEt['action'] === 'ceiling_exceeded') {
+                error_log('[FX_DEBT] gateway extra time ledger failed order=' . $order_id . ' amt=' . $__fxRecEt['amount'] . ' reason=' . $__fxRecEt['reason']);
+                return rx_pf_reconcile_later($order_id, $rxToken, 'fx_debt_record_failed: ' . $__fxRecEt['reason']);
+            }
+            if ($__fxRecEt['action'] === 'missing_wholesale') {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('gateway_extra_time_fulfilled', (int)FX_RESELLER_ID, ['order' => $order_id, 'user' => $Balance_id['id'], 'qty' => $tmieextra]);
+                }
+                return rx_pf_manual_review($order_id, $rxToken, 'fx_wholesale_missing_after_delivery', ['username' => (string) ($nameloc['username'] ?? '')]);
+            }
+        }
         $rxCompletion = rx_pf_complete($order_id, $rxToken, ['operation' => 'getextratimeuser', 'panel' => $extra_time, 'target' => $rxTargetState], [["UPDATE user SET Balance = ? WHERE id = ?", [$Balance_Low_user, $nameloc['id_user']]]]);
         if ($rxCompletion !== 'completed') {
             return rx_pf_completion_outcome($order_id, $rxToken, $rxCompletion);
-        }
-        // FX-RESELLER (2026-10-15): gateway-paid extra time fulfilled → debt.
-        if (defined('FX_RESELLER_ID') && function_exists('fx_debt_record_once') && function_exists('fx_debt_state')) {
-            $__fxRid = (int)FX_RESELLER_ID;
-            if (fx_debt_state($__fxRid)['mode'] === 'debt') {
-                $__fxDebtWholesale = (int)round((float)$tmieextra * (fx_panel_raw_unit_price($marzban_list_get, 'priceextratime', $Balance_id['agent']) ?? 0));
-                if ($__fxDebtWholesale <= 0) {
-                    $__fxDebtWholesale = (int)$Payment_report['price'];
-                }
-                if ($__fxDebtWholesale > 0) {
-                    list($__fxIncOk, $__fxIncReason) = fx_debt_record_once($__fxRid, $__fxDebtWholesale, 'extra_time_gateway', (string)$order_id);
-                    if (!$__fxIncOk) {
-                        error_log('[FX_DEBT] gateway extra time ledger failed rid=' . $__fxRid . ' amt=' . $__fxDebtWholesale . ' order=' . $order_id . ' reason=' . $__fxIncReason);
-                    }
-                }
-            }
         }
         MiniDiscount::logSale([
             'id_user' => $Balance_id['id'],

@@ -89,7 +89,13 @@ if ($product == false) {
         if (!$fxAgentAllowed) {
             $statusmessage = true; $infomesssage = "گروه کاربری نامعتبر است";
         } elseif ((string)$product['agent'] !== (string)$agent) {
-            update("product", "agent", $agent, "id", $id_product);
+            $fxResellerTarget = (ctype_digit($agent) && (int)$agent > 0);
+            if ($fxResellerTarget && (int)($product['fx_wholesale_price'] ?? 0) <= 0) {
+                $statusmessage = true;
+                $infomesssage = "⛔ ابتدا قیمت عمده معتبر (بزرگ‌تر از صفر) را ثبت کنید؛ بدون آن اختصاص محصول به نماینده و فروش مسدود است.";
+            } else {
+                update("product", "agent", $agent, "id", $id_product);
+            }
         }
 
         $categoryArr = explode(',', (string)($_POST['category_csv'] ?? ''));

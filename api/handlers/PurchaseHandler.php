@@ -62,6 +62,9 @@ final class PurchaseHandler extends BaseHandler
         if (empty($product)) {
             FaoximaResponse::fail(404, faoxima_textbot_get('dyn_purchase_product_not_found', 'محصول انتخابی پیدا نشد'));
         }
+        if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row((array)$product)) {
+            FaoximaResponse::fail(403, faoxima_textbot_get('dyn_product_hidden_for_reseller', '🚫 این محصول در حال حاضر توسط نماینده غیرفعال شده است و خرید یا تمدید آن امکان‌پذیر نیست.'));
+        }
 
         if (!$this->productIsAllowedForAgent((array)$product, $this->user['agent'])) {
             FaoximaResponse::fail(403, faoxima_textbot_get('dyn_purchase_product_not_allowed_for_agent', 'این محصول برای نوع کاربری شما فعال نیست'));

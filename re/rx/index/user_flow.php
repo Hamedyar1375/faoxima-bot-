@@ -1180,7 +1180,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             $maxvolume = $maxvolume[$user['agent']];
             $productCountParams = [
                 ':location' => $location,
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ];
             $productCountStmt = $pdo->prepare("SELECT COUNT(*) FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
             $productCountStmt->execute($productCountParams);
@@ -1214,7 +1214,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
                 $query = "SELECT * FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
                 $queryParams = [
                     ':location' => $location,
-                    ':agent' => $user['agent']
+                    ':agent' => fx_tenant_scope_agent($user['agent'])
                 ];
                 $marzban_list_get = select("marzban_panel", "*", "name_panel", $location, "select");
                 $statuscustomvolume = json_decode($marzban_list_get['customvolume'], true)[$user['agent']];
@@ -1240,7 +1240,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         } else {
             $productCountParams = [
                 ':location' => $location,
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ];
             $productCountStmt = $pdo->prepare("SELECT COUNT(*) FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
             $productCountStmt->execute($productCountParams);
@@ -1311,7 +1311,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     }
     $productCountParams = [
         ':location' => $location,
-        ':agent' => $user['agent']
+        ':agent' => fx_tenant_scope_agent($user['agent'])
     ];
     $productCountStmt = $pdo->prepare("SELECT COUNT(*) FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
     $productCountStmt->execute($productCountParams);
@@ -1343,7 +1343,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             $query = "SELECT * FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
             $queryParams = [
                 ':location' => $location,
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ];
             $statuscustomvolume = json_decode($marzban_list_get['customvolume'], true)[$user['agent']];
             if ($marzban_list_get['MethodUsername'] == $textbotlang['users']['customusername'] || $marzban_list_get['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم" || $marzban_list_get['MethodUsername'] == "متن دلخواه کاربر + رندوم") {
@@ -1401,13 +1401,13 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $queryParams = array_merge([
             ':location' => $userdate['name_panel'],
             ':service_time' => $userdate['monthproduct'],
-            ':agent' => $user['agent']
+            ':agent' => fx_tenant_scope_agent($user['agent'])
         ], $catParams);
     } else {
         $query = "SELECT * FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND {$catClause} AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
         $queryParams = array_merge([
             ':location' => $userdate['name_panel'],
-            ':agent' => $user['agent']
+            ':agent' => fx_tenant_scope_agent($user['agent'])
         ], $catParams);
     }
     $statuscustomvolume = json_decode($marzban_list_get['customvolume'], true)[$user['agent']];
@@ -1447,7 +1447,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $queryParams = [
             ':location' => $userdate['name_panel'],
             ':service_time' => $monthenumber,
-            ':agent' => $user['agent']
+            ':agent' => fx_tenant_scope_agent($user['agent'])
         ];
         $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
         $statuscustomvolume = json_decode($marzban_list_get['customvolume'], true)[$user['agent']];
@@ -1622,11 +1622,19 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             $stmt->execute([
                 ':code_product' => $loc,
                 ':location' => $userdate['name_panel'],
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
+    if (is_array($info_product) && isset($info_product['price_product'])) {
+        error_log(sprintf('[RX-PI] single resolve user=%s loc=%s panel=%s agent=%s => id=%s code=%s pagent=%s base=%s name=%s',
+            $from_id, $loc, (string)($userdate['name_panel'] ?? ''), (string)($user['agent'] ?? ''),
+            (string)($info_product['id'] ?? ''), (string)($info_product['code_product'] ?? ''),
+            (string)($info_product['agent'] ?? ''), (string)($info_product['price_product'] ?? ''),
+            (string)($info_product['name_product'] ?? '')));
+    }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['price_product'])) {
         error_log('Purchase preview failed: product not found for code=' . $loc . ', panel=' . ($userdate['name_panel'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
@@ -1742,7 +1750,16 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
         $__fxWhBase = function_exists('fx_reseller_custom_wholesale') ? fx_reseller_custom_wholesale($marzban_list_get, $parts[2], $parts[1]) : null;
-        $info_product['fx_wholesale_price'] = $__fxWhBase !== null ? $__fxWhBase : (($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice));
+        if ($__fxWhBase !== null) {
+            $info_product['fx_wholesale_price'] = $__fxWhBase;
+        } elseif (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt' && function_exists('fx_credit_wholesale_custom')) {
+            // FX-DEBT-P1: credit mode — NO retail fallback. Use the raw base unit
+            // prices or leave 0; the buy guard safely stops when nothing traceable.
+            $__fxWhCustom = fx_credit_wholesale_custom($marzban_list_get, (string)($user['agent'] ?? 'f'), $parts[2], $parts[1]);
+            $info_product['fx_wholesale_price'] = !empty($__fxWhCustom['ok']) ? (int)$__fxWhCustom['amount'] : 0;
+        } else {
+            $info_product['fx_wholesale_price'] = (($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice));
+        }
         if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1], (string)$user['agent']);
         $info_product['data_limit_reset'] = "no_reset";
     } else {
@@ -1755,11 +1772,12 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
             $stmt->execute([
                 ':code_product' => $user['Processing_value_one'],
                 ':location' => $userdate['name_panel'],
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['price_product'])) {
         error_log('Purchase confirmation failed: product not found for code=' . ($user['Processing_value_one'] ?? '') . ', panel=' . ($userdate['name_panel'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
@@ -1865,8 +1883,9 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         if ($Balance_prim <= 1)
             $Balance_prim = 0;
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -1912,14 +1931,28 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') $__fxDebtMode = true;
-        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0);
-        if ($__fxDebtWholesale <= 0) $__fxDebtWholesale = (int)$priceproduct;
-        if ($__fxDebtMode && function_exists('fx_debt_gate')) {
-            list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
-            if (!$__fxGateOk) {
-                sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+        $__fxDebtWholesale = 0;
+        if ($__fxDebtMode) {
+            // FX-DEBT-P1: authoritative wholesale only — NO fallback to retail/zero.
+            $__fxWhRes = function_exists('fx_credit_wholesale_product')
+                ? fx_credit_wholesale_product($info_product, $marzban_list_get, (string)($user['agent'] ?? 'f'))
+                : ['ok' => false, 'amount' => 0, 'reason' => 'no_resolver'];
+            if (empty($__fxWhRes['ok'])) {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('user_flow_single_buy', $__fxRid, ['product' => $info_product['code_product'] ?? '', 'name' => $info_product['name_product'] ?? '', 'user' => $from_id, 'reason' => $__fxWhRes['reason'] ?? '']);
+                }
+                sendmessage($from_id, "⛔️ فروش اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده برای این محصول تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", $keyboard, 'HTML');
                 step('home', $from_id);
                 return;
+            }
+            $__fxDebtWholesale = (int)$__fxWhRes['amount'];
+            if (function_exists('fx_debt_gate')) {
+                list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
+                if (!$__fxGateOk) {
+                    sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+                    step('home', $from_id);
+                    return;
+                }
             }
         }
     }
@@ -1955,18 +1988,46 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         ]
     ];
     if (function_exists('nmPanelNationalEnabled') && nmPanelNationalEnabled($marzban_list_get)) {
-        if (nmStockCompleteBuyFromInventory($from_id, $user, $marzban_list_get, $info_product, $randomString, $username_ac, !($__fxDebtMode ?? false), 'national_buy')) {
+        // FX-DEBT-P1: national stock in credit mode — reserve wholesale BEFORE stock
+        // commit, commit on success, release on failure. Charge the customer's retail
+        // (owner pays cost only). Never deliver without the wallet charge succeeding.
+        $__fxOwnerCostOnly = (!empty($__fxDebtMode) && defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID === (int)$from_id);
+        $__fxNatReserved = 0;
+        if (!empty($__fxDebtMode) && function_exists('fx_debt_reserve')) {
+            $__fxNatRes = fx_debt_reserve($__fxRid, (int)$__fxDebtWholesale, (string)$randomString);
+            if (empty($__fxNatRes[0])) {
+                sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", $keyboard, 'HTML');
+                step('home', $from_id);
+                return;
+            }
+            $__fxNatReserved = (int)$__fxDebtWholesale;
+        }
+        $GLOBALS['nmStockLastFail'] = '';
+        if (nmStockCompleteBuyFromInventory($from_id, $user, $marzban_list_get, $info_product, $randomString, $username_ac, !$__fxOwnerCostOnly, 'national_buy')) {
+            if ($__fxNatReserved > 0 && function_exists('fx_debt_commit')) {
+                $__fxNatCommit = fx_debt_commit($__fxRid, $__fxNatReserved, 'purchase', $randomString);
+                if (!empty($__fxNatCommit[3])) {
+                    sendmessage($__fxRid, $__fxNatCommit[3], null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null);
+                }
+            }
             sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
             step('home', $from_id);
             return;
         }
-        sendmessage($from_id, "❌ وضعیت نت ملی فعال است اما موجودی انبار برای این محصول تمام شده است. لطفاً محصول دیگری انتخاب کنید یا با پشتیبانی ارتباط بگیرید.", $keyboard, 'HTML');
+        if ($__fxNatReserved > 0 && function_exists('fx_debt_release')) {
+            fx_debt_release($__fxRid, $__fxNatReserved, $randomString);
+        }
+        if ((string)($GLOBALS['nmStockLastFail'] ?? '') === 'charge_failed') {
+            sendmessage($from_id, "❌ موجودی کیف پول برای پرداخت این سرویس کافی نیست. لطفاً کیف پول خود را شارژ کنید.", $keyboard, 'HTML');
+        } else {
+            sendmessage($from_id, "❌ وضعیت نت ملی فعال است اما موجودی انبار برای این محصول تمام شده است. لطفاً محصول دیگری انتخاب کنید یا با پشتیبانی ارتباط بگیرید.", $keyboard, 'HTML');
+        }
         step('home', $from_id);
         return;
     }
     $__fxReserved = 0;
     if (!empty($__fxDebtMode) && function_exists('fx_debt_reserve')) {
-        $__fxRes = fx_debt_reserve($__fxRid, (int)$__fxDebtWholesale);
+        $__fxRes = fx_debt_reserve($__fxRid, (int)$__fxDebtWholesale, (string)$randomString);
         if (empty($__fxRes[0])) {
             sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", $keyboard, 'HTML');
             step('home', $from_id);
@@ -2051,16 +2112,19 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
                 $__nmDebitOk = !empty($__nmDebit['ok']);
                 if (!$__nmDebitOk) {
                     error_log('[NMF] agent debit failed after panel create (panel already made) uid=' . $from_id . ' amt=' . $priceproduct . ' reason=' . $__nmDebit['reason']);
-                    nm_agent_compensate($from_id, (int)$priceproduct, (string)($randomString ?? ''), 'refund');
                 }
             } else {
-                $stmtBuyDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid");
+                // FX-DEBT-P1: guarded atomic deduction — Balance never goes negative
+                // and no bogus compensation credit is issued for a debit that never
+                // happened (panel service is already created; the 0-row case is logged).
+                $stmtBuyDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid AND Balance >= :check_delta");
+                $stmtBuyDeduct->bindValue(':check_delta', (int) $priceproduct, PDO::PARAM_INT);
                 $stmtBuyDeduct->bindValue(':delta', (int) $priceproduct, PDO::PARAM_INT);
                 $stmtBuyDeduct->bindValue(':uid', $from_id, PDO::PARAM_STR);
                 $stmtBuyDeduct->execute();
                 $__nmDebitOk = $stmtBuyDeduct->rowCount() > 0;
-                if (!$__nmDebitOk) {
-                    nm_agent_compensate($from_id, (int)$priceproduct, (string)($randomString ?? ''), 'refund');
+                if ($__nmDebitOk && function_exists('wallet_ledger_record')) {
+                    wallet_ledger_record($from_id, 'debit', (int)$priceproduct, 'purchase', 'خرید سرویس (شارژ retail)', (string)$randomString, 'invoice', (string)$randomString);
                 }
             }
             if (!$__nmDebitOk && function_exists('rx_log_event')) {
@@ -2257,10 +2321,11 @@ $textonebuy
         $stmt->execute([
             ':code_product' => $user['Processing_value_one'],
             ':Location' => $userdate['name_panel'],
-            ':agent' => $user['agent'],
+            ':agent' => fx_tenant_scope_agent($user['agent']),
         ]);
         $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['code_product'])) {
         error_log('Discount code check failed: product not found for code=' . ($user['Processing_value_one'] ?? '') . ', panel=' . ($userdate['name_panel'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
@@ -2303,11 +2368,12 @@ $textonebuy
             $stmt->execute([
                 ':code_product' => $user['Processing_value_one'],
                 ':location' => $userdate['name_panel'],
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['price_product'])) {
         error_log('Discount purchase preview failed: product not found for code=' . ($user['Processing_value_one'] ?? '') . ', panel=' . ($userdate['name_panel'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
@@ -2405,7 +2471,7 @@ $textonebuy
     $marzban_list_get = select("marzban_panel", "*", "code_panel", $dataget[1], "select");
     $productCountParams = [
         ':location' => $location,
-        ':agent' => $user['agent']
+        ':agent' => fx_tenant_scope_agent($user['agent'])
     ];
     $productCountStmt = $pdo->prepare("SELECT COUNT(*) FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
     $productCountStmt->execute($productCountParams);
@@ -2561,17 +2627,23 @@ $textonebuy
             $stmt->execute([
                 ':code_product' => $loc,
                 ':location' => $user['Processing_value'],
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['price_product'])) {
         error_log('Bulk purchase preview failed: product not found for code=' . ($loc ?? '') . ', panel=' . ($user['Processing_value'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
         step('home', $from_id);
         return;
     }
+    error_log(sprintf('[RX-PI] resolve user=%s loc=%s panel=%s agent=%s => id=%s code=%s pagent=%s base=%s name=%s',
+        $from_id, $loc, (string)($user['Processing_value'] ?? ''), (string)($user['agent'] ?? ''),
+        (string)($info_product['id'] ?? ''), (string)($info_product['code_product'] ?? ''),
+        (string)($info_product['agent'] ?? ''), (string)($info_product['price_product'] ?? ''),
+        (string)($info_product['name_product'] ?? '')));
     $randomString = bin2hex(random_bytes(2));
     $username_ac = generateUsername($from_id, $marzban_list_get['MethodUsername'], $username, $randomString, $text, $marzban_list_get['namecustom'], $user['namecustom']);
     $username_ac = strtolower($username_ac);
@@ -2619,7 +2691,16 @@ $textonebuy
         $info_product['Service_time'] = $parts[1];
         $info_product['price_product'] = ($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice);
         $__fxWhBase = function_exists('fx_reseller_custom_wholesale') ? fx_reseller_custom_wholesale($marzban_list_get, $parts[2], $parts[1]) : null;
-        $info_product['fx_wholesale_price'] = $__fxWhBase !== null ? $__fxWhBase : (($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice));
+        if ($__fxWhBase !== null) {
+            $info_product['fx_wholesale_price'] = $__fxWhBase;
+        } elseif (defined('FX_RESELLER_ID') && function_exists('fx_debt_state') && fx_debt_state((int)FX_RESELLER_ID)['mode'] === 'debt' && function_exists('fx_credit_wholesale_custom')) {
+            // FX-DEBT-P1: credit mode — NO retail fallback. Use the raw base unit
+            // prices or leave 0; the buy guard safely stops when nothing traceable.
+            $__fxWhCustom = fx_credit_wholesale_custom($marzban_list_get, (string)($user['agent'] ?? 'f'), $parts[2], $parts[1]);
+            $info_product['fx_wholesale_price'] = !empty($__fxWhCustom['ok']) ? (int)$__fxWhCustom['amount'] : 0;
+        } else {
+            $info_product['fx_wholesale_price'] = (($parts[2] * $custompricevalue) + ($parts[1] * $customtimevalueprice));
+        }
         if (defined('FX_RESELLER_ID') && function_exists('fx_reseller_reprice_custom')) fx_reseller_reprice_custom($info_product['price_product'], $marzban_list_get, $parts[2], $parts[1], (string)$user['agent']);
         $info_product['data_limit_reset'] = "no_reset";
     } else {
@@ -2630,11 +2711,12 @@ $textonebuy
             $stmt->execute([
                 ':code_product' => $user['Processing_value_one'],
                 ':location' => $user['Processing_value'],
-                ':agent' => $user['agent']
+                ':agent' => fx_tenant_scope_agent($user['agent'])
             ]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     if (!is_array($info_product) || !isset($info_product['price_product'])) {
         error_log('Bulk purchase confirmation failed: product not found for code=' . ($user['Processing_value_one'] ?? '') . ', panel=' . ($user['Processing_value'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $datatextbot['dyn_errors_verification_failed'] ?? "❌ خطایی در تایید انجام شده است لطفا مراحل پرداخت را مجددا انجام دهید", $keyboard, 'HTML');
@@ -2651,15 +2733,20 @@ $textonebuy
     } else {
         $priceproduct = $info_product['price_product'] * $user['Processing_value_four'];
     }
-    if (fx_context($marzban_list_get, $fxBulkKinds) !== null) {
-        $fxBulkFresh = fx_finalize_amount(intval($info_product['price_product']) * intval($user['Processing_value_four']), $marzban_list_get, $fxBulkKinds);
-        $fxBulkQuoteKey = fx_quote_context_key('bulk', (string) $user['Processing_value_one'] . '|' . (string) $user['Processing_value_four']);
-        if (!fx_quote_check($from_id, $fxBulkQuoteKey, $fxBulkFresh, $marzban_list_get, $fxBulkKinds) || (int) round($priceproduct) !== (int) $fxBulkFresh) {
-            update("user", "Processing_value_price", $fxBulkFresh, "id", $from_id);
-            fx_quote_store($from_id, $fxBulkQuoteKey, $fxBulkFresh, $marzban_list_get, $fxBulkKinds);
-            Editmessagetext($from_id, $message_id, fx_price_changed_text($fxBulkFresh), $paymentom);
-            return;
-        }
+    // Server-side revalidation: always compare the stored preview amount with a
+    // fresh calculation from the product row. After fx_apply_to_product() this
+    // fresh amount includes the reseller retail override even when FX pricing
+    // is disabled for the panel.
+    $fxBulkFresh = fx_finalize_amount(intval($info_product['price_product']) * intval($user['Processing_value_four']), $marzban_list_get, $fxBulkKinds);
+    $fxBulkQuoteKey = fx_quote_context_key('bulk', (string) $user['Processing_value_one'] . '|' . (string) $user['Processing_value_four']);
+    $fxBulkQuoteOk = fx_context($marzban_list_get, $fxBulkKinds) === null
+        ? true
+        : fx_quote_check($from_id, $fxBulkQuoteKey, $fxBulkFresh, $marzban_list_get, $fxBulkKinds);
+    if (!$fxBulkQuoteOk || (int) round($priceproduct) !== (int) $fxBulkFresh) {
+        update("user", "Processing_value_price", $fxBulkFresh, "id", $from_id);
+        fx_quote_store($from_id, $fxBulkQuoteKey, $fxBulkFresh, $marzban_list_get, $fxBulkKinds);
+        Editmessagetext($from_id, $message_id, fx_price_changed_text($fxBulkFresh), $paymentom);
+        return;
     }
     Editmessagetext($from_id, $message_id, $text_inline, null);
     $username_ac = $user['Processing_value_tow'];
@@ -2673,8 +2760,9 @@ $textonebuy
     if ($priceproduct > $user['Balance'] && $user['agent'] != "n2") {
         $marzbandirectpay = panel_feature_enabled($user['Processing_value'], 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -2714,17 +2802,32 @@ $textonebuy
         $__nmBLimit = (int)$user['maxbuyagent'];
     }
     $__fxDebtMode = false;
+    $__fxBulkWhUnit = 0;
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') $__fxDebtMode = true;
-        $__fxDebtWholesale = (int)($info_product['fx_wholesale_price'] ?? 0) * max(1, (int)$user['Processing_value_four']);
-        if ($__fxDebtWholesale <= 0) $__fxDebtWholesale = (int)$priceproduct;
-        if ($__fxDebtMode && function_exists('fx_debt_gate')) {
-            list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
-            if (!$__fxGateOk) {
-                sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+        if ($__fxDebtMode) {
+            // FX-DEBT-P1: authoritative wholesale only — NO fallback to retail/zero.
+            $__fxWhRes = function_exists('fx_credit_wholesale_product')
+                ? fx_credit_wholesale_product($info_product, $marzban_list_get, (string)($user['agent'] ?? 'f'))
+                : ['ok' => false, 'amount' => 0, 'reason' => 'no_resolver'];
+            if (empty($__fxWhRes['ok'])) {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('user_flow_bulk_gate', $__fxRid, ['product' => $info_product['code_product'] ?? '', 'name' => $info_product['name_product'] ?? '', 'user' => $from_id, 'qty' => $user['Processing_value_four'] ?? 1, 'reason' => $__fxWhRes['reason'] ?? '']);
+                }
+                sendmessage($from_id, "⛔️ فروش اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده برای این محصول تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", $keyboard, 'HTML');
                 step('home', $from_id);
                 return;
+            }
+            $__fxBulkWhUnit = (int)$__fxWhRes['amount'];
+            $__fxDebtWholesale = $__fxBulkWhUnit * max(1, (int)$user['Processing_value_four']);
+            if (function_exists('fx_debt_gate')) {
+                list($__fxGateOk, $__fxGateMsg) = fx_debt_gate($__fxRid, $__fxDebtWholesale);
+                if (!$__fxGateOk) {
+                    sendmessage($from_id, $__fxGateMsg, $keyboard, 'HTML');
+                    step('home', $from_id);
+                    return;
+                }
             }
         }
     }
@@ -2787,13 +2890,52 @@ $textonebuy
 
 
         if (function_exists('nmPanelNationalEnabled') && nmPanelNationalEnabled($marzban_list_get)) {
+            // FX-DEBT-P1: national bulk item — reserve wholesale BEFORE stock, charge
+            // the customer's retail BEFORE delivery. Any failure releases both the
+            // stock reservation and the debt reservation (no free service, no
+            // negative wallet, no debt-without-service).
+            $__fxNatItemReserved = 0;
+            if (!empty($__fxDebtMode) && function_exists('fx_debt_reserve')) {
+                $__fxResN = fx_debt_reserve($__fxRid, (int)$__fxDebtItemAmt, (string)$randomString);
+                if (empty($__fxResN[0])) {
+                    sendmessage($from_id, "⛔ سقف اعتبار برای ادامه خرید انبوه کافی نیست؛ سرویس‌های ساخته‌شده و کسرهای انجام‌شده حفظ می‌شوند.\nلطفاً بدهی را تسویه کنید و باقی سفارش را دوباره ثبت کنید.", $keyboard, 'HTML');
+                    step('home', $from_id);
+                    return;
+                }
+                $__fxNatItemReserved = (int)$__fxDebtItemAmt;
+            }
             $stock = function_exists('nmStockReserveForProduct')
                 ? nmStockReserveForProduct($marzban_list_get, $info_product, $from_id, $randomString, 'national_direct_buy')
                 : false;
             if (!$stock) {
+                if ($__fxNatItemReserved > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxNatItemReserved, $randomString); }
                 sendmessage($from_id, "❌ وضعیت نت ملی فعال است اما موجودی انبار برای این محصول تمام شده است. خرید انجام نشد و مبلغی از کیف پول کسر نشد.", $keyboard, 'HTML');
                 step('home', $from_id);
                 return;
+            }
+            if (!$__bulkOwnerCostOnly) {
+                $__bulkChargeOk = false;
+                if (function_exists('balance_atomic_charge')) {
+                    $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
+                    $__bulkChargeOk = !empty($__bulkChargeNm['ok']);
+                } else {
+                    $stmtBulkNatDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid AND Balance >= :check_delta");
+                    $stmtBulkNatDeduct->bindValue(':check_delta', (int) round($__bulkItemCharge), PDO::PARAM_INT);
+                    $stmtBulkNatDeduct->bindValue(':delta', (int) round($__bulkItemCharge), PDO::PARAM_INT);
+                    $stmtBulkNatDeduct->bindValue(':uid', $from_id, PDO::PARAM_STR);
+                    $stmtBulkNatDeduct->execute();
+                    $__bulkChargeOk = $stmtBulkNatDeduct->rowCount() > 0;
+                }
+                if (!$__bulkChargeOk) {
+                    if (function_exists('nmStockReleaseReservation')) { nmStockReleaseReservation($stock); }
+                    if ($__fxNatItemReserved > 0 && function_exists('fx_debt_release')) { fx_debt_release($__fxRid, $__fxNatItemReserved, $randomString); }
+                    sendmessage($from_id, "❌ موجودی کیف پول برای ادامه خرید انبوه کافی نیست؛ سفارش متوقف شد. لطفاً کیف پول را شارژ کنید و باقی سفارش را دوباره ثبت کنید.", $keyboard, 'HTML');
+                    step('home', $from_id);
+                    return;
+                }
+                if (function_exists('wallet_ledger_record')) {
+                    wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس (انبار ملی)', (string)$randomString, 'invoice', (string)$randomString);
+                }
             }
             $invoiceIpLimit = (string)(isset($info_product['ip_limit']) ? intval($info_product['ip_limit']) : 0);
             $invoiceHwidLimit = (string)(isset($info_product['hwid_limit']) ? intval($info_product['hwid_limit']) : 0);
@@ -2821,11 +2963,10 @@ $textonebuy
                 'price_product' => $info_product['price_product'] ?? 0,
             ];
             nmStockDeliverConfig($stock, $inventoryInvoice, '✅ وضعیت نت ملی فعال است؛ اشتراک از انبار شبکه‌ملی تحویل شد');
-            if (!$__bulkOwnerCostOnly && function_exists('balance_atomic_charge')) {
-                $__bulkChargeNm = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
-                if (!empty($__bulkChargeNm['ok']) && function_exists('wallet_ledger_record')) {
-                    wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس (انبار ملی)', (string)$randomString, 'invoice', (string)$randomString);
-                }
+            if ($__fxNatItemReserved > 0 && function_exists('fx_debt_commit')) {
+                list($__fxIncOkN, $__fxIncReasonN, $__fxDebtAfterN, $__fxDebtAlertN) = fx_debt_commit($__fxRid, $__fxNatItemReserved, 'bulk_purchase', $randomString);
+                $__fxDebtAlert = $__fxDebtAlertN ?: ($__fxDebtAlert ?? '');
+                if (!$__fxIncOkN) { error_log('[FX_DEBT] bulk national ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxNatItemReserved . ' ref=' . $randomString . ' reason=' . $__fxIncReasonN); }
             }
             $__bulkChargedTotal += $__bulkItemCharge;
             continue;
@@ -2835,13 +2976,18 @@ $textonebuy
             $username_acc = $random_number . "-" . $username_acc;
         }
         // BR-01/BR-02: per-unit wholesale debt (atomic reserve before creation).
-        // Legacy code charged intdiv(wholesale, qty) per item => total ~= wholesale
-        // instead of wholesale*qty (q² undercharge). Fallback stays pro-rata retail.
-        $__fxWhItem = (int)($info_product['fx_wholesale_price'] ?? 0);
-        $__fxDebtItemAmt = $__fxWhItem > 0 ? $__fxWhItem : (int)$__bulkItemCharge;
+        // FX-DEBT-P1: the authoritative per-unit wholesale was resolved at the bulk
+        // gate (fx_credit_wholesale_product) — NO retail fallback here.
+        $__fxDebtItemAmt = (int)$__fxBulkWhUnit;
+        if (!empty($__fxDebtMode) && $__fxDebtItemAmt <= 0) {
+            if (function_exists('fx_credit_log_stop')) { fx_credit_log_stop('user_flow_bulk_item', $__fxRid, ['invoice' => $randomString, 'product' => $info_product['code_product'] ?? '']); }
+            sendmessage($from_id, "⛔️ فروش اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده تعریف نشده است). لطفاً با پشتیبانی تماس بگیرید.", $keyboard, 'HTML');
+            step('home', $from_id);
+            return;
+        }
         $__fxItemReserved = 0;
         if (!empty($__fxDebtMode) && function_exists('fx_debt_reserve')) {
-            $__fxRes2 = fx_debt_reserve($__fxRid, $__fxDebtItemAmt);
+            $__fxRes2 = fx_debt_reserve($__fxRid, $__fxDebtItemAmt, (string)$randomString);
             if (empty($__fxRes2[0])) {
                 sendmessage($from_id, "⛔ سقف اعتبار برای ادامه خرید انبوه کافی نیست؛ سرویس‌های ساخته‌شده و کسرهای انجام‌شده حفظ می‌شوند.\nلطفاً بدهی را تسویه کنید و باقی سفارش را دوباره ثبت کنید.", $keyboard, 'HTML');
                 step('home', $from_id);
@@ -2912,13 +3058,27 @@ $textonebuy
         $textcreatuser = str_replace('{volume}', $info_product['Volume_constraint'], $textcreatuser);
         $textcreatuser = applyConnectionPlaceholders($textcreatuser, $output_config_link, $config);
         sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
-        if (!$__bulkOwnerCostOnly && function_exists('balance_atomic_charge')) {
-            $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
-            if (!empty($__bulkChargeLive['ok']) && function_exists('wallet_ledger_record')) {
-                wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس', (string)$randomString, 'invoice', (string)$randomString);
+        if (!$__bulkOwnerCostOnly) {
+            if (function_exists('balance_atomic_charge')) {
+                // FX-DEBT-P1: atomic charge; on failure the service stays (panel
+                // already created) — trace it, never deduct below zero, never issue
+                // a bogus compensation credit.
+                $__bulkChargeLive = balance_atomic_charge($from_id, (float)$__bulkItemCharge, $__bulkAllowNeg);
+                if (!empty($__bulkChargeLive['ok'])) {
+                    if (function_exists('wallet_ledger_record')) {
+                        wallet_ledger_record($from_id, 'debit', $__bulkItemCharge, 'purchase', 'خرید انبوه سرویس', (string)$randomString, 'invoice', (string)$randomString);
+                    }
+                } elseif (function_exists('rx_log_event')) {
+                    rx_log_event('BULK_PURCHASE_CHARGE_FAILED', 'bulk item wallet charge failed after panel creation', ['from_id' => $from_id, 'invoice' => $randomString, 'amount' => $__bulkItemCharge]);
+                }
+            } else {
+                // legacy fallback (atomic helper unavailable): guarded deduction.
+                $stmtBulkDeduct = $pdo->prepare("UPDATE user SET Balance = Balance - :delta WHERE id = :uid AND Balance >= :check_delta");
+                $stmtBulkDeduct->bindValue(':check_delta', (int) round($__bulkItemCharge), PDO::PARAM_INT);
+                $stmtBulkDeduct->bindValue(':delta', (int) round($__bulkItemCharge), PDO::PARAM_INT);
+                $stmtBulkDeduct->bindValue(':uid', $from_id, PDO::PARAM_STR);
+                $stmtBulkDeduct->execute();
             }
-        } else {
-            update("user", "Balance", select("user", "Balance", "id", $from_id, "select")['Balance'] - $__bulkItemCharge, "id", $from_id);
         }
         $__bulkChargedTotal += $__bulkItemCharge;
     if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null); }
@@ -3513,8 +3673,8 @@ $textonebuy
             sendmessage($from_id, $textbotlang['Admin']['SettingPayment']['issetpay'], null, 'HTML');
             return;
         }
-        $mainbalance = select("PaySetting", "ValuePay", "NamePay", "minbalancecart", "select")['ValuePay'];
-        $maxbalance = select("PaySetting", "ValuePay", "NamePay", "maxbalancecart", "select")['ValuePay'];
+        $mainbalance = rx_gatewayDepositLimit("minbalancecart");
+        $maxbalance = rx_gatewayDepositLimit("maxbalancecart");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);
             $maxbalance = number_format($maxbalance);
@@ -3522,10 +3682,8 @@ $textonebuy
             return;
         }
         $_uid = intval($from_id);
-        $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = {$_uid})";
-        $_cmode_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-        $_cmode_row = $_cmode_res ? mysqli_fetch_assoc($_cmode_res) : null;
-        $_cmode = is_array($_cmode_row) ? ($_cmode_row['ValuePay'] ?? 'random') : 'random';
+        $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = {$_uid}) AND " . fx_tenant_sql_agent('cn');
+        $_cmode = (string) getPaySettingValue('card_display_mode', 'random');
 
         $card_info = null;
         $_card2 = null;
@@ -3538,10 +3696,7 @@ $textonebuy
             $_card2 = $_dcards[1] ?? null;
         } else {
             $_ck = "card_cycle_{$_uid}";
-            $_ck_esc = mysqli_real_escape_string($connect, $_ck);
-            $_seen_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = '{$_ck_esc}' LIMIT 1");
-            $_seen_row = $_seen_res ? mysqli_fetch_assoc($_seen_res) : null;
-            $_seen_str = is_array($_seen_row) ? ($_seen_row['ValuePay'] ?? '') : '';
+            $_seen_str = (string) getPaySettingValue($_ck, '');
             $_seen = array_values(array_filter(array_map('intval', explode(',', $_seen_str))));
             $_excl = !empty($_seen) ? "AND cn.id NOT IN (" . implode(',', $_seen) . ")" : "";
 
@@ -3556,11 +3711,7 @@ $textonebuy
 
             if ($card_info) {
                 $_new_seen = implode(',', array_unique(array_merge($_seen, [intval($card_info['id'])])));
-                $_nv_esc = mysqli_real_escape_string($connect, $_new_seen);
-                mysqli_query($connect, "UPDATE PaySetting SET ValuePay = '{$_nv_esc}' WHERE NamePay = '{$_ck_esc}'");
-                if (mysqli_affected_rows($connect) === 0) {
-                    mysqli_query($connect, "INSERT INTO PaySetting (NamePay, ValuePay) VALUES ('{$_ck_esc}', '{$_nv_esc}')");
-                }
+                update("PaySetting", "ValuePay", $_new_seen, "NamePay", $_ck);
             }
         }
 
@@ -3721,8 +3872,8 @@ $textonebuy
             sendmessage($from_id, $textbotlang['users']['Balance']['zarinpal'], null, 'HTML');
             return;
         }
-        $mainbalance = select("PaySetting", "ValuePay", "NamePay", "minbalancezarinpal", "select")['ValuePay'];
-        $maxbalance = select("PaySetting", "ValuePay", "NamePay", "maxbalancezarinpal", "select")['ValuePay'];
+        $mainbalance = rx_gatewayDepositLimit("minbalancezarinpal");
+        $maxbalance = rx_gatewayDepositLimit("maxbalancezarinpal");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);
             $maxbalance = number_format($maxbalance);
@@ -3816,8 +3967,8 @@ $textonebuy
             sendmessage($from_id, $textbotlang['users']['Balance']['nowpayments'], null, 'HTML');
             return;
         }
-        $mainbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "minbalanceplisio", "select")['ValuePay'];
-        $maxbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "maxbalanceplisio", "select")['ValuePay'];
+        $mainbalanceplisio = rx_gatewayDepositLimit("minbalanceplisio");
+        $maxbalanceplisio = rx_gatewayDepositLimit("maxbalanceplisio");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
             $maxbalanceplisio = number_format($maxbalanceplisio);
@@ -3918,8 +4069,8 @@ $textonebuy
         }
         $trxprice = round(((float) $user['Processing_value']) / (float) $trx, 2);
         $usdprice = round(((float) $user['Processing_value']) / (float) $usd, 2);
-        $mainbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "minbalancenowpayment", "select")['ValuePay'];
-        $maxbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "maxbalancenowpayment", "select")['ValuePay'];
+        $mainbalanceplisio = rx_gatewayDepositLimit("minbalancenowpayment");
+        $maxbalanceplisio = rx_gatewayDepositLimit("maxbalancenowpayment");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
             $maxbalanceplisio = number_format($maxbalanceplisio);
@@ -4007,8 +4158,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "iranpay2") {
-        $mainbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "minbalanceiranpay2", "select")['ValuePay'];
-        $maxbalanceplisio = select("PaySetting", "ValuePay", "NamePay", "maxbalanceiranpay2", "select")['ValuePay'];
+        $mainbalanceplisio = rx_gatewayDepositLimit("minbalanceiranpay2");
+        $maxbalanceplisio = rx_gatewayDepositLimit("maxbalanceiranpay2");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
             $maxbalanceplisio = number_format($maxbalanceplisio);
@@ -4145,8 +4296,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "tonpay") {
-        $mainbalancetonpay = select("PaySetting", "ValuePay", "NamePay", "minbalancetonpay", "select")['ValuePay'];
-        $maxbalancetonpay = select("PaySetting", "ValuePay", "NamePay", "maxbalancetonpay", "select")['ValuePay'];
+        $mainbalancetonpay = rx_gatewayDepositLimit("minbalancetonpay");
+        $maxbalancetonpay = rx_gatewayDepositLimit("maxbalancetonpay");
         if ($user['Processing_value'] < $mainbalancetonpay || $user['Processing_value'] > $maxbalancetonpay) {
             $mainbalancetonpay = number_format($mainbalancetonpay);
             $maxbalancetonpay = number_format($maxbalancetonpay);
@@ -4272,8 +4423,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "blupal") {
-        $mainbalanceblupal = select("PaySetting", "ValuePay", "NamePay", "minbalanceblupal", "select")['ValuePay'];
-        $maxbalanceblupal = select("PaySetting", "ValuePay", "NamePay", "maxbalanceblupal", "select")['ValuePay'];
+        $mainbalanceblupal = rx_gatewayDepositLimit("minbalanceblupal");
+        $maxbalanceblupal = rx_gatewayDepositLimit("maxbalanceblupal");
         if ($user['Processing_value'] < $mainbalanceblupal || $user['Processing_value'] > $maxbalanceblupal) {
             $mainbalanceblupal = number_format($mainbalanceblupal);
             $maxbalanceblupal = number_format($maxbalanceblupal);
@@ -4397,8 +4548,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "atlaspay") {
-        $mainbalanceatlaspay = select("PaySetting", "ValuePay", "NamePay", "minbalanceatlaspay", "select")['ValuePay'];
-        $maxbalanceatlaspay = select("PaySetting", "ValuePay", "NamePay", "maxbalanceatlaspay", "select")['ValuePay'];
+        $mainbalanceatlaspay = rx_gatewayDepositLimit("minbalanceatlaspay");
+        $maxbalanceatlaspay = rx_gatewayDepositLimit("maxbalanceatlaspay");
         if ($user['Processing_value'] < $mainbalanceatlaspay || $user['Processing_value'] > $maxbalanceatlaspay) {
             $mainbalanceatlaspay = number_format($mainbalanceatlaspay);
             $maxbalanceatlaspay = number_format($maxbalanceatlaspay);
@@ -4526,8 +4677,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "cubepay") {
-        $mainbalancecubepay = select("PaySetting", "ValuePay", "NamePay", "minbalancecubepay", "select")['ValuePay'];
-        $maxbalancecubepay = select("PaySetting", "ValuePay", "NamePay", "maxbalancecubepay", "select")['ValuePay'];
+        $mainbalancecubepay = rx_gatewayDepositLimit("minbalancecubepay");
+        $maxbalancecubepay = rx_gatewayDepositLimit("maxbalancecubepay");
         if ($user['Processing_value'] < $mainbalancecubepay || $user['Processing_value'] > $maxbalancecubepay) {
             $mainbalancecubepay = number_format($mainbalancecubepay);
             $maxbalancecubepay = number_format($maxbalancecubepay);
@@ -4669,8 +4820,8 @@ $textonebuy
             sendmessage($from_id, $cubepayCardText, null, 'HTML');
         }
     } elseif ($datain == "variza") {
-        $mainbalancevariza = select("PaySetting", "ValuePay", "NamePay", "minbalancevariza", "select")['ValuePay'];
-        $maxbalancevariza = select("PaySetting", "ValuePay", "NamePay", "maxbalancevariza", "select")['ValuePay'];
+        $mainbalancevariza = rx_gatewayDepositLimit("minbalancevariza");
+        $maxbalancevariza = rx_gatewayDepositLimit("maxbalancevariza");
         if ($user['Processing_value'] < $mainbalancevariza || $user['Processing_value'] > $maxbalancevariza) {
             $mainbalancevariza = number_format($mainbalancevariza);
             $maxbalancevariza = number_format($maxbalancevariza);
@@ -4793,8 +4944,8 @@ $textonebuy
         $message_id = sendmessage($from_id, $textnowpayments, $paymentkeyboard, 'HTML');
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "abangateway") {
-        $mainbalanceabangateway = select("PaySetting", "ValuePay", "NamePay", "minbalanceabangateway", "select")['ValuePay'];
-        $maxbalanceabangateway = select("PaySetting", "ValuePay", "NamePay", "maxbalanceabangateway", "select")['ValuePay'];
+        $mainbalanceabangateway = rx_gatewayDepositLimit("minbalanceabangateway");
+        $maxbalanceabangateway = rx_gatewayDepositLimit("maxbalanceabangateway");
         if ($user['Processing_value'] < $mainbalanceabangateway || $user['Processing_value'] > $maxbalanceabangateway) {
             $mainbalanceabangateway = number_format($mainbalanceabangateway);
             $maxbalanceabangateway = number_format($maxbalanceabangateway);
@@ -4885,8 +5036,8 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "digitaltron") {
 
-        $mainbalancedigitaltron = select("PaySetting", "ValuePay", "NamePay", "minbalancedigitaltron", "select")['ValuePay'];
-        $maxbalancedigitaltron = select("PaySetting", "ValuePay", "NamePay", "maxbalancedigitaltron", "select")['ValuePay'];
+        $mainbalancedigitaltron = rx_gatewayDepositLimit("minbalancedigitaltron");
+        $maxbalancedigitaltron = rx_gatewayDepositLimit("maxbalancedigitaltron");
         if ($user['Processing_value'] < $mainbalancedigitaltron || $user['Processing_value'] > $maxbalancedigitaltron) {
             $minF = number_format($mainbalancedigitaltron);
             $maxF = number_format($maxbalancedigitaltron);
@@ -5187,8 +5338,8 @@ $textonebuy
         if ($starAmount < 1) {
             $starAmount = 1;
         }
-        $mainbalance = select("PaySetting", "ValuePay", "NamePay", "minbalancestar", "select")['ValuePay'];
-        $maxbalance = select("PaySetting", "ValuePay", "NamePay", "maxbalancestar", "select")['ValuePay'];
+        $mainbalance = rx_gatewayDepositLimit("minbalancestar");
+        $maxbalance = rx_gatewayDepositLimit("maxbalancestar");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);
             $maxbalance = number_format($maxbalance);

@@ -203,7 +203,7 @@ if (!defined('FX_MYACCOUNT_LOADED')) {
         $cards = [];
         if ($pdo instanceof PDO) {
             try {
-                $stmt = $pdo->query("SELECT cardnumber, namecard FROM card_number WHERE is_active = 1 LIMIT 5");
+                $stmt = $pdo->query("SELECT cardnumber, namecard FROM card_number WHERE is_active = 1 AND " . fx_tenant_sql_agent() . " LIMIT 5");
                 $cards = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
             } catch (\Throwable $e) { $cards = []; }
         }

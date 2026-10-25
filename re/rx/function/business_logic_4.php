@@ -221,6 +221,10 @@ function nmProductByCodeForPanel($codeProduct, $panelName, $agent = null)
     $codeProduct = trim((string) $codeProduct);
     $panelName = trim((string) $panelName);
     $agent = $agent === null ? null : trim((string) $agent);
+    // FX-TENANT-ISOLATION: in /vpnbot/ always scope by FX_RESELLER_ID.
+    if (function_exists('fx_tenant_scope_agent')) {
+        $agent = fx_tenant_scope_agent($agent);
+    }
 
     if (!($pdo instanceof PDO) || $codeProduct === '' || $panelName === '') {
         return false;
@@ -237,7 +241,11 @@ function nmProductByCodeForPanel($codeProduct, $panelName, $agent = null)
         ];
 
         if ($agent !== null && $agent !== '') {
-            $sql .= " AND (FIND_IN_SET(:agent_where, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
+            if (function_exists('fx_customer_product_scope_sql')) {
+                $sql .= ' AND ' . fx_customer_product_scope_sql(':agent_where', 'product');
+            } else {
+                $sql .= " AND (FIND_IN_SET(:agent_where, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
+            }
             $params[':agent_where'] = $agent;
             $params[':agent_order'] = $agent;
             $sql .= " ORDER BY
@@ -259,7 +267,7 @@ function nmProductByCodeForPanel($codeProduct, $panelName, $agent = null)
     }
 }
 
-function nmProductByNameForPanel($productName, $panelName, $agent = null, $category = null)
+function nmProductByNameForPanel($productName, $panelName, $agent = null, $category = null, $allowFuzzy = true)
 {
     global $pdo;
     try {
@@ -290,6 +298,9 @@ function nmProductByNameForPanel($productName, $panelName, $agent = null, $categ
             }
         }
         $agent = trim((string)($agent ?? ''));
+        if (function_exists('fx_tenant_scope_agent')) {
+            $agent = fx_tenant_scope_agent($agent);
+        }
         if (!in_array($agent, ['', 'all', '*', 'any'], true)) {
             $sql .= " AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
             $params[':agent'] = $agent;
@@ -299,6 +310,7 @@ function nmProductByNameForPanel($productName, $panelName, $agent = null, $categ
 
         $rows = nmProductsForPanelCategory(['name_panel' => $panelName], $agent ?: 'all', $category);
         foreach ($rows as $r) if (nmNormalizeText($r['name_product'] ?? '') === $productName) return $r;
+        if (!$allowFuzzy) return false;
         foreach ($rows as $r) { $name = nmNormalizeText($r['name_product'] ?? ''); if ($name !== '' && (mb_strpos($productName, $name) !== false || mb_strpos($name, $productName) !== false)) return $r; }
         if (count($rows) === 1) return $rows[0];
         return false;
@@ -571,6 +583,7 @@ if (!function_exists('rx_normalizeAdminButtonText')) {
                 'set_qr_toggle'         => "🔄 وضعیت کیوآرکد",
                 'set_webhook'           => "🔗 وبهوک ربات‌های نماینده",
                 'fx_myprices_menu'      => "🏷️ قیمت‌های من",
+                'fx_products_menu'      => "🛍 محصولات من",
                 'fx_myaccount_menu'     => "🏦 حساب من",
                 'shop_status'           => "🛒 وضعیت قابلیت های فروشگاه",
                 'shop_category'         => "🗂 مدیریت دسته‌بندی",

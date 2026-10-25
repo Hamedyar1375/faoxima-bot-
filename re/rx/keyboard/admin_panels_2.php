@@ -46,19 +46,35 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
     $panelName = trim((string) $panelName);
     if ($panelName === '') return false;
     $agent = $agent === null ? null : trim((string) $agent);
+    // FX-TENANT-ISOLATION: inside /vpnbot/ the tenant is ALWAYS FX_RESELLER_ID,
+    // even for legacy customer rows whose agent is f/n/n2. In the main bot the
+    // customer's agent group is used. This prevents cross-tenant product lookup.
+    $scopeAgent = function_exists('fx_tenant_scope_agent')
+        ? fx_tenant_scope_agent($agent)
+        : $agent;
     $tokens = rxProductLookupTokens($productToken);
 
-    $queryProduct = static function ($extraSql, array $extraParams = []) use ($pdo, $panelName, $agent, $category, $serviceTime) {
+    $agentScopeSql = static function () use ($scopeAgent) {
+        if ($scopeAgent === null || $scopeAgent === '') {
+            return '';
+        }
+        if (function_exists('fx_customer_product_scope_sql')) {
+            return ' AND ' . fx_customer_product_scope_sql(':rx_agent_where', 'product');
+        }
+        return " AND (FIND_IN_SET(:rx_agent_where, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
+    };
+
+    $queryProduct = static function ($extraSql, array $extraParams = []) use ($pdo, $panelName, $scopeAgent, $category, $serviceTime, $agentScopeSql) {
         $sql = "SELECT * FROM product WHERE (FIND_IN_SET(:rx_location_where, Location) > 0 OR Location = '/all')";
         $params = [
             ':rx_location_where' => $panelName,
             ':rx_location_order' => $panelName,
         ];
 
-        if ($agent !== null && $agent !== '') {
-            $sql .= " AND (FIND_IN_SET(:rx_agent_where, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
-            $params[':rx_agent_where'] = $agent;
-            $params[':rx_agent_order'] = $agent;
+        if ($scopeAgent !== null && $scopeAgent !== '') {
+            $sql .= $agentScopeSql();
+            $params[':rx_agent_where'] = $scopeAgent;
+            $params[':rx_agent_order'] = $scopeAgent;
         }
         if ($category !== null && $category !== '') {
             $sql .= " AND (FIND_IN_SET(:rx_category, category) > 0 OR FIND_IN_SET(:rx_category_id, category) > 0)";
@@ -72,7 +88,7 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
 
         $sql .= ' ' . $extraSql;
         $sql .= " ORDER BY CASE WHEN FIND_IN_SET(:rx_location_order, Location) > 0 THEN 0 ELSE 1 END";
-        if ($agent !== null && $agent !== '') {
+        if ($scopeAgent !== null && $scopeAgent !== '') {
             $sql .= ", CASE WHEN agent = :rx_agent_order THEN 0 WHEN agent = 'all' THEN 1 ELSE 2 END";
         }
         $sql .= ", id ASC LIMIT 1";
@@ -80,7 +96,14 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params + $extraParams);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ?: false;
+        if (!$row) return false;
+        if (function_exists('fx_product_matches_tenant') && !fx_product_matches_tenant($row)) {
+            error_log(sprintf('[TENANT-REJECT] resolver query product=%s code=%s agent=%s scope=%s',
+                (string)($row['id'] ?? ''), (string)($row['code_product'] ?? ''),
+                (string)($row['agent'] ?? ''), (string)$scopeAgent));
+            return false;
+        }
+        return $row;
     };
 
     foreach ($tokens as $token) {
@@ -94,8 +117,11 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
         $token = trim((string) $token);
         if ($token === '' || preg_match('/^pid:\d+$/', $token)) continue;
         if (function_exists('nmProductByCodeForPanel')) {
-            $row = nmProductByCodeForPanel($token, $panelName, $agent);
-            if (is_array($row) && isset($row['price_product'])) return $row;
+            $row = nmProductByCodeForPanel($token, $panelName, $scopeAgent);
+            if (is_array($row) && isset($row['price_product'])
+                && (!function_exists('fx_product_matches_tenant') || fx_product_matches_tenant($row))) {
+                return $row;
+            }
         }
         $row = $queryProduct('AND code_product = :rx_code_product', [':rx_code_product' => $token]);
         if ($row) return $row;
@@ -114,8 +140,15 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
         $token = trim((string) $token);
         if ($token === '' || preg_match('/^pid:\d+$/', $token)) continue;
         if (function_exists('nmProductByNameForPanel')) {
-            $row = nmProductByNameForPanel($token, $panelName, $agent, $category);
-            if (is_array($row) && isset($row['price_product'])) return $row;
+            // A token that looks like a product code/id must never fall through
+            // to fuzzy name matching: "TEST001" resolving to another product
+            // (e.g. TEST002) is a cross-product pricing/tenant bug.
+            $allowFuzzyName = (bool) preg_match('/\s/u', (string) $token);
+            $row = nmProductByNameForPanel($token, $panelName, $scopeAgent, $category, $allowFuzzyName);
+            if (is_array($row) && isset($row['price_product'])
+                && (!function_exists('fx_product_matches_tenant') || fx_product_matches_tenant($row))) {
+                return $row;
+            }
         }
         $cleanName = preg_replace('/\s*-\s*[0-9,\.]+\s*تومان\s*$/u', '', $token);
         foreach (array_unique([$token, trim((string) $cleanName)]) as $nameCandidate) {
@@ -129,9 +162,9 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
     if (empty($nonEmptyTokens)) {
         $sql = "SELECT * FROM product WHERE (FIND_IN_SET(:rx_location_where, Location) > 0 OR Location = '/all')";
         $params = [':rx_location_where' => $panelName];
-        if ($agent !== null && $agent !== '') {
-            $sql .= " AND (FIND_IN_SET(:rx_agent_where, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
-            $params[':rx_agent_where'] = $agent;
+        if ($scopeAgent !== null && $scopeAgent !== '') {
+            $sql .= $agentScopeSql();
+            $params[':rx_agent_where'] = $scopeAgent;
         }
         if ($category !== null && $category !== '') {
             $sql .= " AND (FIND_IN_SET(:rx_category, category) > 0 OR FIND_IN_SET(:rx_category_id, category) > 0)";
@@ -146,7 +179,7 @@ function rxResolveProductForPanel($productToken, $panelName, $agent = null, $cat
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        if (count($rows) === 1) return $rows[0];
+        if (count($rows) === 1 && (!function_exists('fx_product_matches_tenant') || fx_product_matches_tenant($rows[0]))) return $rows[0];
     }
 
     return false;
@@ -193,6 +226,9 @@ function KeyboardProduct($location,$query,$pricediscount,$datakeyboard,$statuscu
         ];
     }
     foreach ($productRows as $result) {
+        if (function_exists('fx_product_matches_tenant') && !fx_product_matches_tenant($result)) {
+            continue;
+        }
         if ($agentFilter !== null && (!function_exists('rx_product_allows_agent') || !rx_product_allows_agent($result, $agentFilter))) {
             continue;
         }
@@ -243,6 +279,8 @@ function KeyboardProduct($location,$query,$pricediscount,$datakeyboard,$statuscu
 }
 function KeyboardCategory($location,$agent,$backuser = "backuser"){
     global $pdo,$textbotlang;
+    // FX-TENANT-ISOLATION: category list follows the active bot tenant.
+    if (function_exists('fx_tenant_scope_agent')) $agent = fx_tenant_scope_agent($agent);
     $list_category = ['inline_keyboard' => []];
     // Use the shared, collation-safe matcher so the list shows exactly the
     // categories that have a sellable product (matching by remark OR id OR
@@ -274,6 +312,8 @@ function KeyboardCategory($location,$agent,$backuser = "backuser"){
 
 function keyboardTimeCategory($name_panel,$agent,$callback_data = "producttime_",$callback_data_back = "backuser",$statuscustomvolume = false,$statusbtnextend = false){
     global $pdo,$textbotlang;
+    // FX-TENANT-ISOLATION: time options must come from this tenant's products.
+    if (function_exists('fx_tenant_scope_agent')) $agent = fx_tenant_scope_agent($agent);
     $stmt = $pdo->prepare("SELECT Service_time FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
     $stmt->execute([
         ':location' => $name_panel,

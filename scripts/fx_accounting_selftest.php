@@ -2,16 +2,16 @@
 /**
  * fx_accounting_selftest.php — تست دائمی حسابداری جلسه ۵ (تراز ربات اصلی/نمایندگی)
  *
- * اجرا:
- *   docker exec -e DBH=faoxima-db -e DBU=faoxima -e DBP=k2IZahTmNexPe06fo4DS -e DBN=faoxima \
+ * اجرا (فقط دیتابیس تستی ایزوله؛ به دیتابیس اصلی وصل نمی‌شود):
+ *   docker exec -e DBH=db -e DBU=faoxima -e DBP=k2IZahTmNexPe06fo4DS -e DBN=faoxima_botcap_empty \
  *     faoxima-app-1 php /var/www/faoxima/scripts/fx_accounting_selftest.php
  *
  * بخش A: منطق خالص (بدون DB)
- * بخش B: تست DB داخل BEGIN..ROLLBACK (بدون تغییر داده واقعی) — با reseller تستی 990000001
+ * بخش B: تست DB داخل BEGIN..ROLLBACK (بدون تغییر داده) — با reseller تستی 990000001
  * بخش C: تست قرارداد قفل MySQL (GET_LOCK روی دو کانکشن جدا)
  * بخش D: تست سیم‌کشی استاتیک (وجود نقاط اصلاح‌شده در سورس — رگرسیون حذف تصادفی)
  *
- * هیچ داده مالی واقعی تغییر نمی‌کند.
+ * محافظ ایمنی: اگر DBN یک دیتابیس تستی botcap نباشد، بخش B/C رد می‌شود.
  */
 error_reporting(E_ALL & ~E_DEPRECATED);
 
@@ -54,6 +54,10 @@ if (!$DBH || !$DBU || !$DBN) {
     echo "  ⚠️  env DBX تنظیم نیست — بخش B/C رد شد\n";
     goto static_tests;
 }
+if (strpos($DBN, 'botcap') === false) {
+    echo "  ❌ DBN باید دیتابیس تستی botcap باشد (محافظه‌کارانه متوقف شد): DBN=$DBN — بخش B/C رد شد\n";
+    goto static_tests;
+}
 try {
     $pdo = new PDO("mysql:host=$DBH;dbname=$DBN;charset=utf8mb4", $DBU, $DBP, [
         PDO::ATTR_ERRMODE          => PDO::ERRMODE_EXCEPTION,
@@ -64,6 +68,33 @@ try {
     exit(1);
 }
 $GLOBALS['pdo'] = $pdo;
+
+// ایزوله‌سازی: جداول تستی در صورت نبود ساخته می‌شوند (فقط روی دیتابیس botcap)
+$pdo->exec("CREATE TABLE IF NOT EXISTS botsaz (
+    id_user varchar(50) NOT NULL PRIMARY KEY,
+    bot_token text, admin_ids text, username text, setting text, hide_panel text,
+    time varchar(50) DEFAULT '0',
+    debt_mode varchar(12) DEFAULT 'balance',
+    debt_ceiling bigint DEFAULT 0,
+    current_debt bigint DEFAULT 0,
+    debt_alert_80 tinyint DEFAULT 0,
+    debt_alert_95 tinyint DEFAULT 0,
+    retail_overrides text
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+$pdo->exec("CREATE TABLE IF NOT EXISTS fx_debt_log (
+    id bigint NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    reseller_id bigint NOT NULL,
+    amount bigint NOT NULL,
+    direction varchar(10) NOT NULL,
+    method varchar(30) NOT NULL,
+    scope varchar(10) DEFAULT 'bot',
+    invoice_ref varchar(64) DEFAULT NULL,
+    debt_after bigint NOT NULL DEFAULT 0,
+    time datetime DEFAULT NULL,
+    idempotency_key varchar(120) DEFAULT NULL,
+    KEY idx_fx_debt_log_scope (scope),
+    UNIQUE KEY uq_fx_debt_log_idem (idempotency_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
 $TEST_RID = 990000001;
 $logBefore = (int)$pdo->query("SELECT COUNT(*) FROM fx_debt_log")->fetchColumn();
@@ -86,10 +117,21 @@ $sc = (string)$pdo->query("SELECT scope FROM fx_debt_log WHERE reseller_id = '$T
 $da = (int)$pdo->query("SELECT debt_after FROM fx_debt_log WHERE reseller_id = '$TEST_RID' AND invoice_ref = 'INV-SELFTEST-1' ORDER BY id DESC LIMIT 1")->fetchColumn();
 check("B4 commit change_location → ردیف in با scope='bot' debt_after=100000", !empty($okC) && $sc === 'bot' && $da === 100000, "ok=$okC scope=$sc debt_after=$da");
 
-fx_debt_release($TEST_RID, 30000, 'INV-SELFTEST-1');
+// FX-DEBT-P1: commit دوباره با همان ref+method → duplicate بدون ردیف دوم
+list($okC2, $rsC2) = fx_debt_commit($TEST_RID, 70000, 'change_location', 'INV-SELFTEST-1');
+$cntC = (int)$pdo->query("SELECT COUNT(*) FROM fx_debt_log WHERE reseller_id = '$TEST_RID' AND invoice_ref = 'INV-SELFTEST-1' AND method = 'change_location'")->fetchColumn();
+check('B4b commit تکراری → duplicate و فقط ۱ ردیف و بدهی دست‌نخورده', !empty($okC2) && $rsC2 === 'duplicate' && $cntC === 1 && fx_debt_state($TEST_RID)['current'] === 100000, "ok2=$okC2 reason=$rsC2 cnt=$cntC");
+
+// FX-DEBT-P1: release با ref تسویه‌نشده → کسر بدهی؛ فقط مارکر amount=0 (بدون ردیف مالی out)
+fx_debt_release($TEST_RID, 30000, 'INV-SELFTEST-2');
 $cur = fx_debt_state($TEST_RID)['current'];
-$revDir = (string)$pdo->query("SELECT direction FROM fx_debt_log WHERE reseller_id = '$TEST_RID' AND method = 'revert' ORDER BY id DESC LIMIT 1")->fetchColumn();
-check('B5 release 30000 → debt=70000 و ردیف out نوع revert', $cur === 70000 && $revDir === 'out', "cur=$cur rev=$revDir");
+$outPaid = (int)$pdo->query("SELECT COUNT(*) FROM fx_debt_log WHERE reseller_id = '$TEST_RID' AND direction = 'out' AND amount > 0")->fetchColumn();
+$marker = (int)$pdo->query("SELECT COUNT(*) FROM fx_debt_log WHERE reseller_id = '$TEST_RID' AND method = 'revert' AND amount = 0")->fetchColumn();
+check('B5 release با ref تسویه‌نشده → debt=70000، بدون ردیف مالی out و ۱ مارکر revert (FX-DEBT-P1)', $cur === 70000 && $outPaid === 0 && $marker === 1, "cur=$cur outPaid=$outPaid marker=$marker");
+
+// FX-DEBT-P1: release با ref که قبلاً commit شده → رد شود و بدهی دست‌نخورده بماند
+fx_debt_release($TEST_RID, 50000, 'INV-SELFTEST-1');
+check('B5b release با ref commit‌شده → رد و بدهی دست‌نخورده (FX-DEBT-P1)', fx_debt_state($TEST_RID)['current'] === 70000, 'cur=' . fx_debt_state($TEST_RID)['current']);
 
 list($ok1) = fx_debt_record_once($TEST_RID, 5000, 'purchase_gateway', 'ORDER-SELFTEST-1');
 list($ok2, $reason2) = fx_debt_record_once($TEST_RID, 5000, 'purchase_gateway', 'ORDER-SELFTEST-1');
@@ -132,8 +174,9 @@ $srcDh2       = (string)@file_get_contents($ROOT . '/re/rx/function/database_hel
 $srcFxDebt    = (string)@file_get_contents($ROOT . '/re/rx/index/fx_debt.php');
 
 check('D1 قفل کالبک مالی در bootstrap.php هست', strpos($srcBootstrap, "\$_rxMoneyCallbackPrefixes") !== false && strpos($srcBootstrap, "rx_callback_lock_acquire(\$from_id, 'money'") !== false);
-check('D2 فیکس fx چانژلوکیشن: reserve/commit/release در bootstrap.php', strpos($srcBootstrap, 'fx_debt_reserve($__fxRidCl') !== false && strpos($srcBootstrap, "'change_location', \$__fxClRef") !== false && strpos($srcBootstrap, 'fx_debt_release($__fxRidCl') !== false);
-check('D3 فیکس fx خرید درگاه: purchase_gateway در database_helpers_2.php', substr_count($srcDh2, "'purchase_gateway', (string)\$order_id") >= 2, 'count=' . substr_count($srcDh2, "'purchase_gateway', (string)\$order_id"));
+check('D2 فیکس fx چانژلوکیشن: safe-stop در حالت اعتباری + trace (FX-DEBT-P1)', strpos($srcBootstrap, "'bootstrap_changeloc'") !== false && strpos($srcBootstrap, 'fx_credit_log_stop') !== false && strpos($srcBootstrap, '$__fxClWholesale = (int)$Pricechange') === false);
+$d3c = substr_count($srcDh2, "fx_debt_gateway_record_once((string)\$order_id, 'purchase_gateway'");
+check('D3 فیکس fx خرید درگاه: purchase_gateway در database_helpers_2.php', $d3c >= 2, 'count=' . $d3c);
 check('D4 متدهای جدید در لیست صورتحساب fx_debt.php', strpos($srcFxDebt, "'purchase_gateway','bulk_purchase','change_location'") !== false);
 check('D5 برچسب‌های اعلان فروش برای متدهای جدید', strpos($srcFxDebt, "'purchase_gateway' =>") !== false && strpos($srcFxDebt, "'change_location' =>") !== false);
 

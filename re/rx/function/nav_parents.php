@@ -716,7 +716,7 @@ if (!function_exists('rx_find_channel_from_input')) {
         if (isset($datain) && preg_match('/^ch_manage_(\d+)$/', (string)$datain, $m)) {
             $id = (int)$m[1];
             try {
-                $stmt = $pdo->prepare("SELECT * FROM channels WHERE id = :id LIMIT 1");
+                $stmt = $pdo->prepare("SELECT * FROM channels WHERE id = :id AND " . fx_tenant_sql_agent() . " LIMIT 1");
                 $stmt->execute([':id' => $id]);
                 $chan = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($chan && !empty($chan['id'])) {
@@ -781,7 +781,7 @@ if (!function_exists('rx_find_channel_from_input')) {
 
         $channels = [];
         try {
-            $stmt = $pdo->prepare("SELECT * FROM channels ORDER BY id ASC");
+            $stmt = $pdo->prepare("SELECT * FROM channels WHERE " . fx_tenant_sql_agent() . " ORDER BY id ASC");
             $stmt->execute();
             $channels = $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (Throwable $e) {

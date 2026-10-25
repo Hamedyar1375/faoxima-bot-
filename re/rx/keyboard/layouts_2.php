@@ -89,7 +89,7 @@ if (!function_exists('rx_get_channel_keyboard')) {
         ];
         if (isset($pdo) && ($pdo instanceof PDO)) {
             try {
-                $stmt = $pdo->prepare("SELECT * FROM channels ORDER BY id ASC");
+                $stmt = $pdo->prepare("SELECT * FROM channels WHERE " . fx_tenant_sql_agent() . " ORDER BY id ASC");
                 $stmt->execute();
                 $channels = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 if (is_array($channels)) {
@@ -248,7 +248,7 @@ $result = $stmt->fetchAll();
 $table_exists = count($result) > 0;
 $list_channels = [];
 if ($table_exists) {
-    $stmt = $pdo->prepare("SELECT * FROM channels");
+    $stmt = $pdo->prepare("SELECT * FROM channels WHERE " . fx_tenant_sql_agent());
     $stmt->execute();
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $list_channels[] = [$row['link']];
@@ -275,7 +275,7 @@ $result = $stmt->fetchAll();
 $table_exists = count($result) > 0;
 $list_card = [];
 if ($table_exists) {
-    $stmt = $pdo->prepare("SELECT * FROM card_number");
+    $stmt = $pdo->prepare("SELECT * FROM card_number WHERE " . fx_tenant_sql_agent());
     $stmt->execute();
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
         $list_card[] = [$row['cardnumber']];

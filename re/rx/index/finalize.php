@@ -97,7 +97,7 @@ if (isset($update['pre_checkout_query'])) {
     $query = "SELECT * FROM product WHERE (FIND_IN_SET(:location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))";
     $queryParams = [
         ':location' => $location,
-        ':agent' => $user['agent']
+        ':agent' => fx_tenant_scope_agent($user['agent'])
     ];
     $customVolumeData = json_decode($marzban_list_get['customvolume'] ?? '{}', true);
     if (!is_array($customVolumeData)) $customVolumeData = [];
@@ -123,10 +123,11 @@ if (isset($update['pre_checkout_query'])) {
         $stmt->execute([
             ':processing_value' => $user['Processing_value'],
             ':code_product' => $codeproduct,
-            ':agent' => $user['agent']
+            ':agent' => fx_tenant_scope_agent($user['agent'])
         ]);
         $prodcut = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($prodcut, $from_id, $keyboard)) return;
     if ($prodcut == false) {
         error_log('Service extend preview failed: product not found for code=' . ($codeproduct ?? '') . ', panel=' . ($user['Processing_value'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $textbotlang['users']['erroroccurred'], $keyboard, 'html');
@@ -166,10 +167,11 @@ if (isset($update['pre_checkout_query'])) {
         $stmt->execute([
             ':processing_value' => $user['Processing_value'],
             ':code_product' => $codeproduct,
-            ':agent' => $user['agent']
+            ':agent' => fx_tenant_scope_agent($user['agent'])
         ]);
         $prodcut = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($prodcut, $from_id, $keyboard)) return;
     if ($prodcut == false) {
         error_log('Service extend confirmation failed: product not found for code=' . ($codeproduct ?? '') . ', panel=' . ($user['Processing_value'] ?? '') . ', agent=' . ($user['agent'] ?? ''));
         sendmessage($from_id, $textbotlang['users']['extend']['renewalerror'], $keyboard, 'HTML');
@@ -201,8 +203,9 @@ if (isset($update['pre_checkout_query'])) {
     if ($user['Balance'] < $prodcut['price_product'] && $user['agent'] != "n2") {
         $marzbandirectpay = panel_feature_enabled($nameloc['Service_location'], 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -243,23 +246,28 @@ if (isset($update['pre_checkout_query'])) {
     $__fxDebtMode = false;
     $__fxRid = 0;
     $__fxReservedRenew = 0;
-    $__fxFinRef = (string)($nameloc['id_invoice'] ?? '');
+    // FX-DEBT-P1: attempt-unique ref — a service can be renewed MANY times,
+    // so the service invoice id alone must not be used as an idempotency key.
+    $__fxFinRef = (string)($nameloc['id_invoice'] ?? '') . '#fin' . bin2hex(random_bytes(4));
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') {
             $__fxDebtMode = true;
+            // FX-DEBT-P1: authoritative wholesale only — NO retail fallback.
             $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
             if ($__fxDebtWholesale <= 0) {
-                $__fxDebtWholesale = (int)$prodcut['price_product'];
-            }
-            if ($__fxDebtWholesale > 0) {
-                $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
-                if (empty($__fxRenewRes[0])) {
-                    sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
-                    return;
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('finalize_renewal', $__fxRid, ['product' => $prodcut['code_product'] ?? '', 'name' => $prodcut['name_product'] ?? '', 'invoice' => $__fxFinRef, 'user' => $from_id]);
                 }
-                $__fxReservedRenew = $__fxDebtWholesale;
+                sendmessage($from_id, "⛔️ تمدید اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده برای این محصول تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", null, 'HTML');
+                return;
             }
+            $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale, (string)$__fxFinRef);
+            if (empty($__fxRenewRes[0])) {
+                sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                return;
+            }
+            $__fxReservedRenew = $__fxDebtWholesale;
         }
     }
     // ===== END FX-DEBT GUARD =====

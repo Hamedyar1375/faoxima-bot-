@@ -43,8 +43,8 @@ final class PaymentMethodsHandler extends BaseHandler
 
         $minBalanceJson = $get('minbalance');
         $maxBalanceJson = $get('maxbalance');
-        $minBalance = $this->jsonAgentValue($minBalanceJson, $agent, 0);
-        $maxBalance = $this->jsonAgentValue($maxBalanceJson, $agent, 10000000);
+        $minBalance = $this->jsonAgentValue($minBalanceJson, $agent, 10000);
+        $maxBalance = $this->jsonAgentValue($maxBalanceJson, $agent, 50000000);
 
 
         $perMethodKeys = [

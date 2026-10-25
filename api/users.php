@@ -4,6 +4,7 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../function.php';
 require_once __DIR__ . '/../botapi.php';
 require_once __DIR__ . '/../re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
+require_once __DIR__ . '/../re/rx/function/fx_reseller_delete_guard.php';
 
 
 header('Content-Type: application/json; charset=UTF-8');
@@ -812,6 +813,14 @@ switch ($data['actions'] ?? '') {
         if (!$contentbot)
             sendJsonResponse(false, "User does not have an active bot.", [], 200);
 
+        $fxDelGuard = fx_reseller_delete_guard($pdo, (string) $data['chat_id']);
+        if (empty($fxDelGuard['allowed']))
+            sendJsonResponse(false, (string) ($fxDelGuard['message'] ?? 'Bot deletion blocked.'), ['code' => (string) ($fxDelGuard['code'] ?? 'blocked')], 200);
+
+        $fxDelArchive = fx_reseller_archive_before_delete($pdo, (string) $data['chat_id'], ['source' => 'api/remove_agent_bot']);
+        if (empty($fxDelArchive['ok']))
+            sendJsonResponse(false, (string) ($fxDelArchive['message'] ?? 'Safe archive failed.'), ['code' => 'archive_failed'], 500);
+        if (!empty($fxDelArchive['path'])) error_log('[api/users remove_agent_bot] archive: ' . $fxDelArchive['path']);
 
         try {
             $stmt = $pdo->prepare("DELETE FROM botsaz WHERE id_user = :id_user");

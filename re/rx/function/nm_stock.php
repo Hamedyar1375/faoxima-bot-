@@ -14,6 +14,7 @@ function nmStockProductsForExtend(array $panel, $agent = 'all', $onlyAvailable =
         $stmt->execute($params);
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
             if ($onlyAvailable && !nmStockHasAvailableForProduct($panel, $row)) continue;
+            if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($row)) continue;
             $rows[] = $row;
         }
     } catch (Throwable $e) { error_log('nmStockProductsForExtend failed: ' . $e->getMessage()); }
@@ -29,7 +30,9 @@ function nmStockResolveProductToken($token, array $panel, $agent = 'all')
     else { $sql = "SELECT * FROM product WHERE code_product=:code AND (FIND_IN_SET(:loc, Location)>0 OR Location='/all') LIMIT 1"; $params[':code'] = $token; }
     $agent = trim((string)$agent);
     if ($agent !== '' && $agent !== 'all') { $sql = str_replace(' LIMIT 1', " AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers')) LIMIT 1", $sql); $params[':agent'] = $agent; }
-    try { $stmt = $pdo->prepare($sql); $stmt->execute($params); $row = $stmt->fetch(PDO::FETCH_ASSOC); return $row ?: false; }
+    try { $stmt = $pdo->prepare($sql); $stmt->execute($params); $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($row)) { return false; }
+        return $row ?: false; }
     catch (Throwable $e) { error_log('nmStockResolveProductToken failed: ' . $e->getMessage()); return false; }
 }
 
@@ -941,7 +944,7 @@ function nmStockReserveByShelfLoose(array $panel, array $product, $userId, $invo
 function nmStockCompleteBuyFromInventory($userId, array $userRow, array $panel, array $product, $invoiceId, $usernameAc = '', $chargeBalance = true, $mode = 'national_buy')
 {
     $stock = nmStockReserveForProduct($panel, $product, $userId, $invoiceId, $mode);
-    if (!$stock) return false;
+    if (!$stock) { $GLOBALS['nmStockLastFail'] = 'stock_empty'; return false; }
     try {
         if ($chargeBalance) {
             $__pp3 = (float)($product['price_product'] ?? 0);
@@ -949,7 +952,16 @@ function nmStockCompleteBuyFromInventory($userId, array $userRow, array $panel, 
                 if (function_exists('balance_atomic_charge')) {
                     $__allowNeg3 = (($userRow['agent'] ?? '') === 'n2') ? (int)($userRow['maxbuyagent'] ?? 0) : 0;
                     $__charge3 = balance_atomic_charge($userId, $__pp3, $__allowNeg3);
-                    if (!empty($__charge3['ok']) && function_exists('wallet_ledger_record')) {
+                    if (empty($__charge3['ok'])) {
+                        // FX-DEBT-P1: never deliver without payment — release the stock
+                        // reservation and abort (no free service, no negative balance).
+                        $GLOBALS['nmStockLastFail'] = 'charge_failed';
+                        if (function_exists('nmStockReleaseReservation')) {
+                            nmStockReleaseReservation($stock);
+                        }
+                        return false;
+                    }
+                    if (function_exists('wallet_ledger_record')) {
                         wallet_ledger_record($userId, 'debit', $__pp3, 'purchase', 'خرید سرویس (انبار ملی)', (string)$invoiceId, 'invoice', (string)$invoiceId);
                     }
                 } else {

@@ -64,7 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$bot) {
                 $fxFlash = '❌ رباتی برای این نماینده وجود ندارد.';
             } else {
-                $domain = $GLOBALS['domainhosts'] ?? 'faoxima.downloadbazi.fun/faoxima';
+                $domain = $GLOBALS['domainhosts'] ?? 'faoxima.downloadbazi.fun';
                 $secret = hash('sha256', $bot['bot_token'] . '_faoxima_webhook_secret');
                 $wh = telegram('setWebhook', [
                     'url' => "https://{$domain}/vpnbot/{$uid}{$bot['username']}/index.php",
@@ -75,9 +75,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($action === 'prod') {
             $pid = (int)($_POST['product_id'] ?? 0);
-            $fxFlash = ($pid > 0 && fx_reseller_assign_product_agent($pid, (string)$uid))
-                ? "✅ محصول {$pid} به نماینده {$uid} اختصاص یافت."
-                : '❌ خطا در اختصاص محصول.';
+            $wholesale = ($pid > 0 && (int)$uid > 0) ? fx_reseller_product_wholesale_value($pid) : null;
+            if ($wholesale === null) {
+                $fxFlash = '❌ محصول یا نماینده نامعتبر است.';
+            } elseif ($wholesale <= 0) {
+                $fxFlash = "❌ محصول {$pid} قیمت عمده معتبر ندارد؛ ابتدا قیمت عمده بزرگ‌تر از صفر را ثبت کنید.";
+            } else {
+                $fxFlash = fx_reseller_assign_product_agent($pid, (string)$uid)
+                    ? "✅ محصول {$pid} به نماینده {$uid} اختصاص یافت."
+                    : '❌ خطا در اختصاص محصول.';
+            }
         } elseif ($action === 'panel') {
             $panId = (int)($_POST['panel_id'] ?? 0);
             $fxFlash = ($panId > 0 && fx_reseller_assign_panel_agent($panId, (string)$uid))
@@ -125,7 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $st->execute([':w' => ($amount > 0 ? $amount : null), ':pid' => $pid]);
                 $fxFlash = ($amount > 0)
                     ? "✅ قیمت عمده‌فروشی محصول {$pid} روی " . number_format($amount) . " تومان تنظیم شد."
-                    : "✅ قیمت عمده‌فروشی محصول {$pid} پاک شد (برگشت به قیمت پایه).";
+                    : "⚠️ قیمت عمده‌فروشی محصول {$pid} پاک شد؛ فروش این محصول تا ثبت مجدد مسدود است.";
             }
         } elseif ($action === 'retail') {
             $pid = (int)($_POST['product_id'] ?? 0);
@@ -195,7 +202,7 @@ if (isset($_GET['msg']) && $_GET['msg'] !== '') {
 
 // ---------- data ----------
 $bots = fx_reseller_get_all();
-$prods = $pdo->query("SELECT id, name_product, agent FROM product ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
+$prods = $pdo->query("SELECT id, name_product, agent, fx_wholesale_price FROM product ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
 $panels = $pdo->query("SELECT id, name_panel, agent, username_panel, password_panel, api_key, pasarguard_auth_mode FROM marzban_panel ORDER BY id DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
 
 // FX-RESELLER (2026-10-16): per-reseller product counts + products manager data.
@@ -421,7 +428,7 @@ $fxMaskToken = static function ($t): string {
                 <select name="product_id" class="form-control" required>
                     <option value="">— انتخاب محصول —</option>
                     <?php foreach ($prods as $p): ?>
-                        <option value="<?php echo (int)$p['id']; ?>"><?php echo htmlspecialchars((string)$p['name_product'], ENT_QUOTES, 'UTF-8'); ?> (id: <?php echo (int)$p['id']; ?> — agent: <?php echo htmlspecialchars((string)($p['agent'] ?: '—'), ENT_QUOTES, 'UTF-8'); ?>)</option>
+                        <option value="<?php echo (int)$p['id']; ?>"><?php echo htmlspecialchars((string)$p['name_product'], ENT_QUOTES, 'UTF-8'); ?> (id: <?php echo (int)$p['id']; ?> — agent: <?php echo htmlspecialchars((string)($p['agent'] ?: '—'), ENT_QUOTES, 'UTF-8'); ?> — <?php echo (int)($p['fx_wholesale_price'] ?? 0) > 0 ? 'عمده: ' . number_format((int)$p['fx_wholesale_price']) : '⛔ بدون قیمت عمده'; ?>)</option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -541,12 +548,11 @@ $fxMaskToken = static function ($t): string {
                     $prExc = in_array((string)$fxProdRid, array_filter(array_map('trim', explode(',', (string)$pr['agent']))), true);
                     $prHid = in_array($prPid, $fxProdHidden, true);
                     $prCur = $prRet > 0 ? $prRet : $prBase;
-                    $prWhEff = $prWh > 0 ? $prWh : $prBase;
                 ?>
                     <tr>
                         <td data-label="محصول">
                             <div style="font-weight:600;"><?php echo htmlspecialchars((string)$pr['name_product'], ENT_QUOTES, 'UTF-8'); ?></div>
-                            <div style="font-size:12px;color:#888;">ID: <?php echo $prPid; ?> — سود تقریبی هر فروش: <?php echo number_format($prCur - $prWhEff); ?> تومان</div>
+                            <div style="font-size:12px;color:#888;">ID: <?php echo $prPid; ?> — <?php echo $prWh > 0 ? 'سود تقریبی هر فروش: ' . number_format($prCur - $prWh) . ' تومان' : '⛔ بدون قیمت عمده — فروش مسدود'; ?></div>
                         </td>
                         <td data-label="نوع"><?php echo $prExc ? '<span style="color:#0a7">اختصاصی</span>' : '<span style="color:#888">مشترک</span>'; ?></td>
                         <td data-label="پایه" style="font-variant-numeric:tabular-nums;"><?php echo number_format($prBase); ?></td>
@@ -556,9 +562,10 @@ $fxMaskToken = static function ($t): string {
                                 <input type="hidden" name="action" value="whprice">
                                 <input type="hidden" name="uid" value="<?php echo $fxProdRid; ?>">
                                 <input type="hidden" name="product_id" value="<?php echo $prPid; ?>">
-                                <input type="number" name="amount" class="form-control" style="width:110px;" min="0" step="1" value="<?php echo $prWh > 0 ? $prWh : ''; ?>" placeholder="پایه: <?php echo $prBase; ?>">
-                                <button type="submit" class="btn btn-sm btn-soft-info" title="ذخیره عمده (خالی/0 = قیمت پایه)">💾</button>
+                                <input type="number" name="amount" class="form-control" style="width:110px;" min="0" step="1" value="<?php echo $prWh > 0 ? $prWh : ''; ?>" placeholder="مثلاً <?php echo $prBase; ?>">
+                                <button type="submit" class="btn btn-sm btn-soft-info" title="ذخیره عمده (خالی/0 = پاک‌کردن؛ فروش مسدود می‌شود)">💾</button>
                             </form>
+                            <?php if ($prWh <= 0): ?><div style="font-size:11px;color:#c00;margin-top:4px;">⛔ بدون قیمت عمده — فروش مسدود</div><?php endif; ?>
                         </td>
                         <td data-label="فروش">
                             <form method="POST" action="reseller_bots.php" style="display:flex;gap:6px;align-items:center;">
@@ -597,7 +604,7 @@ $fxMaskToken = static function ($t): string {
             </table>
         </div>
         <p style="font-size:12px;color:#888;margin-top:10px;line-height:1.9;">
-            💵 <strong>عمده‌فروشی</strong> = هزینه‌ای که با هر خرید مشتری، به حساب نماینده (بدهی/موجودی) ثبت می‌شود — خالی بگذارید تا از قیمت پایه استفاده شود.<br>
+            💵 <strong>عمده‌فروشی</strong> = هزینه‌ای که با هر خرید مشتری، به حساب نماینده (بدهی/موجودی) ثبت می‌شود — باید بزرگ‌تر از صفر باشد؛ خالی/0 فروش محصول را مسدود می‌کند.<br>
             💰 <strong>فروش نماینده</strong> = قیمت اختصاصی همین نماینده برای مشتریان ربات خودش — خالی/0 یعنی قیمت پایه.<br>
             🚫 <strong>پنهان</strong> = محصول برای مشتریان این نماینده نمایش داده نمی‌شود (اثر روی بقیه ندارد). ♻️ <strong>آزادسازی</strong> = محصول از حالت اختصاصی خارج و به کاتالوگ مشترک برمی‌گردد.
         </p>

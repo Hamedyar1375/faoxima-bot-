@@ -3098,7 +3098,7 @@ $nameconfig";
     $stmt = $pdo->prepare("SELECT * FROM product WHERE (FIND_IN_SET(:service_location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
     $stmt->execute([
         ':service_location' => $marzban_list_get['name_panel'],
-        ':agent' => $user['agent'],
+        ':agent' => fx_tenant_scope_agent($user['agent']),
     ]);
     $product = $stmt->rowCount();
     savedata("clear", "id_invoice", $nameloc['id_invoice']);
@@ -3124,11 +3124,12 @@ $nameconfig";
         $stmt = $pdo->prepare("SELECT * FROM product WHERE (FIND_IN_SET(:service_location, Location) > 0 OR Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers'))");
         $stmt->execute([
             ':service_location' => $nameloc['Service_location'],
-            ':agent' => $user['agent'],
+            ':agent' => fx_tenant_scope_agent($user['agent']),
         ]);
         $productextend = ['inline_keyboard' => []];
         $statusshowprice = panel_feature_enabled($nameloc['Service_location'], 'showprice') ? "onshowprice" : "offshowprice";
         while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($result)) continue;
             $hide_panel = json_decode($result['hide_panel'], true);
             if (is_array($hide_panel) && in_array($nameloc['Service_location'], $hide_panel)) {
                 error_log("Product {$result['code_product']} is marked hidden for {$nameloc['Service_location']} but was kept visible for extend.");
@@ -3202,12 +3203,13 @@ $nameconfig";
     $stmt->execute([
         ':service_location' => $nameloc['Service_location'],
         'monthe' => $monthenumber,
-        ':agent' => $user['agent'],
+        ':agent' => fx_tenant_scope_agent($user['agent']),
     ]);
     $productextend = ['inline_keyboard' => []];
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
     $statusshowprice = panel_feature_enabled($marzban_list_get, 'showprice') ? "onshowprice" : "offshowprice";
     while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($result)) continue;
         $result = fx_apply_to_product($result, $marzban_list_get);
         if (intval($user['pricediscount']) != 0) {
             $resultper = ($result['price_product'] * $user['pricediscount']) / 100;
@@ -3298,10 +3300,11 @@ $nameconfig";
         $stmt->execute([
             ':service_location' => $nameloc['Service_location'],
             ':code_product' => $codeproduct,
-            ':agent' => $user['agent'],
+            ':agent' => fx_tenant_scope_agent($user['agent']),
         ]);
         $product = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($product, $from_id, $keyboard)) return;
     if ($product == false) {
         sendmessage($from_id, $datatextbot['dyn_errors_extend_restart_process'] ?? "❌ خطایی رخ داده است مراحل تمدید را از اول انجام دهید.", $keyboard, 'HTML');
         return;
@@ -3403,10 +3406,11 @@ $nameconfig";
         $stmt = $pdo->prepare("SELECT * FROM product WHERE code_product = :code_product AND (FIND_IN_SET(:Location, Location) > 0 or Location = '/all') AND (FIND_IN_SET(:agent, REPLACE(agent, ' ', '')) > 0 OR agent IN ('all', 'allusers')) LIMIT 1");
         $stmt->bindParam(':code_product', $userdate['code_product'], PDO::PARAM_STR);
         $stmt->bindParam(':Location', $marzban_list_get['name_panel'], PDO::PARAM_STR);
-        $stmt->bindParam(':agent', $user['agent'], PDO::PARAM_STR);
+        $stmt->bindValue(':agent', fx_tenant_scope_agent($user['agent']), PDO::PARAM_STR);
         $stmt->execute();
         $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $from_id, $keyboard)) return;
     $fxRenewCustom = ($nameloc['name_product'] == "🛍 حجم دلخواه" || $nameloc['name_product'] == "⚙️ سرویس دلخواه");
     $fxRenewKinds = $fxRenewCustom ? ['custom_volume', 'custom_time'] : 'product';
     if (!$fxRenewCustom && is_array($info_product)) {
@@ -3487,10 +3491,11 @@ $nameconfig";
         $stmt->execute([
             ':service_location' => $nameloc['Service_location'],
             ':code_product' => $userdata['code_product'],
-            ':agent' => $user['agent'],
+            ':agent' => fx_tenant_scope_agent($user['agent']),
         ]);
         $prodcut = $stmt->fetch(PDO::FETCH_ASSOC);
     }
+    if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($prodcut, $from_id, $keyboard)) return;
     $pricelastextend = $prodcut['price_product'];
     if ($prodcut == false || !in_array($nameloc['Status'], ['active', 'end_of_time', 'end_of_volume', 'sendedwarn', 'send_on_hold'])) {
         sendmessage($from_id, $datatextbot['dyn_errors_renewal_failed_restart'] ?? "❌ تمدید با خطا مواجه گردید مراحل تمدید را مجددا انجام دهید.", null, 'HTML');
@@ -3549,8 +3554,7 @@ $nameconfig";
     if ($user['Balance'] < $pricelastextend && $user['agent'] != "n2" && intval($pricelastextend) != 0) {
         $marzbandirectpay = panel_feature_enabled($nameloc['Service_location'], 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']];
-            $maxbalance = json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']];
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
             $minbalance = number_format($minbalance);
             $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
@@ -3628,18 +3632,24 @@ $nameconfig";
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') {
             $__fxDebtMode = true;
+            // FX-DEBT-P1: authoritative wholesale only — NO retail fallback.
             $__fxDebtWholesale = (int)($prodcut['fx_wholesale_price'] ?? 0);
+            if ($__fxDebtWholesale <= 0 && $fxRenewCustom) {
+                $__fxDebtWholesale = (int)round((float)$fxRenewBasePrice);
+            }
             if ($__fxDebtWholesale <= 0) {
-                $__fxDebtWholesale = $fxRenewCustom ? (int)round((float)$fxRenewBasePrice) : (int)$pricelastextend;
-            }
-            if ($__fxDebtWholesale > 0) {
-                $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
-                if (empty($__fxRenewRes[0])) {
-                    sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
-                    return;
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('bootstrap_renewal', $__fxRid, ['product' => $prodcut['code_product'] ?? '', 'name' => $prodcut['name_product'] ?? '', 'user' => $from_id, 'custom' => !empty($fxRenewCustom)]);
                 }
-                $__fxReservedRenew = $__fxDebtWholesale;
+                sendmessage($from_id, "⛔️ تمدید اعتباری این سرویس فعلاً امکان‌پذیر نیست (قیمت عمده برای این محصول تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", null, 'HTML');
+                return;
             }
+            $__fxRenewRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale, (string)$randomString);
+            if (empty($__fxRenewRes[0])) {
+                sendmessage($from_id, "⛔ امکان ثبت تمدید اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                return;
+            }
+            $__fxReservedRenew = $__fxDebtWholesale;
         }
     }
     // ===== END FX-DEBT GUARD =====
@@ -4075,8 +4085,9 @@ $nameconfig";
     if ($user['Balance'] < $__volCharge && $user['agent'] != "n2") {
         $marzbandirectpay = panel_feature_enabled($marzban_list_get, 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -4125,23 +4136,33 @@ $nameconfig";
     $__fxDebtMode = false;
     $__fxRid = 0;
     $__fxReservedVx = 0;
+    // FX-DEBT-P1: attempt-unique ref — a service can buy extra volume MANY times,
+    // so the service invoice id alone must not be used as an idempotency key.
+    $__fxVxRef = (string)($nameloc['id_invoice'] ?? '') . '#vx' . bin2hex(random_bytes(4));
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') {
             $__fxDebtMode = true;
+            // FX-DEBT-P1: authoritative wholesale only (unit resolver with agent→f→n
+            // key fallback) — NO retail fallback.
             $__fxVolQty = $fxExtraQty ?? (intval($extrapricevalue) > 0 ? intval($volume) / intval($extrapricevalue) : 0);
-            $__fxDebtWholesale = (int)round((float)$__fxVolQty * (fx_panel_raw_unit_price($marzban_list_get, 'priceextravolume', $user['agent']) ?? 0));
-            if ($__fxDebtWholesale <= 0) {
-                $__fxDebtWholesale = (int)$volumepricelast;
-            }
-            if ($__fxDebtWholesale > 0) {
-                $__fxVxRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
-                if (empty($__fxVxRes[0])) {
-                    sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری حجم وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
-                    return;
+            $__fxWhVx = function_exists('fx_credit_wholesale_unit')
+                ? fx_credit_wholesale_unit($marzban_list_get, 'priceextravolume', (string)($user['agent'] ?? 'f'), $__fxVolQty)
+                : ['ok' => false, 'amount' => 0, 'reason' => 'no_resolver'];
+            if (empty($__fxWhVx['ok'])) {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('bootstrap_extra_volume', $__fxRid, ['user' => $from_id, 'qty' => $__fxVolQty, 'reason' => $__fxWhVx['reason'] ?? '']);
                 }
-                $__fxReservedVx = $__fxDebtWholesale;
+                sendmessage($from_id, "⛔️ خرید حجم اعتباری فعلاً امکان‌پذیر نیست (قیمت عمده حجم تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", null, 'HTML');
+                return;
             }
+            $__fxDebtWholesale = (int)$__fxWhVx['amount'];
+            $__fxVxRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale, (string)$__fxVxRef);
+            if (empty($__fxVxRes[0])) {
+                sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری حجم وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                return;
+            }
+            $__fxReservedVx = $__fxDebtWholesale;
         }
     }
     // ===== END FX-DEBT GUARD =====
@@ -4155,7 +4176,7 @@ $nameconfig";
         $__chargeVx = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $volumepricelast, $__allowNegVx) : ['ok' => false];
         if (empty($__chargeVx['ok'])) {
             if ($__fxReservedVx > 0 && function_exists('fx_debt_release')) {
-                fx_debt_release($__fxRid, $__fxReservedVx, (string)($nameloc['id_invoice'] ?? ''));
+                fx_debt_release($__fxRid, $__fxReservedVx, $__fxVxRef);
             }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
@@ -4186,7 +4207,7 @@ $nameconfig";
             }
         }
         if ($__fxReservedVx > 0 && function_exists('fx_debt_release')) {
-            fx_debt_release($__fxRid, $__fxReservedVx, (string)($nameloc['id_invoice'] ?? ''));
+            fx_debt_release($__fxRid, $__fxReservedVx, $__fxVxRef);
         }
         $extra_volume['msg'] = rx_panel_error_text($extra_volume['msg'] ?? null, $extra_volume['detail'] ?? null);
         $textreports = "خطای خرید حجم اضافه
@@ -4205,7 +4226,7 @@ $nameconfig";
         return;
     }
     if ($__fxReservedVx > 0 && function_exists('fx_debt_commit')) {
-        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedVx, 'extra_volume', (string)($nameloc['id_invoice'] ?? ''));
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedVx, 'extra_volume', $__fxVxRef);
         if (!$__fxIncOk) {
             error_log('[FX_DEBT] extra volume ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedVx . ' invoice=' . ($nameloc['id_invoice'] ?? '') . ' reason=' . $__fxIncReason);
         }
@@ -4378,7 +4399,7 @@ $nameconfig";
         $stmt->execute([
             ':service_location' => $nameloc['Service_location'],
             'name_product' => $nameloc['name_product'],
-            ':agent' => $user['agent'],
+            ':agent' => fx_tenant_scope_agent($user['agent']),
         ]);
         $prodcut = $stmt->fetch(PDO::FETCH_ASSOC);
     }
@@ -4404,8 +4425,9 @@ $nameconfig";
     if ($user['Balance'] < $Pricechange && $user['agent'] != "n2" && $limitfree) {
         $marzbandirectpay = panel_feature_enabled($nameloc['Service_location'], 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -4447,20 +4469,20 @@ $nameconfig";
     $__fxDebtModeCl = false;
     $__fxRidCl = 0;
     $__fxReservedCl = 0;
-    $__fxClRef = (string)($nameloc['id_invoice'] ?? '');
+    // FX-DEBT-P1: attempt-unique ref (a service can change location more than once;
+    // guard currently safe-stops debt mode, but keep refs unique for correctness).
+    $__fxClRef = (string)($nameloc['id_invoice'] ?? '') . '#cl' . bin2hex(random_bytes(4));
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
         $__fxRidCl = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRidCl)['mode'] === 'debt') {
             $__fxDebtModeCl = true;
-            $__fxClWholesale = (int)$Pricechange;
-            if ($__fxClWholesale > 0) {
-                $__fxClRes = fx_debt_reserve($__fxRidCl, $__fxClWholesale);
-                if (empty($__fxClRes[0])) {
-                    sendmessage($from_id, "⛔ امکان ثبت تغییر موقعیت اعتباری وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
-                    return;
-                }
-                $__fxReservedCl = $__fxClWholesale;
+            // FX-DEBT-P1 (decision 5): change-location has NO authoritative wholesale
+            // source (panel.priceChangeloc is RETAIL). Safe stop in credit mode.
+            if (function_exists('fx_credit_log_stop')) {
+                fx_credit_log_stop('bootstrap_changeloc', $__fxRidCl, ['invoice' => $__fxClRef, 'user' => $from_id, 'retail' => $Pricechange]);
             }
+            sendmessage($from_id, "⛔️ تغییر موقعیت در حالت اعتباری فعلاً غیرفعال است (قیمت عمده تغییر موقعیت تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", null, 'HTML');
+            return;
         }
     }
     // ===== END FX-DEBT GUARD =====
@@ -4942,8 +4964,9 @@ $nameconfig";
     if ($user['Balance'] < $__timeCharge && $user['agent'] != "n2") {
         $marzbandirectpay = panel_feature_enabled($marzban_list_get, 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -4995,23 +5018,33 @@ $nameconfig";
     $__fxDebtMode = false;
     $__fxRid = 0;
     $__fxReservedEt = 0;
+    // FX-DEBT-P1: attempt-unique ref — a service can buy extra time MANY times,
+    // so the service invoice id alone must not be used as an idempotency key.
+    $__fxEtRef = (string)($nameloc['id_invoice'] ?? '') . '#et' . bin2hex(random_bytes(4));
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') {
             $__fxDebtMode = true;
+            // FX-DEBT-P1: authoritative wholesale only (unit resolver with agent→f→n
+            // key fallback) — NO retail fallback.
             $__fxTimeQtyLocal = $fxTimeQty ?? ($extratimepricevalue > 0 ? $tmieextra / $extratimepricevalue : 0);
-            $__fxDebtWholesale = (int)round((float)$__fxTimeQtyLocal * (fx_panel_raw_unit_price($marzban_list_get, 'priceextratime', $user['agent']) ?? 0));
-            if ($__fxDebtWholesale <= 0) {
-                $__fxDebtWholesale = (int)$pricelasttime;
-            }
-            if ($__fxDebtWholesale > 0) {
-                $__fxEtRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
-                if (empty($__fxEtRes[0])) {
-                    sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری زمان وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
-                    return;
+            $__fxWhEt = function_exists('fx_credit_wholesale_unit')
+                ? fx_credit_wholesale_unit($marzban_list_get, 'priceextratime', (string)($user['agent'] ?? 'f'), $__fxTimeQtyLocal)
+                : ['ok' => false, 'amount' => 0, 'reason' => 'no_resolver'];
+            if (empty($__fxWhEt['ok'])) {
+                if (function_exists('fx_credit_log_stop')) {
+                    fx_credit_log_stop('bootstrap_extra_time', $__fxRid, ['user' => $from_id, 'qty' => $__fxTimeQtyLocal, 'reason' => $__fxWhEt['reason'] ?? '']);
                 }
-                $__fxReservedEt = $__fxDebtWholesale;
+                sendmessage($from_id, "⛔️ خرید زمان اعتباری فعلاً امکان‌پذیر نیست (قیمت عمده زمان تعریف نشده است).\nلطفاً با پشتیبانی تماس بگیرید.", null, 'HTML');
+                return;
             }
+            $__fxDebtWholesale = (int)$__fxWhEt['amount'];
+            $__fxEtRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale, (string)$__fxEtRef);
+            if (empty($__fxEtRes[0])) {
+                sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری زمان وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
+                return;
+            }
+            $__fxReservedEt = $__fxDebtWholesale;
         }
     }
     // ===== END FX-DEBT GUARD =====
@@ -5025,7 +5058,7 @@ $nameconfig";
         $__chargeEt = function_exists('balance_atomic_charge') ? balance_atomic_charge($from_id, $pricelasttime, $__allowNegEt) : ['ok' => false];
         if (empty($__chargeEt['ok'])) {
             if ($__fxReservedEt > 0 && function_exists('fx_debt_release')) {
-                fx_debt_release($__fxRid, $__fxReservedEt, (string)($nameloc['id_invoice'] ?? ''));
+                fx_debt_release($__fxRid, $__fxReservedEt, $__fxEtRef);
             }
             sendmessage($from_id, $datatextbot['dyn_errors_concurrency_insufficient_stock'] ?? "❌ موجودی کافی نیست (تلاش هم‌زمان شناسایی شد). یک بار دیگر تلاش کنید.", null, 'HTML');
             return;
@@ -5074,13 +5107,13 @@ $nameconfig";
             }
         }
         if ($__fxReservedEt > 0 && function_exists('fx_debt_release')) {
-            fx_debt_release($__fxRid, $__fxReservedEt, (string)($nameloc['id_invoice'] ?? ''));
+            fx_debt_release($__fxRid, $__fxReservedEt, $__fxEtRef);
         }
         return;
     }
 
     if ($__fxReservedEt > 0 && function_exists('fx_debt_commit')) {
-        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedEt, 'extra_time', (string)($nameloc['id_invoice'] ?? ''));
+        list($__fxIncOk, $__fxIncReason, $__fxDebtAfter, $__fxDebtAlert) = fx_debt_commit($__fxRid, $__fxReservedEt, 'extra_time', $__fxEtRef);
         if (!$__fxIncOk) {
             error_log('[FX_DEBT] extra time ledger commit failed rid=' . $__fxRid . ' amt=' . $__fxReservedEt . ' invoice=' . ($nameloc['id_invoice'] ?? '') . ' reason=' . $__fxIncReason);
         }

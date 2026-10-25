@@ -26,8 +26,9 @@ if (!function_exists('rx_promptWalletChargeCustomAmount')) {
     {
         global $textbotlang, $datatextbot, $setting;
 
-        $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-        $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+        [$walletMin, $walletMax] = rx_getDepositLimits($user['agent']);
+        $minbalance = number_format($walletMin);
+        $maxbalance = number_format($walletMax);
         $_rx_acc_styles = [];
         if (!empty($setting['keyboard_styles_all'])) {
             $_rx_all_kbs = json_decode($setting['keyboard_styles_all'], true);
@@ -62,8 +63,7 @@ if (!function_exists('rx_walletChargeAmountAccepted')) {
             return false;
         }
 
-        $minbalance = json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']];
-        $maxbalance = json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']];
+        [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
         if ($amount > $maxbalance or $amount < $minbalance) {
             $minbalanceFmt = number_format($minbalance);
             $maxbalanceFmt = number_format($maxbalance);
@@ -768,16 +768,17 @@ if (!function_exists('rx_product_allows_agent')) {
     function rx_product_allows_agent(array $product, $agent)
     {
         $agent = strtolower(trim((string) $agent));
-        // FX-RESELLER (2026-10-16): reseller-bot customers carry agent = reseller
-        // id (see bootstrap.php new-user insert). Allow that group through so
-        // products assigned to the reseller (agent CSV contains the rid) are
-        // visible in the reseller's bot. Main bot (FX_RESELLER_ID undefined)
-        // behavior is unchanged.
-        $fxIsResellerAgent = false;
-        if (defined('FX_RESELLER_ID') && FX_RESELLER_ID !== '' && FX_RESELLER_ID !== null) {
-            $fxIsResellerAgent = ($agent === strtolower(trim((string) FX_RESELLER_ID)));
+        // FX-TENANT-ISOLATION: in a reseller bot the product visibility check
+        // must use FX_RESELLER_ID, not the customer's legacy agent group.
+        $fxRid = (defined('FX_RESELLER_ID') && (int) FX_RESELLER_ID > 0)
+            ? (string) (int) FX_RESELLER_ID
+            : '';
+        if ($fxRid !== '') {
+            $agent = strtolower($fxRid);
         }
-        if (!$fxIsResellerAgent && !in_array($agent, ['f', 'n', 'n2'], true)) {
+        $fxIsResellerAgent = ($fxRid !== '' && $agent === strtolower($fxRid));
+        $fxIsNumericAgent = ctype_digit($agent) && (int) $agent > 0;
+        if (!$fxIsResellerAgent && !$fxIsNumericAgent && !in_array($agent, ['f', 'n', 'n2'], true)) {
             return false;
         }
 

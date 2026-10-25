@@ -547,21 +547,39 @@ if (!function_exists('fx_adjust_base_toman')) {
 if (!function_exists('fx_apply_to_product')) {
     function fx_apply_to_product(array $product, array $panel): array
     {
-        if (!empty($product['_fx_applied']) || !array_key_exists('price_product', $product)) {
+        if (!array_key_exists('price_product', $product)) {
             return $product;
         }
-        if (fx_context($panel, 'product') === null) {
+
+        // FX-RETAIL: apply the reseller's retail price whenever a tenant can be
+        // resolved — not only inside the reseller webhook process. Customers
+        // belonging to a reseller may also buy through the main bot/mini-app,
+        // where FX_RESELLER_ID is not defined; fx_retail_reseller_id() derives
+        // the tenant from the authenticated user/product context.
+        $applyRetail = function_exists('fx_apply_retail_override') && empty($product['fx_retail_applied']);
+
+        if (!empty($product['_fx_applied'])) {
+            // The product may have been FX-adjusted earlier in the request. Do
+            // not skip the retail override just because _fx_applied is set.
+            if ($applyRetail) {
+                fx_apply_retail_override($product);
+            }
             return $product;
         }
+
+        // Stash the original base before any FX/retail transformation so the
+        // reseller wholesale fallback (fx_apply_reseller_retail) never uses the
+        // retail price as cost.
         $product['fx_base_price'] = $product['price_product'];
-        $product['price_product'] = fx_adjust_base_toman($product['price_product'], $panel, 'product');
+        if (fx_context($panel, 'product') !== null) {
+            $product['price_product'] = fx_adjust_base_toman($product['price_product'], $panel, 'product');
+        }
         $product['_fx_applied'] = 1;
-        // FX-RETAIL: reseller-bot retail price override (2026-10-10). Main bot
-        // never enters here (FX_RESELLER_ID undefined). Guard on own flag so a
-        // bundle-lag environment without fx_retail_override.php stays safe.
-        if (defined('FX_RESELLER_ID') && FX_RESELLER_ID
-            && function_exists('fx_apply_retail_override')
-            && empty($product['fx_retail_applied'])) {
+
+        // Must run even when FX pricing is disabled for the panel: the reseller
+        // sell price is independent of the USD-rate feature. A positive row in
+        // fx_retail_prices is authoritative and replaces the base/FX price.
+        if ($applyRetail) {
             fx_apply_retail_override($product);
         }
         return $product;
@@ -874,7 +892,7 @@ if (!function_exists('fx_price_changed_text')) {
     function fx_price_changed_text($newAmount): string
     {
         $formatted = number_format((float) $newAmount);
-        return "⚠️ به دلیل تغییر نرخ دلار (USDT)، مبلغ فاکتور به‌روزرسانی شد.\n\n💰 مبلغ جدید: {$formatted} تومان\n\n✅ در صورت موافقت، دوباره روی دکمه تایید بزنید.";
+        return "⚠️ به دلیل تغییر قیمت، مبلغ فاکتور به‌روزرسانی شد.\n\n💰 مبلغ جدید: {$formatted} تومان\n\n✅ در صورت موافقت، دوباره روی دکمه تایید بزنید.";
     }
 }
 

@@ -838,7 +838,7 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     nm_adminInstantReply($from_id, "📌 شماره کارتی که می خواهید حذف کنید را ارسال نمایید.", $list_card_remove, 'HTML');
     step('getcardremove', $from_id);
 } elseif ($user['step'] == "getcardremove") {
-    $stmt = $pdo->prepare("DELETE FROM card_number WHERE cardnumber = :cardnumber");
+    $stmt = $pdo->prepare("DELETE FROM card_number WHERE cardnumber = :cardnumber AND " . fx_tenant_sql_agent());
     $stmt->bindParam(':cardnumber', $text, PDO::PARAM_STR);
     $stmt->execute();
     nm_adminInstantReply($from_id, "✅ شماره کارت با موفقیت حذف گردید.", $CartManage, 'HTML');

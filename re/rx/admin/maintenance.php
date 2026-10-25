@@ -268,6 +268,17 @@ if (isset($update["inline_query"])) {
 } elseif (preg_match('/removebotsell_(\w+)/', $datain, $datagetr)) {
     $id_user = $datagetr[1];
     $contentbto = select("botsaz", "*", "id_user", $id_user, "select");
+    $guard = fx_reseller_delete_guard($pdo, (string)$id_user);
+    if (empty($guard['allowed'])) {
+        nm_adminInstantReply($from_id, (string)($guard['message'] ?? '❌ حذف ربات انجام نشد.'), $keyboardadmin, 'HTML');
+        return;
+    }
+    $archive = fx_reseller_archive_before_delete($pdo, (string)$id_user, ['source' => 'admin/maintenance']);
+    if (empty($archive['ok'])) {
+        nm_adminInstantReply($from_id, (string)($archive['message'] ?? '❌ آرشیو امن انجام نشد.'), $keyboardadmin, 'HTML');
+        return;
+    }
+    if (!empty($archive['path'])) error_log('[admin/maintenance] delete archive: ' . $archive['path']);
     $destination = getcwd();
     $dirsource = "$destination/vpnbot/$id_user{$contentbto['username']}";
     if (is_dir($dirsource) && !deleteDirectory($dirsource)) {

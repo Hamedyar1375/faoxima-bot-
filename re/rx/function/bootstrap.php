@@ -554,6 +554,254 @@ function normaliseUpdateValue($value)
     return $value;
 }
 
+function fx_tenant_agent_id()
+{
+    static $agentId = null;
+    if ($agentId === null) {
+        $agentId = defined('FX_RESELLER_ID') ? max(0, (int) FX_RESELLER_ID) : 0;
+    }
+
+    return $agentId;
+}
+
+/**
+ * Main-only surfaces for reseller administrators.
+ *
+ * Gateway/card/channel/price management remains available per tenant, but
+ * categories, base product CRUD, technical settings, webhook and backup are
+ * owned by the main bot. This helper is also used by callbacks so a forged
+ * callback cannot bypass the hidden menu buttons.
+ */
+function fx_reseller_main_only_hit($text, $datain, $step = '')
+{
+    static $texts = [
+        "🏬 تنظیمات فروشگاه",
+        "🗂 مدیریت دسته‌بندی",
+        "🛒 افزودن دسته‌بندی",
+        "❌ حذف دسته بندی",
+        "✏️ ویرایش دسته بندی",
+        "🛍 افزودن محصول",
+        "❌ حذف محصول",
+        "✏️ ویرایش محصول",
+        "⬆️ افزایش قیمت",
+        "⬇️ کاهش گروهی قیمت",
+        "🎁 ساخت کد هدیه",
+        "❌ حذف کد هدیه",
+        "🎁 ساخت کد تخفیف",
+        "❌ حذف کد تخفیف",
+        "⚙️ تنظیمات فنی و ربات",
+        "📝 تنظیم متن ربات",
+        "⚙️ وضعیت قابلیت ها",
+        "⚙️ وضعیت قابلیت ها پنل",
+        "🗑 بهینه سازی ربات",
+        "✅ پنل تحت وب",
+        "📷 تنظیمات کیو آر کد",
+        "🖼 پس‌زمینه کیوآرکد",
+        "🔄 وضعیت کیوآرکد",
+        "🔗 وبهوک ربات‌های نماینده",
+        "💰 عضویت نمایندگی",
+        "➕ محدودیت تست برای همه",
+        "📦 بکاپ‌گیری",
+    ];
+    static $exact = [
+        'admin_shop', 'admin_settings', 'set_text', 'set_features', 'set_optimize',
+        'set_webpanel', 'set_qrsettings', 'set_qrbg', 'set_qr_toggle', 'set_webhook',
+        'set_agentprice', 'set_testlimit', 'nm_manager_menu', 'systemsms',
+        'balanceaddall', 'voloume_or_day_all', 'startgift',
+        'shop_category', 'cat_add', 'cat_del', 'cat_edit',
+        'shopitem_add', 'shopitem_del', 'shopitem_edit', 'shopitem_priceinc', 'shopitem_pricedec',
+        'shop_giftadd', 'shop_giftdel', 'shop_discountadd', 'shop_discountdel',
+        'shop_status', 'shop_minbulk', 'shop_renewcb',
+        'randomwallet_status', 'btn_status_category', 'infocard_status', 'changeloclimit',
+    ];
+    static $prefixes = [
+        'productedit_', 'typeagenteditproduct_', 'locationedit_',
+        'getremarkcategory', 'removecategory', 'editcategory_name', 'get_name_new_category',
+        'backup', 'set_qr', 'editstsuts', 'randomwallet', 'infocard_', 'premium_emoji_',
+        'btnstaut', 'btn_status', 'changeloc', 'limitfree', 'limitchange', 'reasetchangeloc',
+        'hidepanel_', 'removehide_', 'getpanelhide', 'getremovehide',
+        'setvolumesrc_', 'settimepricesrc_', 'typegift_',
+    ];
+    static $steps = [
+        'get_limit', 'get_agent', 'get_location', 'getcategory', 'get_time', 'get_price',
+        'gettimereset', 'getnote', 'endstep', 'selectloc', 'remove-product',
+        'getremarkcategory', 'removecategory', 'editcategory_name', 'get_name_new_category',
+        'getpricef', 'getpricnn', 'getpricnn2', 'getpriceftime', 'getpricnntime', 'getpricnn2time',
+        'limitchangeall', 'limitfreechangefree', 'reasetchangeloc', 'get_randomwallet_slot',
+        'getlimitchangenewbyuser', 'getpanelhidebotsaz', 'getremovehidepanel',
+        'getpanelgift', 'getvaluegift', 'gettextgift', 'getlistpanel',
+    ];
+
+    if (is_string($text) && in_array($text, $texts, true)) {
+        return true;
+    }
+    if (is_string($datain) && $datain !== '') {
+        if (in_array($datain, $exact, true)) {
+            return true;
+        }
+        foreach ($prefixes as $prefix) {
+            if (strpos($datain, $prefix) === 0) {
+                return true;
+            }
+        }
+    }
+    $step = (string) $step;
+    return $step !== '' && in_array($step, $steps, true);
+}
+
+function fx_tenant_scope_tables()
+{
+    return [
+        'PaySetting' => true,
+        'card_number' => true,
+        'channels' => true,
+    ];
+}
+
+function fx_tenant_scope_for_table($table)
+{
+    static $cache = [];
+
+    if (!isset(fx_tenant_scope_tables()[$table])) {
+        return null;
+    }
+    if (array_key_exists($table, $cache)) {
+        return $cache[$table];
+    }
+
+    $pdo = getDatabaseConnection();
+    if (!($pdo instanceof PDO)) {
+        $cache[$table] = null;
+        return null;
+    }
+
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', (string) $table);
+    if ($safeTable === '') {
+        $cache[$table] = null;
+        return null;
+    }
+
+    try {
+        $stmt = $pdo->query("SHOW COLUMNS FROM `{$safeTable}` LIKE 'agent'");
+        $hasAgent = $stmt !== false && $stmt->fetch(PDO::FETCH_ASSOC) !== false;
+        $cache[$table] = $hasAgent ? fx_tenant_agent_id() : null;
+    } catch (Throwable $e) {
+        $cache[$table] = null;
+    }
+
+    return $cache[$table];
+}
+
+function fx_tenant_sql_agent($alias = '')
+{
+    $column = $alias !== '' ? '`' . preg_replace('/[^A-Za-z0-9_]/', '', (string) $alias) . '`.agent' : 'agent';
+    return $column . ' = ' . (int) fx_tenant_agent_id();
+}
+
+function fx_tenant_row_owned($table, $idColumn, $idValue)
+{
+    $agentId = fx_tenant_scope_for_table($table);
+    if ($agentId === null) {
+        return true;
+    }
+
+    $pdo = getDatabaseConnection();
+    if (!($pdo instanceof PDO)) {
+        return false;
+    }
+
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', (string) $table);
+    $safeId = preg_replace('/[^A-Za-z0-9_]/', '', (string) $idColumn);
+    if ($safeTable === '' || $safeId === '') {
+        return false;
+    }
+
+    try {
+        $stmt = $pdo->prepare("SELECT 1 FROM `{$safeTable}` WHERE `{$safeId}` = ? AND agent = ? LIMIT 1");
+        $stmt->execute([$idValue, (int) $agentId]);
+        return $stmt->fetchColumn() !== false;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function fx_tenant_scoped_update($table, $field, $newValue, $whereField, $whereValue, $agentId)
+{
+    global $pdo;
+    if (!($pdo instanceof PDO)) {
+        return 0;
+    }
+
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', (string) $table);
+    $safeField = preg_replace('/[^A-Za-z0-9_]/', '', (string) $field);
+    if ($safeTable === '' || $safeField === '') {
+        return 0;
+    }
+
+    $value = normaliseUpdateValue($newValue);
+    $whereValueToStore = $whereField !== null ? normaliseUpdateValue($whereValue) : null;
+    $rows = 0;
+
+    if ($whereField !== null) {
+        $safeWhere = preg_replace('/[^A-Za-z0-9_]/', '', (string) $whereField);
+        if ($safeWhere === '') {
+            return 0;
+        }
+        if ($whereValueToStore === null) {
+            $stmt = $pdo->prepare("UPDATE `{$safeTable}` SET `{$safeField}` = ? WHERE `{$safeWhere}` IS NULL AND agent = ?");
+            $stmt->execute([$value, (int) $agentId]);
+        } else {
+            $stmt = $pdo->prepare("UPDATE `{$safeTable}` SET `{$safeField}` = ? WHERE `{$safeWhere}` = ? AND agent = ?");
+            $stmt->execute([$value, $whereValueToStore, (int) $agentId]);
+        }
+        $rows = $stmt->rowCount();
+
+        if ($rows === 0) {
+            if ($whereValueToStore === null) {
+                $existsStmt = $pdo->prepare("SELECT 1 FROM `{$safeTable}` WHERE `{$safeWhere}` IS NULL AND agent = ? LIMIT 1");
+                $existsStmt->execute([(int) $agentId]);
+            } else {
+                $existsStmt = $pdo->prepare("SELECT 1 FROM `{$safeTable}` WHERE `{$safeWhere}` = ? AND agent = ? LIMIT 1");
+                $existsStmt->execute([$whereValueToStore, (int) $agentId]);
+            }
+
+            if ($existsStmt->fetchColumn() === false) {
+                $columns = [$safeField];
+                $values = [$value];
+                if ($safeWhere !== $safeField) {
+                    $columns[] = $safeWhere;
+                    $values[] = $whereValueToStore;
+                }
+                $columns[] = 'agent';
+                $values[] = (int) $agentId;
+                $columnList = implode(', ', array_map(static function ($column) {
+                    return "`{$column}`";
+                }, $columns));
+                $placeholders = implode(', ', array_fill(0, count($columns), '?'));
+                try {
+                    $insertStmt = $pdo->prepare("INSERT INTO `{$safeTable}` ({$columnList}) VALUES ({$placeholders}) ON DUPLICATE KEY UPDATE `{$safeField}` = VALUES(`{$safeField}`)");
+                    $insertStmt->execute($values);
+                    $rows = $insertStmt->rowCount();
+                } catch (PDOException $insertException) {
+                    error_log('fx_tenant_scoped_update insert failed: ' . $insertException->getMessage());
+                }
+            }
+        }
+    } else {
+        $stmt = $pdo->prepare("UPDATE `{$safeTable}` SET `{$safeField}` = ? WHERE agent = ?");
+        $stmt->execute([$value, (int) $agentId]);
+        $rows = $stmt->rowCount();
+    }
+
+    if ($whereField !== null && $whereValueToStore !== null && function_exists('clearSelectCacheRow')) {
+        clearSelectCacheRow($table, $whereField, $whereValueToStore);
+    } else {
+        clearSelectCache($table);
+    }
+
+    return $rows;
+}
+
 function copyDirectoryContents($source, $destination)
 {
     if (!is_dir($source)) {
@@ -718,6 +966,11 @@ function ensureColumnExistsForUpdate($tableName, $fieldName, $valueSample = null
 function update($table, $field, $newValue, $whereField = null, $whereValue = null)
 {
     global $pdo, $user;
+
+    $fxTenantAgent = fx_tenant_scope_for_table($table);
+    if ($fxTenantAgent !== null) {
+        return fx_tenant_scoped_update($table, $field, $newValue, $whereField, $whereValue, $fxTenantAgent);
+    }
 
     $valueToStore = normaliseUpdateValue($newValue);
     $whereValueToStore = $whereField !== null ? normaliseUpdateValue($whereValue) : null;
@@ -984,6 +1237,8 @@ function select($table, $field, $whereField = null, $whereValue = null, $type = 
         $useCache = (bool) $options['cache'];
     }
 
+    $fxTenantAgent = fx_tenant_scope_for_table($table);
+
     $cacheKey = null;
     if ($useCache) {
         $cacheKey = hash('sha256', json_encode([
@@ -992,6 +1247,7 @@ function select($table, $field, $whereField = null, $whereValue = null, $type = 
             $whereField,
             $whereValue,
             $type,
+            'tenant_agent' => $fxTenantAgent,
         ], JSON_UNESCAPED_UNICODE));
 
         $store =& getSelectCacheStore();
@@ -1025,11 +1281,17 @@ function select($table, $field, $whereField = null, $whereValue = null, $type = 
     if ($whereField !== null) {
         $query .= " WHERE $whereField = :whereValue";
     }
+    if ($fxTenantAgent !== null) {
+        $query .= ($whereField !== null ? " AND" : " WHERE") . " agent = :fxTenantAgent";
+    }
 
     try {
         $stmt = $pdo->prepare($query);
         if ($whereField !== null) {
             $stmt->bindParam(':whereValue', $whereValue, PDO::PARAM_STR);
+        }
+        if ($fxTenantAgent !== null) {
+            $stmt->bindValue(':fxTenantAgent', (int) $fxTenantAgent, PDO::PARAM_INT);
         }
 
         $stmt->execute();
@@ -1169,6 +1431,161 @@ function getPaySettingValue($name, $default = null)
     }
 
     return $result['ValuePay'];
+}
+
+if (!defined('RX_DEFAULT_MIN_DEPOSIT')) {
+    define('RX_DEFAULT_MIN_DEPOSIT', 10000);
+}
+if (!defined('RX_DEFAULT_MAX_DEPOSIT')) {
+    define('RX_DEFAULT_MAX_DEPOSIT', 50000000);
+}
+
+/**
+ * Fetch a PaySetting row value scoped to the current tenant (agent column).
+ * PaySetting is keyed by (agent, NamePay); the legacy unfiltered select() can
+ * return the wrong tenant's row. Falls back to the main (agent = 0) row when
+ * the tenant has no row of its own, then null when nothing exists at all.
+ */
+if (!function_exists('rx_fetchTenantPaySetting')) {
+    function rx_fetchTenantPaySetting($name)
+    {
+        $agents = [fx_tenant_agent_id()];
+        if ($agents[0] !== 0) {
+            $agents[] = 0;
+        }
+        $pdo = getDatabaseConnection();
+        if (!($pdo instanceof PDO)) {
+            $legacyRow = select("PaySetting", "ValuePay", "NamePay", $name, "select");
+            return is_array($legacyRow) ? (string) ($legacyRow['ValuePay'] ?? '') : null;
+        }
+        foreach ($agents as $agentId) {
+            try {
+                $stmt = $pdo->prepare('SELECT ValuePay FROM PaySetting WHERE agent = :agent AND NamePay = :name LIMIT 1');
+                $stmt->execute([':agent' => $agentId, ':name' => (string) $name]);
+                $value = $stmt->fetchColumn();
+                if ($value !== false && $value !== null && trim((string) $value) !== '') {
+                    return (string) $value;
+                }
+            } catch (PDOException $e) {
+                error_log('rx_fetchTenantPaySetting: ' . $e->getMessage());
+            }
+        }
+        return null;
+    }
+}
+
+/**
+ * Write a PaySetting row scoped to the current tenant (agent column).
+ * Creates the tenant row when it does not exist yet.
+ */
+if (!function_exists('rx_writeTenantPaySetting')) {
+    function rx_writeTenantPaySetting($name, $value)
+    {
+        try {
+            $pdo = getDatabaseConnection();
+            if (!($pdo instanceof PDO)) {
+                update("PaySetting", "ValuePay", $value, "NamePay", $name);
+                return true;
+            }
+            $stmt = $pdo->prepare('UPDATE PaySetting SET ValuePay = :value WHERE agent = :agent AND NamePay = :name');
+            $stmt->execute([':value' => is_array($value) || is_object($value) ? json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : (string) $value, ':agent' => fx_tenant_agent_id(), ':name' => (string) $name]);
+            if ($stmt->rowCount() > 0) {
+                clearSelectCache('PaySetting');
+                return true;
+            }
+            $insert = $pdo->prepare('INSERT IGNORE INTO PaySetting (agent, NamePay, ValuePay) VALUES (:agent, :name, :value)');
+            $insert->execute([':agent' => fx_tenant_agent_id(), ':name' => (string) $name, ':value' => is_array($value) || is_object($value) ? json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : (string) $value]);
+            clearSelectCache('PaySetting');
+            return true;
+        } catch (PDOException $e) {
+            error_log('rx_writeTenantPaySetting: ' . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+/**
+ * Resolve an amount limit that may be stored as:
+ *  - a JSON map keyed by user agent/group ("n", "n2", "f", tenant ids)
+ *  - a legacy plain scalar seed (e.g. "20000")
+ * Returns a non-negative int, falling back to $fallback when the stored
+ * value is missing, zero, or not usable for the given agent.
+ */
+if (!function_exists('rx_resolveAgentAmountLimit')) {
+    function rx_resolveAgentAmountLimit($rawValue, $agent, $fallback)
+    {
+        $fallback = max(0, (int) $fallback);
+        $raw = is_array($rawValue) ? (string) ($rawValue['ValuePay'] ?? '') : (string) $rawValue;
+        $raw = trim($raw);
+        if ($raw === '') {
+            return $fallback;
+        }
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+            $candidates = [(string) $agent];
+            if (!in_array($candidates[0], ['n', 'n2', 'f'], true)) {
+                $candidates = array_merge($candidates, ['n', 'n2', 'f']);
+            }
+            foreach ($candidates as $candidate) {
+                if (isset($decoded[$candidate]) && is_numeric($decoded[$candidate])) {
+                    $candidateValue = max(0, (int) $decoded[$candidate]);
+                    return $candidateValue > 0 ? $candidateValue : $fallback;
+                }
+            }
+            foreach ($decoded as $candidateValue) {
+                if (is_numeric($candidateValue)) {
+                    $candidateValue = max(0, (int) $candidateValue);
+                    return $candidateValue > 0 ? $candidateValue : $fallback;
+                }
+            }
+            return $fallback;
+        }
+        if (is_numeric($raw)) {
+            $scalarValue = max(0, (int) $raw);
+            return $scalarValue > 0 ? $scalarValue : $fallback;
+        }
+        return $fallback;
+    }
+}
+
+/**
+ * Wallet deposit limits for the given user agent, always non-zero:
+ * missing/zero tenant config gracefully falls back to safe defaults.
+ *
+ * @return int[] [min, max]
+ */
+if (!function_exists('rx_getDepositLimits')) {
+    function rx_getDepositLimits($agent)
+    {
+        $min = rx_resolveAgentAmountLimit(rx_fetchTenantPaySetting('minbalance'), $agent, RX_DEFAULT_MIN_DEPOSIT);
+        $max = rx_resolveAgentAmountLimit(rx_fetchTenantPaySetting('maxbalance'), $agent, RX_DEFAULT_MAX_DEPOSIT);
+        if ($max < $min) {
+            $max = $min;
+        }
+        return [$min, $max];
+    }
+}
+
+if (!function_exists('rx_depositLimitValue')) {
+    function rx_depositLimitValue($which, $agent)
+    {
+        [$min, $max] = rx_getDepositLimits($agent);
+        return strtolower((string) $which) === 'max' ? $max : $min;
+    }
+}
+
+/**
+ * Per-payment-method deposit limit (minbalancecart, maxbalanceplisio, ...).
+ * Always resolves to a non-negative int; falls back to safe defaults when the
+ * stored value is missing, empty or zero.
+ */
+if (!function_exists('rx_gatewayDepositLimit')) {
+    function rx_gatewayDepositLimit($name)
+    {
+        $name = (string) $name;
+        $fallback = str_starts_with($name, 'minbalance') ? RX_DEFAULT_MIN_DEPOSIT : RX_DEFAULT_MAX_DEPOSIT;
+        return rx_resolveAgentAmountLimit(rx_fetchTenantPaySetting($name), '', $fallback);
+    }
 }
 
 

@@ -907,6 +907,8 @@ if (!empty($datain) && in_array($from_id, $admin_ids ?? [])) {
         'set_features'   => "⚙️ وضعیت قابلیت ها",
         'set_reports'    => "📣 گزارشات ربات",
         'fx_myaccount_menu' => "🏦 حساب من",
+        'fx_myprices_menu'  => "🏷️ قیمت‌های من",
+        'fx_products_menu'  => "🛍 محصولات من",
         'set_channel'    => "📯 تنظیمات کانال",
         'set_webpanel'   => "✅ پنل تحت وب",
         'set_optimize'   => "🗑 بهینه سازی ربات",

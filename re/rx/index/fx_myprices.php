@@ -1,13 +1,15 @@
 <?php
 /**
- * FX-MYPRICES: Reseller «قیمت‌های من» — per-product retail-price manager
+ * FX-MYPRICES: Reseller «محصولات من» — per-product visibility/pricing manager
  * for reseller-bot admins (reseller-owner facing, main-bot admins never see it).
  *
- * Entry: admin-hub button «🏷️ قیمت‌های من» (callback fx_myprices_menu) —
+ * Entry: admin-hub button «🛍 محصولات من» (callback fx_products_menu) —
  * injected by layouts_1.php ONLY when defined('FX_RESELLER_ID') && FX_RESELLER_ID.
- * Text-wait step: fx_res_my_do_retail (numeric price entry, /cancel to abort).
+ * Text-wait step: fx_res_my_do_retail (numeric price entry; cancel via inline button).
  *
- * Lists assigned products: wholesale cost | current retail (mine) | profit.
+ * Lists assigned products: product | status | price | wholesale (4 columns),
+ * with a per-product details page (fx_myprice_dtl_<pid>) showing specs,
+ * prices, profit and status plus edit/toggle actions.
  * Saves via fx_set_retail_price() (fx_retail_override.php, loaded via pricing_fx).
  * Lives OUTSIDE any module manifest → require_once'd live from admin bootstrap.
  * All paths __DIR__-absolute (SKILL RULE 7). Agent-facing sends use the
@@ -18,10 +20,20 @@
 if (!defined('FX_MYPRICES_LOADED')) {
     define('FX_MYPRICES_LOADED', true);
 
+    /** Clean inline cancel keyboard used by the price-entry prompt. */
+    function fx_myprices_cancel_keyboard(): string {
+        return json_encode([
+            'inline_keyboard' => [
+                [['text' => '❌ انصراف', 'callback_data' => 'fx_myprices_cancel']],
+            ],
+        ], JSON_UNESCAPED_UNICODE);
+    }
+
     /**
-     * Gate + dispatch for «قیمت‌های من». Returns true if it consumed the update.
-     * Callbacks: fx_myprices_menu, fx_myprice_set_<pid>, fx_myprices_back,
-     * fx_myprices_del_<pid>. Text step: fx_res_my_do_retail.
+     * Gate + dispatch for «محصولات من». Returns true if it consumed the update.
+     * Callbacks: fx_myprices_menu, fx_myprice_dtl_<pid> (details page),
+     * fx_myprice_set_<pid>, fx_myprices_del_<pid>, fx_myvis_on/off_<pid>,
+     * fx_myprices_back. Text step: fx_res_my_do_retail.
      */
     function fx_myprices_gate($datain, $text, $from_id, $message_id, $user, $backadmin): bool {
         // reseller-bot admins only
@@ -38,19 +50,108 @@ if (!defined('FX_MYPRICES_LOADED')) {
             if (preg_match('/^fx_myvis_(on|off)_(\d+)$/', $datain, $vm)) {
                 $pid = (int)$vm[2];
                 $hide = $vm[1] === 'off';
+                // scope check: only products actually assigned to this reseller can be toggled
+                if (!fx_myprices_product($pid, $rid)) {
+                    sendmessage($from_id, "❌ محصول یافت نشد یا به ربات شما اختصاص ندارد.", $backadmin, 'HTML');
+                    return true;
+                }
+                if (!$hide && function_exists('fx_res_product_has_retail_price')
+                    && !fx_res_product_has_retail_price($pid, $rid)) {
+                    $needPriceKb = json_encode(['inline_keyboard' => [
+                        [['text' => '🏷️ ویرایش و تعیین قیمت', 'callback_data' => 'fx_myprice_set_' . $pid]],
+                        [['text' => '🔙 بازگشت به لیست', 'callback_data' => 'fx_myprices_menu']],
+                    ]], JSON_UNESCAPED_UNICODE);
+                    sendmessage($from_id,
+                        "برای نمایش این محصول به مشتریان، ابتدا قیمت فروش را تعیین کنید.",
+                        $needPriceKb, 'HTML',
+                        function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($rid) : null);
+                    return true;
+                }
                 if (function_exists('fx_res_visibility_set') && fx_res_visibility_set($pid, $rid, $hide)) {
                     sendmessage($from_id,
-                        $hide ? "🚫 محصول پنهان شد — مشتریان شما دیگر آن را نمی‌بینند." : "👁 محصول فعال شد — مشتریان شما دوباره آن را می‌بینند.",
+                        $hide ? "محصول برای مشتریان شما پنهان شد." : "محصول برای مشتریان شما فعال شد.",
                         $backadmin, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($rid) : null);
+                    // Edit the same message so the status and the hide/show
+                    // button update immediately. A second fresh list left the
+                    // old message with stale buttons.
+                    fx_myprices_send_list($from_id, $message_id, $message_id <= 0);
                 } else {
                     sendmessage($from_id, "❌ تغییر وضعیت ناموفق بود.", $backadmin, 'HTML',
                         function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($rid) : null);
                 }
-                fx_myprices_send_list($from_id, $message_id, true);
                 return true;
             }
             if ($datain === 'fx_myprices_menu' || $datain === 'fx_products_menu') {
+                if ($step === 'fx_res_my_do_retail') {
+                    step('home', $from_id);
+                    update("user", "Processing_value", 0, "id", $from_id);
+                }
                 fx_myprices_send_list($from_id, $message_id);
+                return true;
+            }
+            if ($datain === 'fx_myprices_cancel') {
+                step('home', $from_id);
+                update("user", "Processing_value", 0, "id", $from_id);
+                fx_myprices_send_list($from_id, $message_id);
+                return true;
+            }
+            // details page: full product info for this reseller
+            if (preg_match('/^fx_myprice_dtl_(\d+)$/', $datain, $m)) {
+                $pid = (int)$m[1];
+                $prod = fx_myprices_product($pid, $rid);
+                if (!$prod) {
+                    sendmessage($from_id, "❌ محصول یافت نشد یا به ربات شما اختصاص ندارد.", $backadmin, 'HTML');
+                    return true;
+                }
+                $esc = function ($v): string {
+                    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+                };
+                $whRaw = (int)($prod['wholesale'] ?? 0);
+                $whEff = $whRaw > 0 ? $whRaw : (int)($prod['base_price'] ?? 0);
+                $retRaw = (int)($prod['retail'] ?? 0);
+                $hasPrice = $retRaw > 0;
+                $profit = $hasPrice ? ($retRaw - $whEff) : 0;
+                $isHidden = function_exists('fx_res_visibility_blocked') && fx_res_visibility_blocked($pid);
+                $statusText = !$hasPrice
+                    ? "بدون قیمت (پنهان برای مشتریان)"
+                    : ($isHidden ? "پنهان برای مشتریان" : "فعال");
+                $note = trim((string)($prod['note'] ?? ''));
+                $msg = "جزئیات محصول\n\n" .
+                    "نام: " . $esc($prod['name_product'] ?? '') . " (#" . $pid . ")\n";
+                if (($prod['code_product'] ?? '') !== '') $msg .= "کد: " . $esc($prod['code_product']) . "\n";
+                if (($prod['category'] ?? '') !== '') $msg .= "دسته: " . $esc($prod['category']) . "\n";
+                if (($prod['Volume_constraint'] ?? '') !== '') $msg .= "حجم: " . $esc($prod['Volume_constraint']) . " گیگ\n";
+                if (($prod['Service_time'] ?? '') !== '') $msg .= "مدت: " . $esc($prod['Service_time']) . " روز\n";
+                if (($prod['Location'] ?? '') !== '') $msg .= "موقعیت: " . $esc($prod['Location']) . "\n";
+                if ($note !== '') $msg .= "توضیحات: " . $esc($note) . "\n";
+                $msg .= "\nوضعیت: {$statusText}\n" .
+                    "قیمت پایه: " . number_format((int)($prod['base_price'] ?? 0)) . " تومان\n";
+                if ($whRaw > 0) {
+                    $msg .= "هزینه عمده: " . number_format($whEff) . " تومان\n";
+                }
+                if ($hasPrice) {
+                    $msg .= "قیمت فروش شما: " . number_format($retRaw) . " تومان\n" .
+                        "سود شما: " . number_format($profit) . " تومان";
+                } else {
+                    $msg .= "قیمت فروش شما: تعیین نشده";
+                }
+                $kb = ['inline_keyboard' => [
+                    [
+                        ['text' => '🏷️ ویرایش و تعیین قیمت', 'callback_data' => 'fx_myprice_set_' . $pid],
+                    ],
+                    [
+                        ['text' => '👁️ تغییر وضعیت', 'callback_data' => 'fx_myvis_' . ($isHidden ? 'on_' : 'off_') . $pid],
+                        ['text' => '🔙 بازگشت به لیست', 'callback_data' => 'fx_myprices_menu'],
+                    ],
+                ]];
+                $kbJson = json_encode($kb, JSON_UNESCAPED_UNICODE);
+                $sent = false;
+                if ($message_id > 0 && function_exists('Editmessagetext')) {
+                    $sent = @Editmessagetext($from_id, $message_id, $msg, $kbJson, 'HTML');
+                }
+                if (!$sent) {
+                    sendmessage($from_id, $msg, $kbJson, 'HTML');
+                }
                 return true;
             }
             if (preg_match('/^fx_myprice_set_(\d+)$/', $datain, $m)) {
@@ -65,23 +166,27 @@ if (!defined('FX_MYPRICES_LOADED')) {
                 $whRaw = (int)($prod['wholesale'] ?? 0);
                 $whEff = $whRaw > 0 ? $whRaw : (int)($prod['base_price'] ?? 0);
                 $retRaw = (int)($prod['retail'] ?? 0);
-                $retDisplay = $retRaw > 0
-                    ? number_format($retRaw) . " تومان (اختصاصی شما)"
-                    : number_format((int)($prod['base_price'] ?? 0)) . " تومان (قیمت پایه)";
-                sendmessage($from_id,
-                    "🏷️ قیمت فروش محصول «" . $prod['name_product'] . "» (#" . $pid . ")\n\n" .
-                    "💵 هزینه عمده شما: " . number_format($whEff) . " تومان" . ($whRaw > 0 ? "" : " (قیمت پایه)") . "\n" .
-                    "💰 قیمت فعلی شما: " . $retDisplay . "\n\n" .
-                    "لطفا قیمت فروش جدید را به تومان وارد کنید (فقط عدد):\n" .
-                    "❌ انصراف /cancel",
-                    $backadmin, 'HTML');
+                $retDisplay = $retRaw > 0 ? number_format($retRaw) . " تومان" : "تعیین نشده";
+                $priceMsg = "تعیین قیمت فروش\n\n" .
+                    "محصول: " . $prod['name_product'] . " (#" . $pid . ")\n" .
+                    "قیمت پایه: " . number_format((int)($prod['base_price'] ?? 0)) . " تومان\n";
+                if ($whRaw > 0) {
+                    $priceMsg .= "هزینه عمده: " . number_format($whEff) . " تومان\n";
+                }
+                $priceMsg .= "قیمت فعلی شما: " . $retDisplay . "\n\n" .
+                    "قیمت فروش جدید را به تومان ارسال کنید.";
+                sendmessage($from_id, $priceMsg, fx_myprices_cancel_keyboard(), 'HTML');
                 return true;
             }
             if (preg_match('/^fx_myprices_del_(\d+)$/', $datain, $m)) {
                 $pid = (int)$m[1];
+                if (!fx_myprices_product($pid, $rid)) {
+                    sendmessage($from_id, "❌ محصول یافت نشد یا به ربات شما اختصاص ندارد.", $backadmin, 'HTML');
+                    return true;
+                }
                 if (function_exists('fx_delete_retail_price')) {
                     fx_delete_retail_price($pid, $rid);
-                    sendmessage($from_id, "✅ قیمت اختصاصی این محصول حذف شد — از این به بعد قیمت پایه فروش می‌رود.", $backadmin, 'HTML');
+                    sendmessage($from_id, "قیمت فروش حذف شد. این محصول تا تعیین قیمت جدید برای مشتریان شما پنهان است.", $backadmin, 'HTML');
                 }
                 fx_myprices_send_list($from_id, $message_id, true);
                 return true;
@@ -93,6 +198,27 @@ if (!defined('FX_MYPRICES_LOADED')) {
             return false;
         }
 
+        // --- reply-keyboard text entry ---
+        // When inlinebtnmain=off, rx_kb_encode() converts buttons to plain reply
+        // text and drops callback_data. Handle the restored «محصولات من» menu
+        // here so reseller admins can still open the manager in both modes.
+        if ($text !== '' && $step !== 'fx_res_my_do_retail') {
+            $cleanMenuText = function_exists('rx_cleanEmojiAndSymbols')
+                ? rx_cleanEmojiAndSymbols($text)
+                : trim($text);
+            $menuAliases = [
+                'محصولات من',
+                'مدیریت محصولات من',
+                'قیمتهای من',
+                'قیمت های من',
+                'قیمت من',
+            ];
+            if (in_array($cleanMenuText, $menuAliases, true)) {
+                fx_myprices_send_list($from_id, $message_id);
+                return true;
+            }
+        }
+
         // --- text-wait step: numeric price entry ---
         if ($step === 'fx_res_my_do_retail') {
             if ($text === '/cancel' || $text === 'انصراف') {
@@ -100,18 +226,18 @@ if (!defined('FX_MYPRICES_LOADED')) {
                 return true;
             }
             if (!ctype_digit($text)) {
-                sendmessage($from_id, "❌ فقط عدد وارد کنید (تومان). انصراف: /cancel", $backadmin, 'HTML');
+                sendmessage($from_id, "فقط عدد وارد کنید (تومان).", fx_myprices_cancel_keyboard(), 'HTML');
                 return true;
             }
             $pid = (int)($user['Processing_value'] ?? 0);
             if ($pid <= 0) {
-                sendmessage($from_id, "❌ محصول مشخص نیست؛ دوباره از «🏷️ قیمت‌های من» وارد شوید.", $backadmin, 'HTML');
+                sendmessage($from_id, "محصول مشخص نیست؛ دوباره از «محصولات من» وارد شوید.", $backadmin, 'HTML');
                 fx_res_exit_to_hub($from_id);
                 return true;
             }
             $price = (int)$text;
             if ($price <= 0) {
-                sendmessage($from_id, "❌ قیمت باید عددی بزرگ‌تر از صفر باشد. انصراف: /cancel", $backadmin, 'HTML');
+                sendmessage($from_id, "قیمت باید بزرگ‌تر از صفر باشد.", fx_myprices_cancel_keyboard(), 'HTML');
                 return true;
             }
             $prod = fx_myprices_product($pid, $rid);
@@ -127,12 +253,15 @@ if (!defined('FX_MYPRICES_LOADED')) {
             }
             $ok = fx_set_retail_price($pid, $rid, $price);
             if ($ok) {
+                if (function_exists('fx_res_visibility_set')) {
+                    fx_res_visibility_set($pid, $rid, false);
+                }
                 sendmessage($from_id,
-                    "✅ قیمت فروش «" . $prod['name_product'] . "» روی " . number_format($price) . " تومان ثبت شد.\n" .
-                    "🛒 از این به بعد مشتریان شما این محصول را با همین قیمت می‌بینند.",
+                    "قیمت فروش «" . $prod['name_product'] . "» روی " . number_format($price) . " تومان ثبت شد.\n" .
+                    "محصول برای مشتریان شما فعال شد.",
                     $backadmin, 'HTML');
             } else {
-                sendmessage($from_id, "❌ خطا در ذخیره قیمت. دوباره تلاش کنید.", $backadmin, 'HTML');
+                sendmessage($from_id, "خطا در ذخیره قیمت. دوباره تلاش کنید.", fx_myprices_cancel_keyboard(), 'HTML');
             }
             fx_res_exit_to_hub($from_id);
             return true;
@@ -150,9 +279,10 @@ if (!defined('FX_MYPRICES_LOADED')) {
         try {
             $scope = function_exists('fx_res_product_scope_sql')
                 ? fx_res_product_scope_sql('p', ':agent')
-                : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
+                : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers'))";
             $stmt = $pdo->prepare(
-                "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
+                "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, " .
+                "p.note, p.code_product, p.category, p.Volume_constraint, p.Service_time, p.Location, r.retail_price AS retail " .
                 "FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid " .
                 "WHERE p.id = :pid AND {$scope} LIMIT 1"
             );
@@ -163,7 +293,8 @@ if (!defined('FX_MYPRICES_LOADED')) {
     }
 
     /**
-     * Send (or edit-in-place) the product list with wholesale | my price | profit.
+     * Send (or edit-in-place) the product list — 4 columns per row:
+     * product | status | price | wholesale (owner-requested layout).
      */
     function fx_myprices_send_list(int $from_id, int $message_id = 0, bool $fresh = false): void {
         global $pdo;
@@ -181,7 +312,7 @@ if (!defined('FX_MYPRICES_LOADED')) {
             try {
                 $scope = function_exists('fx_res_product_scope_sql')
                     ? fx_res_product_scope_sql('p', ':agent')
-                    : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers', 'f', 'n', 'n2') OR p.agent = '')";
+                    : "(FIND_IN_SET(:agent, REPLACE(p.agent, ' ', '')) OR p.agent IN ('all', 'allusers'))";
                 $stmt = $pdo->prepare(
                     "SELECT p.id, p.name_product, p.price_product AS base_price, p.fx_wholesale_price AS wholesale, r.retail_price AS retail " .
                     "FROM product p LEFT JOIN fx_retail_prices r ON p.id = r.product_id AND r.reseller_id = :rid " .
@@ -203,21 +334,23 @@ if (!defined('FX_MYPRICES_LOADED')) {
                 $base  = (int)($row['base_price'] ?? 0);
                 $whRaw = (int)($row['wholesale'] ?? 0);
                 $whole = $wholesaleOf($row);
-                $ret   = (int)($row['retail'] ?? 0);
+                // fx_get_all_retail_prices() returns key retail_price; direct SQL aliases it as retail
+                $ret   = (int)($row['retail'] ?? $row['retail_price'] ?? 0);
                 $cur   = $ret > 0 ? $ret : $base;
-                $profit = $cur - $whole;
                 $isHidden = in_array((int)$row['id'], $hiddenIds, true);
-                $msg .= "{$i}️⃣ " . (string)$row['name_product'] . " (#" . (int)$row['id'] . ")" . ($isHidden ? " 🚫 (غیرفعال)" : "") . "\n" .
-                    "💵 هزینه عمده: " . number_format($whole) . ($whRaw > 0 ? "" : " (قیمت پایه)") . " | " .
-                    "💰 فروش من: " . number_format($cur) . ($ret > 0 ? "" : " (پایه)") . " | " .
-                    "📈 سود: " . number_format($profit) . "\n\n";
+                $statusText = $ret > 0 ? ($isHidden ? "پنهان" : "فعال") : "بدون قیمت";
+                // 4 columns per owner request: product | status | price | wholesale
+                $msg .= "{$i}️⃣ " . (string)$row['name_product'] . " (#" . (int)$row['id'] . ")\n" .
+                    $statusText . " | " .
+                    "💰 فروش: " . ($ret > 0 ? number_format($cur) : "تعیین نشده") . " | " .
+                    "💵 عمده: " . number_format($whole) . ($whRaw > 0 ? "" : " (پایه)") . "\n\n";
             }
-            $msg .= "برای تغییر قیمت هر محصول، دکمه آن را بزنید:";
+            $msg .= "برای مشاهده جزئیات، تغییر قیمت یا وضعیت، دکمه محصول را بزنید:";
             foreach ($rows as $row) {
                 $isHiddenB = in_array((int)$row['id'], $hiddenIds, true);
                 $kb['inline_keyboard'][] = [
-                    ['text' => "🏷️ " . mb_substr((string)$row['name_product'], 0, 22) . " (#" . (int)$row['id'] . ")", 'callback_data' => 'fx_myprice_set_' . (int)$row['id']],
-                    ['text' => $isHiddenB ? "👁 نمایش" : "🚫 پنهان", 'callback_data' => 'fx_myvis_' . ($isHiddenB ? 'on_' : 'off_') . (int)$row['id']]
+                    ['text' => "📋 " . mb_substr((string)$row['name_product'], 0, 22) . " (#" . (int)$row['id'] . ")", 'callback_data' => 'fx_myprice_dtl_' . (int)$row['id']],
+                    ['text' => "👁️ وضعیت", 'callback_data' => 'fx_myvis_' . ($isHiddenB ? 'on_' : 'off_') . (int)$row['id']]
                 ];
             }
         }

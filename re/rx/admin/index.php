@@ -3,6 +3,7 @@ require_once dirname(__DIR__, 2) . '/_error_log.php';
 if (!defined('REFACTORED_LEGACY_ROOT')) {
     define('REFACTORED_LEGACY_ROOT', dirname(__DIR__, 3));
 }
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/function/fx_reseller_delete_guard.php';
 @chdir(REFACTORED_LEGACY_ROOT);
 
 

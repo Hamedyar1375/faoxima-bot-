@@ -195,10 +195,8 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
 
         $payRecord = select("Payment_report", "*", "id_order", $orderId);
         $_uid = intval($from_id);
-        $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = {$_uid})";
-        $_cmode_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-        $_cmode_row = $_cmode_res ? mysqli_fetch_assoc($_cmode_res) : null;
-        $_cmode = is_array($_cmode_row) ? ($_cmode_row['ValuePay'] ?? 'random') : 'random';
+        $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = {$_uid}) AND " . fx_tenant_sql_agent('cn');
+        $_cmode = (string) getPaySettingValue('card_display_mode', 'random');
 
         $card_info = null;
         $_card2 = null;
@@ -211,10 +209,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
             $_card2 = $_dcards[1] ?? null;
         } else {
             $_ck = "card_cycle_{$_uid}";
-            $_ck_esc = mysqli_real_escape_string($connect, $_ck);
-            $_seen_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = '{$_ck_esc}' LIMIT 1");
-            $_seen_row = $_seen_res ? mysqli_fetch_assoc($_seen_res) : null;
-            $_seen_str = is_array($_seen_row) ? ($_seen_row['ValuePay'] ?? '') : '';
+            $_seen_str = (string) getPaySettingValue($_ck, '');
             $_seen = array_values(array_filter(array_map('intval', explode(',', $_seen_str))));
             $_excl = !empty($_seen) ? "AND cn.id NOT IN (" . implode(',', $_seen) . ")" : "";
 
@@ -229,11 +224,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
 
             if ($card_info) {
                 $_new_seen = implode(',', array_unique(array_merge($_seen, [intval($card_info['id'])])));
-                $_nv_esc = mysqli_real_escape_string($connect, $_new_seen);
-                mysqli_query($connect, "UPDATE PaySetting SET ValuePay = '{$_nv_esc}' WHERE NamePay = '{$_ck_esc}'");
-                if (mysqli_affected_rows($connect) === 0) {
-                    mysqli_query($connect, "INSERT INTO PaySetting (NamePay, ValuePay) VALUES ('{$_ck_esc}', '{$_nv_esc}')");
-                }
+                update("PaySetting", "ValuePay", $_new_seen, "NamePay", $_ck);
             }
         }
 
@@ -325,10 +316,8 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     update("Payment_report", "card_last4", $_cl4, "id_order", $orderId);
     step('home', $from_id);
     $_uid = intval($from_id);
-    $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid})))";
-    $_cmode_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-    $_cmode_row = $_cmode_res ? mysqli_fetch_assoc($_cmode_res) : null;
-    $_cmode = is_array($_cmode_row) ? ($_cmode_row['ValuePay'] ?? 'random') : 'random';
+    $_access = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = {$_uid}))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = {$_uid}) AND " . fx_tenant_sql_agent('cn');
+    $_cmode = (string) getPaySettingValue('card_display_mode', 'random');
 
     $card_info = null;
     $_card2 = null;
@@ -341,10 +330,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
         $_card2 = $_dcards[1] ?? null;
     } else {
         $_ck = "card_cycle_{$_uid}";
-        $_ck_esc = mysqli_real_escape_string($connect, $_ck);
-        $_seen_res = mysqli_query($connect, "SELECT ValuePay FROM PaySetting WHERE NamePay = '{$_ck_esc}' LIMIT 1");
-        $_seen_row = $_seen_res ? mysqli_fetch_assoc($_seen_res) : null;
-        $_seen_str = is_array($_seen_row) ? ($_seen_row['ValuePay'] ?? '') : '';
+        $_seen_str = (string) getPaySettingValue($_ck, '');
         $_seen = array_values(array_filter(array_map('intval', explode(',', $_seen_str))));
         $_excl = !empty($_seen) ? "AND cn.id NOT IN (" . implode(',', $_seen) . ")" : "";
 
@@ -359,11 +345,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
 
         if ($card_info) {
             $_new_seen = implode(',', array_unique(array_merge($_seen, [intval($card_info['id'])])));
-            $_nv_esc = mysqli_real_escape_string($connect, $_new_seen);
-            mysqli_query($connect, "UPDATE PaySetting SET ValuePay = '{$_nv_esc}' WHERE NamePay = '{$_ck_esc}'");
-            if (mysqli_affected_rows($connect) === 0) {
-                mysqli_query($connect, "INSERT INTO PaySetting (NamePay, ValuePay) VALUES ('{$_ck_esc}', '{$_nv_esc}')");
-            }
+            update("PaySetting", "ValuePay", $_new_seen, "NamePay", $_ck);
         }
     }
 
@@ -1471,8 +1453,9 @@ $text_porsant
     if ($user['Balance'] < $volume && $user['agent'] != "n2") {
         $marzbandirectpay = panel_feature_enabled($user['Processing_value_one'], 'directbuy') ? "ondirectbuy" : "offdirectbuy";
         if ($marzbandirectpay == "offdirectbuy") {
-            $minbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "minbalance", "select")['ValuePay'], true)[$user['agent']]);
-            $maxbalance = number_format(json_decode(select("PaySetting", "*", "NamePay", "maxbalance", "select")['ValuePay'], true)[$user['agent']]);
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            $minbalance = number_format($minbalance);
+            $maxbalance = number_format($maxbalance);
             $bakinfos = json_encode([
                 'inline_keyboard' => [
                     [
@@ -1521,7 +1504,9 @@ $text_porsant
     $__fxDebtMode = false;
     $__fxRid = 0;
     $__fxReservedEv = 0;
-    $__fxEvRef = 'xvol:' . (string)$from_id . ':' . (string)$user['Processing_value'];
+    // WALLET-FIRST/FX-DEBT: attempt-unique ref — the same service can buy extra
+    // volume MANY times, so the service id alone must not be the idempotency key.
+    $__fxEvRef = 'xvol:' . (string)$from_id . ':' . (string)$user['Processing_value'] . ':' . bin2hex(random_bytes(4));
     if (defined('FX_RESELLER_ID') && function_exists('fx_debt_reserve') && function_exists('fx_debt_state')) {
         $__fxRid = (int)FX_RESELLER_ID;
         if (fx_debt_state($__fxRid)['mode'] === 'debt') {
@@ -1533,7 +1518,7 @@ $text_porsant
                 $__fxDebtWholesale = (int)$volume;
             }
             if ($__fxDebtWholesale > 0) {
-                $__fxEvRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale);
+                $__fxEvRes = fx_debt_reserve($__fxRid, $__fxDebtWholesale, $__fxEvRef);
                 if (empty($__fxEvRes[0])) {
                     sendmessage($from_id, "⛔ امکان ثبت خرید اعتباری حجم وجود ندارد؛ سقف اعتبار هم‌زمان تکمیل شد.\nلطفاً بدهی را تسویه کنید و دوباره تلاش کنید.", null, 'HTML');
                     return;

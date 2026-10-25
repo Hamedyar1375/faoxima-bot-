@@ -1623,7 +1623,7 @@ $iduser  در ربات مسدود گردید
 } elseif (preg_match('/^usercardmenu_(\d+)$/', $datain, $dataget)) {
     $iduser = (int)$dataget[1];
     $allCards = [];
-    $_ac_res = mysqli_query($connect, "SELECT id, cardnumber, namecard FROM card_number WHERE is_active = 1 ORDER BY created_at ASC LIMIT 50");
+    $_ac_res = mysqli_query($connect, "SELECT id, cardnumber, namecard FROM card_number WHERE is_active = 1 AND " . fx_tenant_sql_agent() . " ORDER BY created_at ASC LIMIT 50");
     if ($_ac_res) {
         while ($_ac_row = mysqli_fetch_assoc($_ac_res)) {
             $allCards[] = $_ac_row;
@@ -1667,7 +1667,7 @@ $iduser  در ربات مسدود گردید
         $_toggle_notice = "❌ کارت پنهان شد";
     }
     $allCards2 = [];
-    $_ac2_res = mysqli_query($connect, "SELECT id, cardnumber, namecard FROM card_number WHERE is_active = 1 ORDER BY created_at ASC LIMIT 50");
+    $_ac2_res = mysqli_query($connect, "SELECT id, cardnumber, namecard FROM card_number WHERE is_active = 1 AND " . fx_tenant_sql_agent() . " ORDER BY created_at ASC LIMIT 50");
     if ($_ac2_res) {
         while ($_ac2_row = mysqli_fetch_assoc($_ac2_res)) {
             $allCards2[] = $_ac2_row;
@@ -2468,10 +2468,16 @@ $iduser  در ربات  رفع مسدود گردید
 {$rxTopReferrersText}";
     nm_adminInstantReply($from_id, $rxReportsText, $affiliates, 'HTML');
 } elseif ($datain == "mainbalanceaccount" && $adminrulecheck['rule'] == "administrator") {
-    $_minRaw = json_decode(select("PaySetting", "ValuePay", "NamePay", "minbalance", "select")['ValuePay'] ?? '{}', true);
-    $_minRaw = is_array($_minRaw) ? $_minRaw : [];
-    $_minLines = implode("\n", array_map(fn($k, $v) => "• <b>$k</b>: " . number_format((int)$v) . " تومان", array_keys($_minRaw), $_minRaw));
-    $textmin = "📌 <b>کف شارژ کیف‌پول</b>\n\nمقادیر فعلی:\n" . ($_minLines ?: '—') . "\n\nمبلغ جدید را به تومان وارد کنید:";
+    $_minRaw = rx_fetchTenantPaySetting('minbalance');
+    $_minDecoded = json_decode($_minRaw ?? '', true);
+    if (is_array($_minDecoded)) {
+        $_minLines = implode("\n", array_map(fn($k, $v) => "• <b>$k</b>: " . number_format((int)$v) . " تومان", array_keys($_minDecoded), $_minDecoded));
+    } elseif ($_minRaw !== null && trim((string) $_minRaw) !== '' && is_numeric((string) $_minRaw)) {
+        $_minLines = "• <b>همه گروه‌ها</b>: " . number_format((int) $_minRaw) . " تومان (legacy)";
+    } else {
+        $_minLines = "";
+    }
+    $textmin = "📌 <b>کف شارژ کیف‌پول</b>\n\nمقادیر فعلی:\n" . ($_minLines ?: "• <b>پیش‌فرض</b>: " . number_format(RX_DEFAULT_MIN_DEPOSIT) . " تومان (تنظیم نشده)") . "\n\nمبلغ جدید را به تومان وارد کنید:";
     nm_adminInstantReply($from_id, $textmin, $backadmin, 'HTML');
     step('minbalance', $from_id);
 } elseif ($user['step'] == "minbalance") {
@@ -2493,9 +2499,10 @@ $iduser  در ربات  رفع مسدود گردید
     }
     $text = $grp;
     step('home', $from_id);
-    $balancemaax = json_decode(select("PaySetting", "ValuePay", "NamePay", "minbalance", "select")['ValuePay'] ?? '{}', true);
+    $balancemaax = rx_fetchTenantPaySetting('minbalance');
+    $balancemaax = json_decode($balancemaax ?? '', true);
     if (!is_array($balancemaax)) {
-        $balancemaax = ["n" => "20000", "n2" => "20000", "f" => "20000"];
+        $balancemaax = ["n" => (string) RX_DEFAULT_MIN_DEPOSIT, "n2" => (string) RX_DEFAULT_MIN_DEPOSIT, "f" => (string) RX_DEFAULT_MIN_DEPOSIT];
     }
     if ($text === 'allusers') {
         foreach (["n", "n2", "f"] as $_ag) { $balancemaax[$_ag] = $user['Processing_value']; }
@@ -2504,12 +2511,19 @@ $iduser  در ربات  رفع مسدود گردید
     }
     $balancemaax = json_encode($balancemaax);
     nm_adminInstantReply($from_id, $textbotlang['Admin']['SettingnowPayment']['Savaapi'], $keyboardadmin, 'HTML');
-    update("PaySetting", "ValuePay", $balancemaax, "NamePay", "minbalance");
+    rx_writeTenantPaySetting('minbalance', $balancemaax);
 } elseif ($datain == "maxbalanceaccount" && $adminrulecheck['rule'] == "administrator") {
-    $_maxRaw = json_decode(select("PaySetting", "ValuePay", "NamePay", "maxbalance", "select")['ValuePay'] ?? '{}', true);
-    $_maxRaw = is_array($_maxRaw) ? $_maxRaw : [];
-    $_maxLines = implode("\n", array_map(fn($k, $v) => "• <b>$k</b>: " . number_format((int)$v) . " تومان", array_keys($_maxRaw), $_maxRaw));
-    $textmax = "📌 <b>سقف شارژ کیف‌پول</b>\n\nمقادیر فعلی:\n" . ($_maxLines ?: '—') . "\n\nمبلغ جدید را به تومان وارد کنید:";
+    $_maxRaw = rx_fetchTenantPaySetting('maxbalance');
+    $_maxNow = $_maxRaw;
+    $_maxRaw = json_decode($_maxRaw ?? '', true);
+    if (is_array($_maxRaw)) {
+        $_maxLines = implode("\n", array_map(fn($k, $v) => "• <b>$k</b>: " . number_format((int)$v) . " تومان", array_keys($_maxRaw), $_maxRaw));
+    } elseif ($_maxNow !== null && trim((string) $_maxNow) !== '' && is_numeric((string) $_maxNow)) {
+        $_maxLines = "• <b>همه گروه‌ها</b>: " . number_format((int) $_maxNow) . " تومان (legacy)";
+    } else {
+        $_maxLines = "";
+    }
+    $textmax = "📌 <b>سقف شارژ کیف‌پول</b>\n\nمقادیر فعلی:\n" . ($_maxLines ?: "• <b>پیش‌فرض</b>: " . number_format(RX_DEFAULT_MAX_DEPOSIT) . " تومان (تنظیم نشده)") . "\n\nمبلغ جدید را به تومان وارد کنید:";
     nm_adminInstantReply($from_id, $textmax, $backadmin, 'HTML');
     step('maxbalance', $from_id);
 } elseif ($user['step'] == "maxbalance") {
@@ -2531,9 +2545,10 @@ $iduser  در ربات  رفع مسدود گردید
     }
     $text = $grp;
     step('home', $from_id);
-    $balancemaax = json_decode(select("PaySetting", "ValuePay", "NamePay", "maxbalance", "select")['ValuePay'] ?? '{}', true);
+    $balancemaax = rx_fetchTenantPaySetting('maxbalance');
+    $balancemaax = json_decode($balancemaax ?? '', true);
     if (!is_array($balancemaax)) {
-        $balancemaax = ["n" => "1000000", "n2" => "1000000", "f" => "1000000"];
+        $balancemaax = ["n" => (string) RX_DEFAULT_MAX_DEPOSIT, "n2" => (string) RX_DEFAULT_MAX_DEPOSIT, "f" => (string) RX_DEFAULT_MAX_DEPOSIT];
     }
     if ($text === 'allusers') {
         foreach (["n", "n2", "f"] as $_ag) { $balancemaax[$_ag] = $user['Processing_value']; }
@@ -2542,7 +2557,7 @@ $iduser  در ربات  رفع مسدود گردید
     }
     $balancemaax = json_encode($balancemaax);
     nm_adminInstantReply($from_id, $textbotlang['Admin']['SettingnowPayment']['Savaapi'], $keyboardadmin, 'HTML');
-    update("PaySetting", "ValuePay", $balancemaax, "NamePay", "maxbalance");
+    rx_writeTenantPaySetting('maxbalance', $balancemaax);
 } elseif (preg_match('/removeagent_(\w+)/', $datain, $dataget)) {
     $id_user = $dataget[1];
     telegram('sendmessage', [

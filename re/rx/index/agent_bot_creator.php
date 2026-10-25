@@ -13,6 +13,7 @@ if (!defined('REFACTORED_LEGACY_ROOT')) {
     define('REFACTORED_LEGACY_ROOT', dirname(__DIR__, 3));
 }
 require_once REFACTORED_LEGACY_ROOT . '/re/rx/function/fx_reseller_bot_registry.php'; // FX-RESELLER bot cap + atomic register (2026-10-15)
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/function/fx_reseller_delete_guard.php';
 function fx_dbg($evt, $arr) {
     $line = date('Y-m-d H:i:s') . " $evt " . json_encode($arr, JSON_UNESCAPED_UNICODE) . "\n";
     @file_put_contents(REFACTORED_LEGACY_ROOT . '/agentbot_debug.log', $line, FILE_APPEND);
@@ -248,6 +249,19 @@ function fx_agent_bot_remove($from_id, $message_id, $target_id, $user, $datatext
         nm_adminInstantReply($from_id, "❌ ربات یافت نشد.", $backuser, 'HTML');
         return;
     }
+
+    $guard = fx_reseller_delete_guard($pdo, (string)$target_id);
+    if (empty($guard['allowed'])) {
+        nm_adminInstantReply($from_id, (string)($guard['message'] ?? '❌ حذف ربات انجام نشد.'), $backuser, 'HTML');
+        return;
+    }
+
+    $archive = fx_reseller_archive_before_delete($pdo, (string)$target_id, ['source' => 'agent_bot_creator']);
+    if (empty($archive['ok'])) {
+        nm_adminInstantReply($from_id, (string)($archive['message'] ?? '❌ آرشیو امن انجام نشد.'), $backuser, 'HTML');
+        return;
+    }
+    if (!empty($archive['path'])) error_log('[agent_bot_creator] delete archive: ' . $archive['path']);
 
     $destination = REFACTORED_LEGACY_ROOT;
     $dirsource = "{$destination}/vpnbot/{$target_id}{$contentbto['username']}";

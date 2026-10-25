@@ -245,6 +245,17 @@ if (defined('FX_RESELLER_LOCK') && FX_RESELLER_LOCK && defined('FX_RESELLER_ID')
     unset($_fxLockedTexts, $_fxLockedCbExact, $_fxLockedCbPrefixes, $_fxLockedHit, $_fxLockedPrefix);
 }
 
+// FX-TENANT (2026-10-24): reseller administrators may manage their own payment
+// gateways, cards, forced channels, retail prices and users, but shared/main-only
+// configuration (categories, technical settings, webhook, backup, base products)
+// must never be reachable from a reseller bot — including by forged callbacks.
+if (defined('FX_RESELLER_ID') && FX_RESELLER_ID
+    && ($adminrulecheck['rule'] ?? '') === 'administrator'
+    && fx_reseller_main_only_hit($text ?? '', $datain ?? '', (string) ($user['step'] ?? ''))) {
+    nm_adminInstantReply($from_id, "⛔️ <b>این بخش فقط از ربات اصلی قابل مدیریت است.</b>\n\nدسته‌بندی‌ها، تنظیمات فنی، وب‌هوک، بکاپ و تعریف پایه محصولات برای ربات نمایندگی غیرفعال است. از «🏷️ قیمت‌های من» برای قیمت و نمایش محصول استفاده کنید.", $backadmin, 'HTML');
+    return;
+}
+
 if (in_array($text, $textadmin) || $datain == "admin") {
     if ($datain == "admin")
         deletemessage($from_id, $message_id);
@@ -841,7 +852,8 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     $link = isset($userdata['link']) ? (string) $userdata['link'] : '';
 
     $insertChannel = function ($remarkValue) use ($pdo, $link, $text) {
-        $stmt = $pdo->prepare("INSERT INTO channels (link, remark, linkjoin) VALUES (:link, :remark, :linkjoin)");
+        $stmt = $pdo->prepare("INSERT INTO channels (agent, link, remark, linkjoin) VALUES (:agent, :link, :remark, :linkjoin)");
+        $stmt->bindValue(':agent', fx_tenant_agent_id(), PDO::PARAM_INT);
         $stmt->bindValue(':remark', $remarkValue, PDO::PARAM_STR);
         $stmt->bindValue(':link', $link, PDO::PARAM_STR);
         $stmt->bindValue(':linkjoin', $text, PDO::PARAM_STR);
@@ -965,7 +977,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     ($text == "❌ حذف کانال" && !empty($user['Processing_value']) && is_numeric($user['Processing_value']))
 )) {
     $chanId = isset($delMatches[1]) ? (int)$delMatches[1] : (int)$user['Processing_value'];
-    $stmt = $pdo->prepare("DELETE FROM channels WHERE id = :id");
+    $stmt = $pdo->prepare("DELETE FROM channels WHERE id = :id AND " . fx_tenant_sql_agent());
     $stmt->execute([':id' => $chanId]);
     update("user", "Processing_value", "none", "id", $from_id);
     step('channel', $from_id);
@@ -987,7 +999,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     if (!isset($update['message']) && empty($text)) { return; }
     $chanId = (int)($user['Processing_value'] ?? 0);
     if ($chanId > 0) {
-        $stmt = $pdo->prepare("UPDATE channels SET remark = :rem WHERE id = :id");
+        $stmt = $pdo->prepare("UPDATE channels SET remark = :rem WHERE id = :id AND " . fx_tenant_sql_agent());
         $stmt->execute([':rem' => trim($text), ':id' => $chanId]);
     }
     if ($chanId > 0 && function_exists('rx_render_channel_manage')) {
@@ -1018,7 +1030,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
         return;
     }
     if ($chanId > 0) {
-        $stmt = $pdo->prepare("UPDATE channels SET linkjoin = :lj WHERE id = :id");
+        $stmt = $pdo->prepare("UPDATE channels SET linkjoin = :lj WHERE id = :id AND " . fx_tenant_sql_agent());
         $stmt->execute([':lj' => trim($text), ':id' => $chanId]);
     }
     if ($chanId > 0 && function_exists('rx_render_channel_manage')) {
@@ -1044,7 +1056,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     if (!isset($update['message']) && empty($text)) { return; }
     $chanId = (int)($user['Processing_value'] ?? 0);
     if ($chanId > 0) {
-        $stmt = $pdo->prepare("UPDATE channels SET link = :lnk WHERE id = :id");
+        $stmt = $pdo->prepare("UPDATE channels SET link = :lnk WHERE id = :id AND " . fx_tenant_sql_agent());
         $stmt->execute([':lnk' => trim($text), ':id' => $chanId]);
     }
     if ($chanId > 0 && function_exists('rx_render_channel_manage')) {
@@ -1066,7 +1078,7 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     nm_adminInstantReply($from_id, $textbotlang['Admin']['channel']['removechannel'], $channelkeyboard, 'HTML');
 } elseif ($user['step'] == "removechannel") {
     if (!isset($update['message']) && empty($text)) { return; }
-    $stmt = $pdo->prepare("DELETE FROM channels WHERE link = :link OR id = :id");
+    $stmt = $pdo->prepare("DELETE FROM channels WHERE (link = :link OR id = :id) AND " . fx_tenant_sql_agent());
     $stmt->bindValue(':link', $text, PDO::PARAM_STR);
     $stmt->bindValue(':id', is_numeric($text) ? (int)$text : 0, PDO::PARAM_INT);
     $stmt->execute();
@@ -1179,7 +1191,86 @@ if (in_array($text, $textadmin) || $datain == "admin") {
         rxNavSetState($from_id, 'channel');
     }
     nm_adminInstantReply($from_id, $textbotlang['Admin']['channel']['description'], $channelkeyboard, 'HTML');
+} elseif (defined('FX_RESELLER_ID') && FX_RESELLER_ID && (
+    in_array((string) $datain, [
+        'hoursago_stat', 'yesterday_stat', 'today_stat', 'month_old_stat',
+        'month_current_stat', 'view_stat_time',
+    ], true)
+    || in_array((string) ($user['step'] ?? ''), ['get_time_start', 'get_time_end'], true)
+)) {
+    nm_adminInstantReply($from_id, "📊 گزارش تفکیکی زمانی برای ربات نمایندگی فعال نیست. از «آمار کلی» همین بخش استفاده کنید.", $keyboardadmin, 'HTML');
+    return;
 } elseif ($text == $textbotlang['Admin']['Status']['btn'] || $datain == "stat_all_bot") {
+    if (defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
+        $fxStats = $pdo->query("SELECT COUNT(*) AS users_count, COALESCE(SUM(Balance),0) AS balance_sum FROM user WHERE {$FXU_SCOPE}")->fetch(PDO::FETCH_ASSOC);
+        $fxUsers = (int) ($fxStats['users_count'] ?? 0);
+        $fxBalance = (float) ($fxStats['balance_sum'] ?? 0);
+
+        $fxSales = $pdo->query("SELECT COUNT(*) AS sales_count, COALESCE(SUM(price_product),0) AS sales_sum FROM invoice WHERE {$FXI_SCOPE}")->fetch(PDO::FETCH_ASSOC);
+        $fxSalesCount = (int) ($fxSales['sales_count'] ?? 0);
+        $fxSalesSum = (float) ($fxSales['sales_sum'] ?? 0);
+
+        $fxActive = (int) $pdo->query("SELECT COUNT(*) FROM invoice WHERE " . rx_stats_operational_service_predicate() . " AND {$FXI_SCOPE}")->fetchColumn();
+        $fxBuyers = (int) $pdo->query("SELECT COUNT(DISTINCT id_user) FROM invoice WHERE {$FXI_SCOPE}")->fetchColumn();
+        $fxTests = (int) $pdo->query("SELECT COUNT(*) FROM invoice WHERE name_product = 'سرویس تست' AND {$FXI_SCOPE}")->fetchColumn();
+
+        $fxTodayStart = (int) strtotime(date('Y-m-d 00:00:00'));
+        $fxTodayStmt = $pdo->prepare("SELECT COALESCE(SUM(price_product),0) FROM invoice WHERE time_sell >= :start AND {$FXI_SCOPE}");
+        $fxTodayStmt->execute([':start' => $fxTodayStart]);
+        $fxTodaySum = (float) $fxTodayStmt->fetchColumn();
+
+        $fxExtendStmt = $pdo->query("SELECT COUNT(*) AS c, COALESCE(SUM(CAST(price AS DECIMAL(20,2))),0) AS s FROM service_other WHERE status = 'paid' AND type IN ('extend_user','extend_user_by_admin') AND id_user IN (SELECT id FROM user WHERE {$FXU_SCOPE})");
+        $fxExtend = $fxExtendStmt ? $fxExtendStmt->fetch(PDO::FETCH_ASSOC) : ['c' => 0, 's' => 0];
+        $fxExtendCount = (int) ($fxExtend['c'] ?? 0);
+        $fxExtendSum = (float) ($fxExtend['s'] ?? 0);
+
+        $fxPanels = (int) $pdo->query("SELECT COUNT(*) FROM marzban_panel WHERE agent = " . (int) FX_RESELLER_ID)->fetchColumn();
+        $fxCards = (int) $pdo->query("SELECT COUNT(*) FROM card_number WHERE " . fx_tenant_sql_agent())->fetchColumn();
+        $fxChannels = (int) $pdo->query("SELECT COUNT(*) FROM channels WHERE " . fx_tenant_sql_agent())->fetchColumn();
+
+        $fxDebtRow = select("botsaz", "current_debt, debt_ceiling", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
+        $fxDebt = (float) ($fxDebtRow['current_debt'] ?? 0);
+        $fxCeiling = (float) ($fxDebtRow['debt_ceiling'] ?? 0);
+
+        $fxPayLines = '';
+        $fxPayStmt = $pdo->query("SELECT Payment_Method, COUNT(*) AS c, COALESCE(SUM(CAST(price AS DECIMAL(20,2))),0) AS s FROM Payment_report WHERE payment_Status = 'paid' AND id_user IN (SELECT id FROM user WHERE {$FXU_SCOPE}) GROUP BY Payment_Method ORDER BY c DESC LIMIT 8");
+        if ($fxPayStmt) {
+            foreach ($fxPayStmt->fetchAll(PDO::FETCH_ASSOC) as $fxPayRow) {
+                $fxPayLines .= "\n📌 " . htmlspecialchars((string) ($fxPayRow['Payment_Method'] ?? '—'), ENT_QUOTES, 'UTF-8')
+                    . ": <code>" . number_format((int) $fxPayRow['c']) . "</code> پرداخت | <code>" . number_format((float) $fxPayRow['s']) . "</code> تومان";
+            }
+        }
+
+        $fxStatsText = "📊 <b>آمار ربات نمایندگی</b>\n"
+            . "━━━━━━━━━━━━━━━━━━\n"
+            . "👥 <b>کاربران این ربات:</b> <code>" . number_format($fxUsers) . "</code> نفر\n"
+            . "💰 <b>موجودی کاربران:</b> <code>" . number_format($fxBalance) . "</code> تومان\n"
+            . "🛒 <b>کاربران دارای خرید:</b> <code>" . number_format($fxBuyers) . "</code> نفر\n"
+            . "🧪 <b>اکانت‌های تست:</b> <code>" . number_format($fxTests) . "</code> عدد\n\n"
+            . "🧾 <b>تعداد فروش:</b> <code>" . number_format($fxSalesCount) . "</code> عدد\n"
+            . "🧾 <b>سرویس‌های فعال:</b> <code>" . number_format($fxActive) . "</code> عدد\n"
+            . "💵 <b>جمع فروش:</b> <code>" . number_format($fxSalesSum) . "</code> تومان\n"
+            . "📅 <b>فروش امروز:</b> <code>" . number_format($fxTodaySum) . "</code> تومان\n"
+            . "🔄 <b>تمدیدها:</b> <code>" . number_format($fxExtendCount) . "</code> عدد | <code>" . number_format($fxExtendSum) . "</code> تومان\n\n"
+            . "🧩 <b>پنل‌های شما:</b> <code>" . number_format($fxPanels) . "</code> عدد\n"
+            . "💳 <b>کارت‌های شما:</b> <code>" . number_format($fxCards) . "</code> عدد\n"
+            . "📯 <b>کانال‌های اجباری:</b> <code>" . number_format($fxChannels) . "</code> عدد\n"
+            . "🏦 <b>بدهی ربات:</b> <code>" . number_format($fxDebt) . "</code> / سقف <code>" . number_format($fxCeiling) . "</code> تومان\n"
+            . ($fxPayLines !== '' ? "\n<b>پرداخت‌های موفق:</b>" . $fxPayLines : '')
+            . "\n\n<i>این آمار فقط داده‌های همین ربات نمایندگی است.</i>";
+
+        $fxStatsKb = json_encode(['inline_keyboard' => [
+            [['text' => "⏱️ آمار کل", 'callback_data' => 'stat_all_bot']],
+            [['text' => "❌ بستن", 'callback_data' => 'close_stat']],
+        ]], JSON_UNESCAPED_UNICODE);
+        if ($datain == "stat_all_bot") {
+            Editmessagetext($from_id, $message_id, $fxStatsText, $fxStatsKb, 'HTML');
+        } else {
+            nm_adminInstantReply($from_id, $fxStatsText, $fxStatsKb, 'HTML');
+        }
+        return;
+    }
+
     $Balanceall = select("user", "SUM(Balance)", null, null, "select")['SUM(Balance)'];
     $statistics = rx_stats_total_users($pdo);
     $sumpanel = select("marzban_panel", "*", null, null, "count");
@@ -6719,11 +6810,11 @@ $text_expie_agent
     $_cl_page = isset($_clpg_m[1]) ? max(1, (int)$_clpg_m[1]) : 1;
     $_cl_per = 5;
     $_cl_off = ($_cl_page - 1) * $_cl_per;
-    $_cl_count_stmt = $pdo->prepare("SELECT COUNT(*) FROM card_number");
+    $_cl_count_stmt = $pdo->prepare("SELECT COUNT(*) FROM card_number WHERE " . fx_tenant_sql_agent());
     $_cl_count_stmt->execute();
     $_cl_total = (int)$_cl_count_stmt->fetchColumn();
     $_cl_pages = max(1, (int)ceil($_cl_total / $_cl_per));
-    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active, is_visible FROM card_number ORDER BY created_at DESC LIMIT {$_cl_per} OFFSET {$_cl_off}");
+    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active, is_visible FROM card_number WHERE " . fx_tenant_sql_agent() . " ORDER BY created_at DESC LIMIT {$_cl_per} OFFSET {$_cl_off}");
     $stmt->execute();
     $cards = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -6772,7 +6863,7 @@ $text_expie_agent
         return;
     }
 
-    $stmt = $pdo->prepare("SELECT id FROM card_number WHERE cardnumber = ?");
+    $stmt = $pdo->prepare("SELECT id FROM card_number WHERE cardnumber = ? AND " . fx_tenant_sql_agent());
     $stmt->execute([$card_num]);
     if ($stmt->rowCount() > 0) {
         nm_adminInstantReply($from_id, "❌ این شماره کارت قبلاً ثبت شده است", $backadmin, 'HTML');
@@ -6792,8 +6883,8 @@ $text_expie_agent
             return;
         }
 
-        $stmt = $pdo->prepare("INSERT INTO card_number (cardnumber, namecard, is_active, is_visible, created_at) VALUES (?, ?, 1, 1, ?)");
-        $stmt->execute([$card_num, $card_name, time()]);
+        $stmt = $pdo->prepare("INSERT INTO card_number (agent, cardnumber, namecard, is_active, is_visible, created_at) VALUES (?, ?, ?, 1, 1, ?)");
+        $stmt->execute([fx_tenant_agent_id(), $card_num, $card_name, time()]);
 
         nm_adminInstantReply($from_id, "✅ شماره کارت با موفقیت افزوده شد", $CartManage, 'HTML');
         step('home', $from_id);
@@ -6805,7 +6896,7 @@ $text_expie_agent
 } elseif (preg_match('/^card_select_(\d+)$/', $datain, $m)) {
     $card_id = (int)$m[1];
     step('home', $from_id);
-    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active, is_visible FROM card_number WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active, is_visible FROM card_number WHERE id = ? AND " . fx_tenant_sql_agent());
     $stmt->execute([$card_id]);
     $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -6830,13 +6921,13 @@ $text_expie_agent
     nm_adminInstantReply($from_id, "💳 مدیریت کارت:\n\n🏦 نام: {$card['namecard']}\n🔢 شماره: <code>{$card['cardnumber']}</code>\n$active_badge", $card_menu, 'HTML');
 } elseif ($datain == "card_toggle_active") {
     $card_id = (int)$user['Processing_value'];
-    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active FROM card_number WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT id, cardnumber, namecard, is_active FROM card_number WHERE id = ? AND " . fx_tenant_sql_agent());
     $stmt->execute([$card_id]);
     $card = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($card) {
         $new_status = ($card['is_active'] == 1) ? 0 : 1;
-        $stmt = $pdo->prepare("UPDATE card_number SET is_active = ? WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE card_number SET is_active = ? WHERE id = ? AND " . fx_tenant_sql_agent());
         $stmt->execute([$new_status, $card_id]);
 
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => ($new_status == 1 ? '✅ فعال شد' : '❌ غیرفعال شد'), 'show_alert' => false]);
@@ -6858,6 +6949,10 @@ $text_expie_agent
     $_wl_per = 5;
     $_wl_off = ($_wl_page - 1) * $_wl_per;
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        return;
+    }
     $_wl_count_stmt = $pdo->prepare("SELECT COUNT(*) FROM card_whitelist WHERE card_id = ?");
     $_wl_count_stmt->execute([$card_id]);
     $_wl_total = (int)$_wl_count_stmt->fetchColumn();
@@ -6902,6 +6997,11 @@ $text_expie_agent
     step('card_wl_add_users', $from_id);
 } elseif ($user['step'] == "card_wl_add_users" && !isset($update['callback_query'])) {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        step('home', $from_id);
+        return;
+    }
     $user_ids = array_filter(array_map('trim', explode(',', $text)));
     $added = 0;
     $failed = 0;
@@ -6928,6 +7028,11 @@ $text_expie_agent
     step('home', $from_id);
 } elseif ($datain == "card_wl_clear") {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        step('home', $from_id);
+        return;
+    }
     $stmt = $pdo->prepare("DELETE FROM card_whitelist WHERE card_id = ?");
     $stmt->execute([$card_id]);
     $back_wl_kb = json_encode(['inline_keyboard' => [
@@ -6943,6 +7048,11 @@ $text_expie_agent
     step('card_wl_remove_uid', $from_id);
 } elseif ($user['step'] == "card_wl_remove_uid" && !isset($update['callback_query'])) {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        step('home', $from_id);
+        return;
+    }
     $uid = trim($text ?? '');
     if (!ctype_digit($uid) || intval($uid) <= 0) {
         $cancel_rm_kb2 = json_encode(['inline_keyboard' => [
@@ -6963,6 +7073,10 @@ $text_expie_agent
     step('home', $from_id);
 } elseif ($datain == "card_delete_confirm") {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        return;
+    }
     $confirm_kb = json_encode(['inline_keyboard' => [
         [['text' => "✅ بله، حذف کن", 'callback_data' => 'card_delete_execute']],
         [['text' => "❌ خیر", 'callback_data' => 'card_select_' . $card_id]]
@@ -6970,10 +7084,15 @@ $text_expie_agent
     nm_adminInstantReply($from_id, "⚠️ آیا مطمئن هستید؟ این عمل قابل بازگشت نیست", $confirm_kb, 'HTML');
 } elseif ($datain == "card_delete_execute") {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        step('home', $from_id);
+        return;
+    }
     try {
         $stmt = $pdo->prepare("DELETE FROM card_whitelist WHERE card_id = ?");
         $stmt->execute([$card_id]);
-        $stmt = $pdo->prepare("DELETE FROM card_number WHERE id = ?");
+        $stmt = $pdo->prepare("DELETE FROM card_number WHERE id = ? AND " . fx_tenant_sql_agent());
         $stmt->execute([$card_id]);
 
         nm_adminInstantReply($from_id, "✅ کارت با موفقیت حذف شد", $CartManage, 'HTML');
@@ -7002,7 +7121,7 @@ $text_expie_agent
         return;
     }
 
-    $stmt = $pdo->prepare("SELECT id FROM card_number WHERE cardnumber = ? AND id != ?");
+    $stmt = $pdo->prepare("SELECT id FROM card_number WHERE cardnumber = ? AND id != ? AND " . fx_tenant_sql_agent());
     $stmt->execute([$new_number, $card_id]);
     if ($stmt->fetch()) {
         nm_adminInstantReply($from_id, "❌ این شماره کارت قبلاً ثبت شده است", $cancel_kb, 'HTML');
@@ -7017,6 +7136,11 @@ $text_expie_agent
     step('card_edit_name', $from_id);
 } elseif ($user['step'] == "card_edit_name" && !isset($update['callback_query'])) {
     $card_id = (int)$user['Processing_value'];
+    if (!fx_tenant_row_owned('card_number', 'id', $card_id)) {
+        nm_adminInstantReply($from_id, "❌ کارت پیدا نشد", $CartManage, 'HTML');
+        step('home', $from_id);
+        return;
+    }
     $new_number = (string)$user['Processing_edit_value'];
     $new_name = trim($text);
 
@@ -7030,7 +7154,7 @@ $text_expie_agent
     }
 
     try {
-        $stmt = $pdo->prepare("UPDATE card_number SET cardnumber = ?, namecard = ? WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE card_number SET cardnumber = ?, namecard = ? WHERE id = ? AND " . fx_tenant_sql_agent());
         $stmt->execute([$new_number, $new_name, $card_id]);
 
         $back_card_kb = json_encode(['inline_keyboard' => [
@@ -7047,10 +7171,7 @@ $text_expie_agent
         step('home', $from_id);
     }
 } elseif ($datain == "card_display_mode_menu" && $adminrulecheck['rule'] == "administrator") {
-    $stmt = $pdo->prepare("SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-    $stmt->execute();
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $mode = $row ? ($row['ValuePay'] ?? 'random') : 'random';
+    $mode = getPaySettingValue('card_display_mode', 'random');
     $r_mark = $mode == 'random' ? '✅ ' : '';
     $d_mark = $mode == 'direct' ? '✅ ' : '';
     $mode_kb = json_encode(['inline_keyboard' => [
@@ -7064,11 +7185,7 @@ $text_expie_agent
     nm_adminInstantReply($from_id, "⚙️ روش نمایش کارت به کاربر\n\nحالت فعلی: <b>{$current_label}</b>", $mode_kb, 'HTML');
 } elseif (($datain == "card_mode_set_random" || $datain == "card_mode_set_direct") && $adminrulecheck['rule'] == "administrator") {
     $new_mode = $datain == "card_mode_set_random" ? 'random' : 'direct';
-    $stmt = $pdo->prepare("UPDATE PaySetting SET ValuePay = ? WHERE NamePay = 'card_display_mode'");
-    $stmt->execute([$new_mode]);
-    if ($stmt->rowCount() === 0) {
-        $pdo->prepare("INSERT INTO PaySetting (NamePay, ValuePay) VALUES ('card_display_mode', ?)")->execute([$new_mode]);
-    }
+    update("PaySetting", "ValuePay", $new_mode, "NamePay", "card_display_mode");
     telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => ($new_mode == 'random' ? '🎲 رندوم' : '🔗 مستقیم') . ' فعال شد', 'show_alert' => false]);
     $r_mark = $new_mode == 'random' ? '✅ ' : '';
     $d_mark = $new_mode == 'direct' ? '✅ ' : '';

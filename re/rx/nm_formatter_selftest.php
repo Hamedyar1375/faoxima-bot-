@@ -1,6 +1,6 @@
 <?php
 /**
- * nm_formatter_selftest.php — تست خودکار گام ۲ (قالب‌بندی پیام وضعیت)
+ * nm_formatter_selftest.php — تست خودکار قالب پیام وضعیت (قالب مرحله ۳)
  * ===================================================================
  * بخش A: منطق خالص قالب‌بندی — بدون دیتابیس (اجرای آفلاین)
  * بخش B: خواندنی‌های زنده از دیتابیس — فقط SELECT، بدون هیچ تغییری
@@ -21,7 +21,7 @@ function check($name, $cond, $detail = '') {
 
 echo "== بخش A: قالب‌بندی خالص (بدون DB) ==\n";
 
-// --- F1..F5: اعداد نمونه با علامت منفی در انتها ---
+// --- F1..F5: اعداد نمونه با علامت منفی در انتها (nm_fmt_money) ---
 check('F1 nm_fmt_money(-1040000) = «۱,۰۴۰,۰۰۰-»', nm_fmt_money(-1040000) === '۱,۰۴۰,۰۰۰-', nm_fmt_money(-1040000));
 check('F2 nm_fmt_money(1040000)  = «۱,۰۴۰,۰۰۰» (بدون منفی)', nm_fmt_money(1040000) === '۱,۰۴۰,۰۰۰', nm_fmt_money(1040000));
 check('F3 nm_fmt_money(0)        = «۰»', nm_fmt_money(0) === '۰', nm_fmt_money(0));
@@ -54,7 +54,7 @@ check('F13b Bot_Status=botstatusoff → false', nm_bot_status_is_active('botstat
 check('F13c Bot_Status=خالی → null', nm_bot_status_is_active('') === null);
 check('F13d Bot_Status=مقدار ناشناخته → null', nm_bot_status_is_active('weird') === null);
 
-// --- F14: رندر کامل پیام (مرجعی) ---
+// --- F14: رندر کامل پیام (مرجعی — قالب مرحله ۳) ---
 $data = [
     'owner_id'      => 6327424512,
     'bot_id'        => '8055618404',
@@ -65,21 +65,22 @@ $data = [
     'balance'       => -1040000,
     'bot_active'    => true,
 ];
-$expected = "📊 وضعیت نماینده\n\n"
-    . "👤 آیدی مالک: ۶۳۲۷۴۲۴۵۱۲\n"
-    . "🤖 آیدی ربات: ۸۰۵۵۶۱۸۴۰۴\n"
-    . "🔑 توکن ربات: AAFm_test_token_ABC123\n"
+$expected = "اطلاعات ربات نماینده\n\n"
+    . "👤 آیدی عددی مالک: ۶۳۲۷۴۲۴۵۱۲\n"
+    . "🏷 آیدی ربات: ۸۰۵۵۶۱۸۴۰۴\n"
+    . "🤖 توکن ربات: AAFm_test_token_ABC123\n\n"
     . "👥 تعداد کاربران: ۴\n"
-    . "🧩 تعداد اکانت‌های ساخته‌شده: ۱۷\n"
+    . "⚜️ تعداد اکانت‌های ساخته‌شده: ۱۷\n\n"
     . "💳 سقف بدهکاری: ۱۲,۰۰۰,۰۰۰ تومان\n"
-    . "💰 موجودی حساب: ۱,۰۴۰,۰۰۰- تومان\n"
+    . "🏦 مانده حساب با مالک: −۱,۰۴۰,۰۰۰ تومان\n"
+    . "📊 وضعیت حساب: بدهکار\n"
     . "🟢 وضعیت ربات: فعال";
 $got = nm_format_manager_status($data);
 check('F14 رندر کامل پیام مطابق قالب مرجع', $got === $expected, "got=" . str_replace("\n", "\\n", $got));
 
 // --- F15: توکن ماسک‌شده ---
 $gotM = nm_format_manager_status($data, ['mask_token' => true]);
-check('F15a توکن ماسک: «AAFm_tes…C123» (۸+۴ کاراکتر)', strpos($gotM, '🔑 توکن ربات: AAFm_tes…C123') !== false, $gotM);
+check('F15a توکن ماسک: «AAFm_tes…C123» (۸+۴ کاراکتر)', strpos($gotM, '🤖 توکن ربات: AAFm_tes…C123') !== false, $gotM);
 check('F15b توکن خام در خروجی ماسک وجود ندارد', strpos($gotM, 'AAFm_test_token_ABC123') === false);
 
 // --- F16/F17/F18: حالت‌های وضعیت و مقادیر گمشده ---
@@ -88,7 +89,39 @@ check('F16 غیرفعال → «🔴 وضعیت ربات: غیرفعال»', str
 $d3 = $data; $d3['bot_active'] = null;
 check('F17 نامشخص → «⚪ وضعیت ربات: نامشخص»', strpos(nm_format_manager_status($d3), '⚪ وضعیت ربات: نامشخص') !== false);
 $d4 = $data; $d4['owner_id'] = null;
-check('F18 مالک گمشده → «—»', strpos(nm_format_manager_status($d4), '👤 آیدی مالک: —') !== false);
+check('F18 مالک گمشده → «—»', strpos(nm_format_manager_status($d4), '👤 آیدی عددی مالک: —') !== false);
+
+// --- F19: قالب‌بندی مبلغ علامت‌دار (علامت در ابتدای عدد) ---
+check('F19a nm_fmt_money_signed(-2180000) = «−۲,۱۸۰,۰۰۰»', nm_fmt_money_signed(-2180000) === '−۲,۱۸۰,۰۰۰', nm_fmt_money_signed(-2180000));
+check('F19b nm_fmt_money_signed(2180000) = «+۲,۱۸۰,۰۰۰»', nm_fmt_money_signed(2180000) === '+۲,۱۸۰,۰۰۰', nm_fmt_money_signed(2180000));
+check('F19c nm_fmt_money_signed(0) = «۰»', nm_fmt_money_signed(0) === '۰', nm_fmt_money_signed(0));
+
+// --- F20..F22: حالت‌های حساب در رندر ---
+$dPos = $data; $dPos['balance'] = 2180000; $dPos['needs_reconcile'] = false;
+$rPos = nm_format_manager_status($dPos);
+check('F20 مانده مثبت → «+۲,۱۸۰,۰۰۰ تومان» و «بستانکار»',
+    strpos($rPos, '🏦 مانده حساب با مالک: +۲,۱۸۰,۰۰۰ تومان') !== false
+    && strpos($rPos, '📊 وضعیت حساب: بستانکار') !== false);
+
+$dZero = $data; $dZero['balance'] = 0; $dZero['needs_reconcile'] = false;
+$rZero = nm_format_manager_status($dZero);
+check('F21 مانده صفر → «۰ تومان» و «تسویه‌شده»',
+    strpos($rZero, '🏦 مانده حساب با مالک: ۰ تومان') !== false
+    && strpos($rZero, '📊 وضعیت حساب: تسویه‌شده') !== false);
+
+$dRec = $data; $dRec['needs_reconcile'] = true;
+$rRec = nm_format_manager_status($dRec);
+check('F22 نیازمند تطبیق → «—» و «نیازمند تطبیق حساب»',
+    strpos($rRec, '🏦 مانده حساب با مالک: —') !== false
+    && strpos($rRec, '📊 وضعیت حساب: نیازمند تطبیق حساب') !== false);
+
+// --- F23: منطق کنترل تناقض مانده با دفتر main ---
+check('F23a بدهی منطبق (-1000 و آخرین 1000) → بدون تناقض', nm_balance_needs_reconcile(-1000, 1000) === false);
+check('F23b بدهی نامنطبق (-1000 و آخرین 900) → تناقض', nm_balance_needs_reconcile(-1000, 900) === true);
+check('F23c مانده مثبت + آخرین بدهی صفر → بدون تناقض', nm_balance_needs_reconcile(5000, 0) === false);
+check('F23d مانده مثبت + آخرین بدهی >۰ → تناقض', nm_balance_needs_reconcile(5000, 300) === true);
+check('F23e بدون ردیف دفتر (null) → بدون تناقض', nm_balance_needs_reconcile(-500, null) === false);
+check('F23f صفر + آخرین بدهی صفر → بدون تناقض', nm_balance_needs_reconcile(0, 0) === false);
 
 echo "== بخش B: خواندن زنده از دیتابیس (فقط SELECT — بدون تغییر) ==\n";
 
@@ -118,7 +151,8 @@ echo "  (داده استخراج‌شده: " . json_encode([
     'owner_id' => $data['owner_id'], 'bot_id' => $data['bot_id'],
     'token_len' => strlen($data['bot_token']), 'user_count' => $data['user_count'],
     'account_count' => $data['account_count'], 'credit_limit' => $data['credit_limit'],
-    'balance' => $data['balance'], 'bot_active' => $data['bot_active'],
+    'balance' => $data['balance'], 'needs_reconcile' => $data['needs_reconcile'],
+    'bot_active' => $data['bot_active'],
 ], JSON_UNESCAPED_UNICODE) . ")\n";
 
 // B1: آیدی مالک از Requestagent (نخستین درخواست)
@@ -143,26 +177,40 @@ $st->execute([':id' => (string)$own]);
 $balDb = (int)$st->fetchColumn();
 check('B5 موجودی = Balance مالک در DB', $data['balance'] === $balDb, "got={$data['balance']} want=$balDb");
 
+// B5b: پرچم تطبیق مطابق آخرین ردیف دفتر scope='main' (محاسبهٔ مستقل در تست)
+$lastM = $pdo->prepare("SELECT debt_after FROM fx_debt_log WHERE reseller_id = :rid AND scope = 'main' ORDER BY id DESC LIMIT 1");
+$lastM->execute([':rid' => (string)$own]);
+$lastV = $lastM->fetchColumn();
+$expectRec = ($lastV === false) ? false : ((int)$lastV !== ((int)$balDb < 0 ? -((int)$balDb) : 0));
+check('B5b پرچم needs_reconcile مطابق آخرین ردیف دفتر main', $data['needs_reconcile'] === $expectRec,
+      'needs=' . var_export($data['needs_reconcile'], true) . ' expect=' . var_export($expectRec, true));
+
 // B6: سقف بدهکاری از STEP_1
 check('B6 سقف بدهکاری = nm_default_debt_limit()', $data['credit_limit'] === nm_default_debt_limit(), (string)$data['credit_limit']);
 
 // B7: وضعیت ربات از setting.Bot_Status
 check('B7 وضعیت ربات خوانده شد (bool|null)', in_array($data['bot_active'], [true, false, null], true), var_export($data['bot_active'], true));
 
-// B8: رندر زنده — خط موجودی و سقف
+// B8: رندر زنده — خط سقف، خط مانده علامت‌دار و خط وضعیت حساب
 $render = nm_format_manager_status($data);
 check('B8a رندر شامل «💳 سقف بدهکاری: ' . nm_fmt_money($data['credit_limit']) . ' تومان»',
       strpos($render, '💳 سقف بدهکاری: ' . nm_fmt_money($data['credit_limit']) . ' تومان') !== false);
-check('B8b رندر شامل «💰 موجودی حساب: ' . nm_fmt_money($data['balance']) . ' تومان»',
-      strpos($render, '💰 موجودی حساب: ' . nm_fmt_money($data['balance']) . ' تومان') !== false);
-check('B8c رندر شامل «👤 آیدی مالک: ' . nm_fmt_count($own) . '»',
-      strpos($render, '👤 آیدی مالک: ' . nm_fmt_count($own)) !== false);
+$wantBalLine = !empty($data['needs_reconcile'])
+    ? '🏦 مانده حساب با مالک: —'
+    : '🏦 مانده حساب با مالک: ' . nm_fmt_money_signed($data['balance']) . ' تومان';
+check('B8b رندر شامل خط مانده علامت‌دار', strpos($render, $wantBalLine) !== false, $wantBalLine);
+$wantState = !empty($data['needs_reconcile']) ? 'نیازمند تطبیق حساب'
+    : ((int)$data['balance'] < 0 ? 'بدهکار' : ((int)$data['balance'] > 0 ? 'بستانکار' : 'تسویه‌شده'));
+check('B8b2 رندر شامل «📊 وضعیت حساب: ' . $wantState . '»', strpos($render, '📊 وضعیت حساب: ' . $wantState) !== false);
+check('B8c رندر شامل «👤 آیدی عددی مالک: ' . nm_fmt_count($own) . '»',
+      strpos($render, '👤 آیدی عددی مالک: ' . nm_fmt_count($own)) !== false);
 
-// B9: نمایش بدهکار در رندر واقعی — موجودی را منفی فرض می‌کنیم (تست نمایش، بدون تغییر DB)
-$neg = $data; $neg['balance'] = -1040000;
+// B9: نمایش بدهکار در رندر — موجودی را منفی فرض می‌کنیم (تست نمایش، بدون تغییر DB)
+$neg = $data; $neg['balance'] = -1040000; $neg['needs_reconcile'] = false;
 $renderNeg = nm_format_manager_status($neg);
-check('B9 موجودی منفی در رندر = «۱,۰۴۰,۰۰۰- تومان»',
-      strpos($renderNeg, '💰 موجودی حساب: ۱,۰۴۰,۰۰۰- تومان') !== false, $renderNeg);
+check('B9 مانده منفی در رندر = «−۱,۰۴۰,۰۰۰ تومان» و «بدهکار»',
+      strpos($renderNeg, '🏦 مانده حساب با مالک: −۱,۰۴۰,۰۰۰ تومان') !== false
+      && strpos($renderNeg, '📊 وضعیت حساب: بدهکار') !== false, $renderNeg);
 
 // B10: رندر ماسک‌شده — توکن خام نریزد
 $renderMasked = nm_format_manager_status($data, ['mask_token' => true]);

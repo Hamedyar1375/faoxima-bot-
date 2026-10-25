@@ -430,8 +430,8 @@ final class PaymentInitHandler extends BaseHandler
 
         $minJson = $get('minbalance');
         $maxJson = $get('maxbalance');
-        $min = $minMethod > 0 ? $minMethod : (int) $this->jsonAgentValue($minJson, $agent, 1000);
-        $max = $maxMethod > 0 ? $maxMethod : (int) $this->jsonAgentValue($maxJson, $agent, 100000000);
+        $min = $minMethod > 0 ? $minMethod : (int) $this->jsonAgentValue($minJson, $agent, 10000);
+        $max = $maxMethod > 0 ? $maxMethod : (int) $this->jsonAgentValue($maxJson, $agent, 50000000);
         return [$min, $max];
     }
 

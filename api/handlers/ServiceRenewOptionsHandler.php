@@ -46,6 +46,7 @@ final class ServiceRenewOptionsHandler extends BaseHandler
 
         $list = [];
         foreach ($products as $product) {
+            if (function_exists('fx_res_visibility_blocked_row') && fx_res_visibility_blocked_row($product)) continue;
             if (!$this->productIsAllowedForAgent($product, $agent)) continue;
             if ($nationalPanel && function_exists('nmStockHasAvailableForProduct')
                 && !nmStockHasAvailableForProduct($panel, $product)) {
