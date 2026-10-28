@@ -1440,6 +1440,29 @@ if ((!isset($connect) || !($connect instanceof mysqli)) && function_exists('getM
 if ($text == "version") {
     sendmessage($from_id, $version, null, 'html');
 } elseif ($text == $textbotlang['users']['backbtn'] || $datain == "backuser" || $datain == "admin_back") {
+    // FX-PENDING-BACK (2026-10-28): from the payment selection of an unpaid
+    // pending order, "back" returns to the pending-order prompt (the previous
+    // menu) instead of cancelling the order and resetting to the main menu.
+    if ((isset($user['step']) ? (string)$user['step'] : '') === 'get_step_payment'
+        && function_exists('rx_pending_purchase_get_active')) {
+        $__pbInv = rx_pending_purchase_get_active($from_id);
+        $__pbDue = is_array($__pbInv) && function_exists('rx_pending_purchase_remaining_due')
+            ? (int) rx_pending_purchase_remaining_due($__pbInv, $user['Balance'] ?? 0) : 0;
+        if (is_array($__pbInv) && $__pbDue > 0) {
+            $__pbName = htmlspecialchars((string)($__pbInv['name_product'] ?? ''), ENT_QUOTES, 'UTF-8');
+            $__pbKb = function_exists('rx_pending_purchase_keyboard')
+                ? rx_pending_purchase_keyboard($__pbDue, (string)($textbotlang['users']['stateus']['backinfo'] ?? ''))
+                : null;
+            $__pbText = "🕒 <b>سفارش معوق شما</b>\n\n🛍 سرویس: {$__pbName}\n💰 مبلغ کسری دقیق: <b>" . number_format($__pbDue) . "</b> تومان\n\nمبلغ کسری به‌صورت خودکار تنظیم شد؛ لطفاً روش پرداخت را انتخاب کنید.";
+            if (intval($message_id) > 0) {
+                Editmessagetext($from_id, $message_id, $__pbText, $__pbKb, 'HTML');
+            } else {
+                sendmessage($from_id, $__pbText, $__pbKb, 'HTML');
+            }
+            step('getprice', $from_id);
+            return;
+        }
+    }
     if (function_exists('rx_callback_lock_release_for_owner')) {
         @rx_callback_lock_release_for_owner($from_id);
     }
