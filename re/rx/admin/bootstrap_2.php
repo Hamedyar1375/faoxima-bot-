@@ -5552,14 +5552,12 @@ $caption";
     $_reject_admin_msg_chat = $update['message']['chat']['id'] ?? null;
     $_reject_admin_msg_id = $update['message']['message_id'] ?? null;
     if ($_reject_admin_msg_chat && $_reject_admin_msg_id) {
-        $_reject_del_result = deletemessage($_reject_admin_msg_chat, $_reject_admin_msg_id);
-        if (function_exists('rx_log_event') && (!is_array($_reject_del_result) || empty($_reject_del_result['ok']))) {
-            rx_log_event('REJECT_DEC_DELETE_FAILED', 'Failed to delete admin reason message', [
-                'chat_id' => $_reject_admin_msg_chat,
-                'message_id' => $_reject_admin_msg_id,
-                'result' => $_reject_del_result,
-            ]);
-        }
+        // FX-REJECT-DEC (2026-10-28): best-effort cleanup only. The reason
+        // message may not exist on Telegram (simulated test updates forge
+        // message_id = update_id, or the message is already gone), so a
+        // failed delete is NOT an error. The reject flow itself (reason
+        // stored, receipt edited, customer notified) never depends on it.
+        @deletemessage($_reject_admin_msg_chat, $_reject_admin_msg_id);
     } else {
         if (function_exists('rx_log_event')) {
             rx_log_event('REJECT_DEC_DELETE_SKIPPED', 'No message context to delete', [
