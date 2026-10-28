@@ -328,6 +328,17 @@ if (defined('FX_RESELLER_ID')) {
 // === end Phase 2 ===
 $admin_ids_str = array_map('strval', $admin_ids);
 
+// FX-NAV-GUARD (2026-10-28): the remap at the top of this file used the
+// CENTRAL admin list (rx_main_admin_ids), but the admin chain — the only
+// place backmenu/backadmin are handled — loads only for users in this
+// process's $admin_ids (tenant-scoped in a reseller bot). A central admin
+// shopping through a reseller bot would otherwise be stranded with dead
+// "back"/"home" buttons. Fall back to the normal user back flow.
+if (is_string($datain) && in_array($datain, ['backmenu', 'backadmin'], true)
+    && !in_array((string) $from_id, $admin_ids_str, true)) {
+    $datain = 'backuser';
+}
+
 // Build all keyboards now that the correct admin list is known (main + reseller).
 require_once 'keyboard.php';
 
