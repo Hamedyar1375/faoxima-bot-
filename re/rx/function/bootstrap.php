@@ -561,7 +561,107 @@ function fx_tenant_agent_id()
         $agentId = defined('FX_RESELLER_ID') ? max(0, (int) FX_RESELLER_ID) : 0;
     }
 
+    if (array_key_exists('fx_tenant_agent_override', $GLOBALS)) {
+        return max(0, (int) $GLOBALS['fx_tenant_agent_override']);
+    }
+
     return $agentId;
+}
+
+/**
+ * Set the tenant for the current request from a trusted, authenticated source.
+ * Never populate this from a client-supplied header/query/body value.
+ */
+if (!function_exists('fx_set_tenant_agent_id')) {
+    function fx_set_tenant_agent_id($agentId)
+    {
+        $GLOBALS['fx_tenant_agent_override'] = max(0, (int) $agentId);
+        if (function_exists('clearSelectCache')) {
+            clearSelectCache();
+        }
+    }
+}
+
+/**
+ * Resolve a tenant only from the authenticated user's database row. The agent
+ * must be a positive numeric id that exists in botsaz; otherwise the request
+ * stays on the main/global tenant (0).
+ */
+if (!function_exists('rx_resolve_authenticated_tenant_agent_id')) {
+    function rx_resolve_authenticated_tenant_agent_id(array $user)
+    {
+        $agent = $user['agent'] ?? null;
+        if (!is_scalar($agent) || !ctype_digit(trim((string) $agent))) {
+            return 0;
+        }
+        $agentId = (int) $agent;
+        if ($agentId <= 0) {
+            return 0;
+        }
+        $pdo = getDatabaseConnection();
+        if (!($pdo instanceof PDO)) {
+            return 0;
+        }
+        try {
+            $stmt = $pdo->prepare('SELECT 1 FROM botsaz WHERE id_user = ? LIMIT 1');
+            $stmt->execute([(string) $agentId]);
+            return $stmt->fetchColumn() !== false ? $agentId : 0;
+        } catch (Throwable $e) {
+            error_log('rx_resolve_authenticated_tenant_agent_id: ' . $e->getMessage());
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('rx_main_admin_ids')) {
+    /**
+     * Main-bot administrators only. Reseller owners are stored in `admin` too
+     * for legacy reasons, so exclude botsaz.id_user entries; the configured
+     * central admin is always retained.
+     *
+     * @return string[]
+     */
+    function rx_main_admin_ids(): array
+    {
+        $ids = [];
+        try {
+            $rows = select('admin', 'id_admin', null, null, 'FETCH_COLUMN', ['cache' => false]);
+            if (is_array($rows)) {
+                foreach ($rows as $id) {
+                    $id = trim((string) $id);
+                    if ($id !== '' && ctype_digit($id) && (int) $id > 0) {
+                        $ids[$id] = true;
+                    }
+                }
+            }
+            $resellerRows = select('botsaz', 'id_user', null, null, 'FETCH_COLUMN', ['cache' => false]);
+            if (is_array($resellerRows)) {
+                foreach ($resellerRows as $rid) {
+                    $rid = trim((string) $rid);
+                    if ($rid !== '') {
+                        unset($ids[$rid]);
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('rx_main_admin_ids: ' . $e->getMessage());
+        }
+
+        $central = trim((string) ($GLOBALS['adminnumber'] ?? ''));
+        if ($central !== '' && ctype_digit($central) && (int) $central > 0) {
+            $ids[$central] = true;
+        }
+
+        return array_map('strval', array_keys($ids));
+    }
+}
+
+if (!function_exists('rx_is_main_admin')) {
+    function rx_is_main_admin($userId): bool
+    {
+        $userId = trim((string) $userId);
+        return $userId !== '' && in_array($userId, rx_main_admin_ids(), true);
+    }
 }
 
 /**
@@ -572,6 +672,160 @@ function fx_tenant_agent_id()
  * owned by the main bot. This helper is also used by callbacks so a forged
  * callback cannot bypass the hidden menu buttons.
  */
+if (!function_exists('rx_current_bot_context')) {
+    /**
+     * Single source of truth for the current bot context. No client-supplied
+     * tenant is trusted here; FX_RESELLER_ID comes from the authenticated
+     * webhook wrapper, and fx_tenant_agent_id() is set only after API auth.
+     */
+    function rx_current_bot_context(): array
+    {
+        $tenant = defined('FX_RESELLER_ID')
+            ? (int) FX_RESELLER_ID
+            : (function_exists('fx_tenant_agent_id') ? (int) fx_tenant_agent_id() : 0);
+        return [
+            'bot_id' => $tenant > 0 ? (int) $tenant : 0,
+            'type' => $tenant > 0 ? 'reseller' : 'main',
+            'tenant_id' => $tenant > 0 ? (int) $tenant : 0,
+            'token' => defined('FX_RESELLER_TOKEN') ? (string) FX_RESELLER_TOKEN : '',
+        ];
+    }
+}
+
+if (!function_exists('rx_admin_invoice_allowed')) {
+    /** Server-side invoice ownership check for admin financial actions. */
+    function rx_admin_invoice_allowed($invoice): bool
+    {
+        if (!is_array($invoice)) return false;
+        return rx_admin_target_user_allowed($invoice['id_user'] ?? '');
+    }
+}
+
+if (!function_exists('rx_guard_bot_context_switch')) {
+    /**
+     * Shared user rows must not carry an in-progress step from another bot.
+     * When the same Telegram account switches between main/reseller bots we
+     * reset only transient conversation state before handling the update.
+     */
+    function rx_guard_bot_context_switch($userId, $user = null, $pdo = null)
+    {
+        if (!is_array($user)) return $user;
+        $userId = trim((string)$userId);
+        if ($userId === '' || !ctype_digit($userId)) return $user;
+        if (!($pdo instanceof PDO)) {
+            $pdo = function_exists('getDatabaseConnection') ? getDatabaseConnection() : null;
+        }
+        if (!($pdo instanceof PDO)) return $user;
+        $ctx = rx_current_bot_context();
+        $botId = (string)(int)$ctx['bot_id'];
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS user_bot_context (
+                user_id varchar(64) NOT NULL PRIMARY KEY,
+                bot_id varchar(64) NOT NULL DEFAULT '0',
+                updated_at int unsigned NOT NULL DEFAULT 0
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            $stmt = $pdo->prepare('SELECT bot_id FROM user_bot_context WHERE user_id = ? LIMIT 1');
+            $stmt->execute([$userId]);
+            $previous = $stmt->fetchColumn();
+            $switched = ($previous !== false && (string)$previous !== $botId);
+            if ($switched) {
+                $pdo->prepare("UPDATE user SET step = 'home', Processing_value = '0', Processing_value_one = '0', Processing_value_tow = '0', Processing_value_four = '0', Processing_value_price = '0' WHERE id = ?")->execute([$userId]);
+                if (function_exists('clearSelectCache')) clearSelectCache('user');
+                if (function_exists('rx_log_event')) {
+                    rx_log_event('BOT_CONTEXT_STATE_RESET', 'Transient state reset after bot switch', [
+                        'user_id' => $userId, 'from_bot' => (string)$previous, 'to_bot' => $botId,
+                    ]);
+                }
+            }
+            $up = $pdo->prepare('INSERT INTO user_bot_context (user_id, bot_id, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE bot_id = VALUES(bot_id), updated_at = VALUES(updated_at)');
+            $up->execute([$userId, $botId, time()]);
+            if ($switched) {
+                $fresh = select('user', '*', 'id', $userId, 'select', ['cache' => false]);
+                if (is_array($fresh)) return $fresh;
+            }
+        } catch (Throwable $e) {
+            error_log('[rx_guard_bot_context_switch] ' . $e->getMessage());
+        }
+        return $user;
+    }
+}
+
+if (!function_exists('rx_admin_target_user_allowed')) {
+    /** Reseller admins may only credit/debit users inside their own tenant. */
+    function rx_admin_target_user_allowed($targetUserId): bool
+    {
+        $ctx = rx_current_bot_context();
+        if ($ctx['type'] !== 'reseller') return true;
+        $targetUserId = trim((string) $targetUserId);
+        if ($targetUserId === '' || !ctype_digit($targetUserId)) return false;
+        if ((int) $targetUserId === (int) $ctx['tenant_id']) return true;
+        $row = function_exists('select') ? select('user', 'agent', 'id', $targetUserId, 'select', ['cache' => false]) : null;
+        return is_array($row) && (string) ($row['agent'] ?? '') === (string) $ctx['tenant_id'];
+    }
+}
+
+if (!function_exists('rx_reseller_scoped_setting_keys')) {
+    /** Settings that are safe and useful to customize per reseller tenant. */
+    function rx_reseller_scoped_setting_keys(): array
+    {
+        return [
+            'forced_miniapp_mode', 'inlinebtnmain', 'auto_remove_reply_keyboard',
+            'get_number', 'iran_number', 'verifystart', 'verifybucodeuser',
+            'auth_scope', 'card_verify_status', 'card_verify_scope',
+            'timeauto_not_verify',
+        ];
+    }
+}
+
+if (!function_exists('rx_reseller_apply_setting_overrides')) {
+    /** Load per-tenant overrides; initialize them once from the current global settings. */
+    function rx_reseller_apply_setting_overrides(array $setting): array
+    {
+        if (!defined('FX_RESELLER_ID') || (int)FX_RESELLER_ID <= 0 || !function_exists('select')) {
+            return $setting;
+        }
+        $rid = (int)FX_RESELLER_ID;
+        try {
+            $row = select('botsaz', 'setting', 'id_user', $rid, 'select', ['cache' => false]);
+            $json = is_array($row) ? json_decode((string)($row['setting'] ?? ''), true) : null;
+            if (!is_array($json)) $json = [];
+            $keys = rx_reseller_scoped_setting_keys();
+            $changed = false;
+            if (empty($json['_tenant_settings_v1'])) {
+                foreach ($keys as $k) {
+                    if (!array_key_exists($k, $json)) {
+                        $json[$k] = $setting[$k] ?? null;
+                    }
+                }
+                $json['_tenant_settings_v1'] = 1;
+                $changed = true;
+            }
+            foreach ($keys as $k) {
+                if (array_key_exists($k, $json) && $json[$k] !== null) {
+                    $setting[$k] = $json[$k];
+                }
+            }
+            if ($changed) {
+                update('botsaz', 'setting', json_encode($json, JSON_UNESCAPED_UNICODE), 'id_user', $rid);
+            }
+        } catch (Throwable $e) {
+            error_log('[rx_reseller_apply_setting_overrides] ' . $e->getMessage());
+        }
+        return $setting;
+    }
+}
+
+if (!function_exists('rx_reseller_store_setting')) {
+    /** Persist one scoped setting for the current reseller. Returns true when handled. */
+    function rx_reseller_store_setting(string $key, $value): bool
+    {
+        if (!defined('FX_RESELLER_ID') || (int)FX_RESELLER_ID <= 0) return false;
+        if (!in_array($key, rx_reseller_scoped_setting_keys(), true)) return false;
+        if (!function_exists('fx_res_setting_patch')) return false;
+        return fx_res_setting_patch((int)FX_RESELLER_ID, [$key => (string)$value]);
+    }
+}
+
 function fx_reseller_main_only_hit($text, $datain, $step = '')
 {
     static $texts = [
@@ -636,6 +890,11 @@ function fx_reseller_main_only_hit($text, $datain, $step = '')
         return true;
     }
     if (is_string($datain) && $datain !== '') {
+        // Reseller-scoped settings that are intentionally safe to toggle from
+        // the reseller admin panel (stored in botsaz.setting, not main config).
+        if (preg_match('/^editstsuts-(forced_miniapp|get_number|Authenticationiran|verifystart|verifybyuser|authscope|cardverify|inlinebtnmain|auto_remove_kb)-/', $datain)) {
+            return false;
+        }
         if (in_array($datain, $exact, true)) {
             return true;
         }
@@ -665,31 +924,34 @@ function fx_tenant_scope_for_table($table)
     if (!isset(fx_tenant_scope_tables()[$table])) {
         return null;
     }
-    if (array_key_exists($table, $cache)) {
-        return $cache[$table];
+
+    $tenantAgent = fx_tenant_agent_id();
+    $cacheKey = $table . '|' . $tenantAgent;
+    if (array_key_exists($cacheKey, $cache)) {
+        return $cache[$cacheKey];
     }
 
     $pdo = getDatabaseConnection();
     if (!($pdo instanceof PDO)) {
-        $cache[$table] = null;
+        $cache[$cacheKey] = null;
         return null;
     }
 
     $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', (string) $table);
     if ($safeTable === '') {
-        $cache[$table] = null;
+        $cache[$cacheKey] = null;
         return null;
     }
 
     try {
         $stmt = $pdo->query("SHOW COLUMNS FROM `{$safeTable}` LIKE 'agent'");
         $hasAgent = $stmt !== false && $stmt->fetch(PDO::FETCH_ASSOC) !== false;
-        $cache[$table] = $hasAgent ? fx_tenant_agent_id() : null;
+        $cache[$cacheKey] = $hasAgent ? $tenantAgent : null;
     } catch (Throwable $e) {
-        $cache[$table] = null;
+        $cache[$cacheKey] = null;
     }
 
-    return $cache[$table];
+    return $cache[$cacheKey];
 }
 
 function fx_tenant_sql_agent($alias = '')
@@ -1549,8 +1811,63 @@ if (!function_exists('rx_resolveAgentAmountLimit')) {
 }
 
 /**
- * Wallet deposit limits for the given user agent, always non-zero:
- * missing/zero tenant config gracefully falls back to safe defaults.
+ * Explicit per-payment-method max keys used by the wallet charge entry step.
+ * Keeping this list conservative avoids turning missing method settings into
+ * RX_DEFAULT_MAX_DEPOSIT via a generic fallback.
+ */
+if (!function_exists('rx_depositMethodMaxLimitNames')) {
+    function rx_depositMethodMaxLimitNames()
+    {
+        return [
+            'maxbalancecart',
+            'maxbalancezarinpal',
+            'maxbalanceplisio',
+            'maxbalancenowpayment',
+            'maxbalancedigitaltron',
+            'maxbalanceiranpay',
+            'maxbalanceiranpay2',
+            'maxbalancetonpay',
+            'maxbalancecubepay',
+            'maxbalanceblupal',
+            'maxbalancevariza',
+            'maxbalanceabangateway',
+            'maxbalanceatlaspay',
+            'maxbalancepaynotverify',
+            'maxbalanceperfect',
+            'maxbalancestar',
+            'maxbalancetetrapay',
+        ];
+    }
+}
+
+/**
+ * Highest explicitly configured per-payment-method cap for the current tenant.
+ * Missing/empty method settings are ignored so the general fallback is not
+ * silently raised to RX_DEFAULT_MAX_DEPOSIT.
+ */
+if (!function_exists('rx_configuredDepositMethodMaxLimit')) {
+    function rx_configuredDepositMethodMaxLimit()
+    {
+        $max = 0;
+        foreach (rx_depositMethodMaxLimitNames() as $name) {
+            $raw = rx_fetchTenantPaySetting($name);
+            if ($raw === null || trim((string) $raw) === '') {
+                continue;
+            }
+            $value = rx_resolveAgentAmountLimit($raw, '', 0);
+            if ($value > $max) {
+                $max = $value;
+            }
+        }
+        return $max;
+    }
+}
+
+/**
+ * Wallet deposit limits for the given user agent, always non-zero.
+ * The max is the larger of maxbalance and the explicitly configured
+ * per-method caps, so the generic wallet entry does not block a legitimately
+ * higher card-to-card cap. Per-method server validation remains authoritative.
  *
  * @return int[] [min, max]
  */
@@ -1559,10 +1876,26 @@ if (!function_exists('rx_getDepositLimits')) {
     {
         $min = rx_resolveAgentAmountLimit(rx_fetchTenantPaySetting('minbalance'), $agent, RX_DEFAULT_MIN_DEPOSIT);
         $max = rx_resolveAgentAmountLimit(rx_fetchTenantPaySetting('maxbalance'), $agent, RX_DEFAULT_MAX_DEPOSIT);
+        $methodMax = rx_configuredDepositMethodMaxLimit();
+        if ($methodMax > $max) {
+            $max = $methodMax;
+        }
         if ($max < $min) {
             $max = $min;
         }
         return [$min, $max];
+    }
+}
+
+if (!function_exists('rx_depositLimitAllowsAmount')) {
+    function rx_depositLimitAllowsAmount($amount, $agent)
+    {
+        if (!is_scalar($amount) || !is_numeric($amount)) {
+            return false;
+        }
+        [$min, $max] = rx_getDepositLimits($agent);
+        $amount = (int) $amount;
+        return $amount >= $min && $amount <= $max;
     }
 }
 

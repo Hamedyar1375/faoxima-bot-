@@ -76,9 +76,13 @@ if (preg_match('/Confirmpay_user_(\w+)_(\w+)/', $datain, $dataget)) {
                 'parse_mode' => "HTML"
             ]);
         }
-        update("user", "Processing_value_one", "none", "id", $Payment_report['id_user']);
-        update("user", "Processing_value_tow", "none", "id", $Payment_report['id_user']);
-        update("user", "Processing_value_four", "none", "id", $Payment_report['id_user']);
+        $__pendingReportRow = select("Payment_report", "dec_not_confirmed", "id_order", $Payment_report['id_order'], "select", ['cache' => false]);
+        $__keepPendingState = is_array($__pendingReportRow) && strpos((string) ($__pendingReportRow['dec_not_confirmed'] ?? ''), 'pending_purchase_waiting') !== false;
+        if (!$__keepPendingState) {
+            update("user", "Processing_value_one", "none", "id", $Payment_report['id_user']);
+            update("user", "Processing_value_tow", "none", "id", $Payment_report['id_user']);
+            update("user", "Processing_value_four", "none", "id", $Payment_report['id_user']);
+        }
     } elseif ($StatusPayment['payment_status'] == "expired") {
         telegram('answerCallbackQuery', array(
             'callback_query_id' => $callback_query_id,
@@ -1911,6 +1915,9 @@ $text_porsant
     $price = $rates['USD'];
     sendmessage($from_id, sprintf($textbotlang['users']['pricearze']['tether-price'], $price), null, 'HTML');
 } elseif (($text !== '' && $text == $datatextbot['text_extend']) || $datain == "extendbtn") {
+    if (function_exists('rx_pending_purchase_expire_stale')) {
+        rx_pending_purchase_expire_stale($from_id, 86400, 50);
+    }
     $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :id_user AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold')");
     $stmt->bindParam(':id_user', $from_id);
     $stmt->execute();
@@ -1974,7 +1981,7 @@ $text_porsant
         sendmessage($from_id, $textbotlang['users']['extend']['selectOrderDirect'], $keyboard_json, 'html');
     }
 } elseif ($datain == 'next_page_extends') {
-    $numpage = select("invoice", "id_user", "id_user", $from_id, "count");
+    $numpage = function_exists('rx_user_visible_invoice_count') ? rx_user_visible_invoice_count($from_id) : select("invoice", "id_user", "id_user", $from_id, "count");
     $page = $user['pagenumber'];
     $items_per_page = 20;
     $sum = $user['pagenumber'] * $items_per_page;
@@ -2035,7 +2042,7 @@ $text_porsant
     update("user", "pagenumber", $next_page, "id", $from_id);
     Editmessagetext($from_id, $message_id, $textbotlang['users']['extend']['selectOrderDirect'], $keyboard_json);
 } elseif ($datain == 'previous_page_extends') {
-    $numpage = select("invoice", "id_user", "id_user", $from_id, "count");
+    $numpage = function_exists('rx_user_visible_invoice_count') ? rx_user_visible_invoice_count($from_id) : select("invoice", "id_user", "id_user", $from_id, "count");
     $page = $user['pagenumber'];
     $items_per_page = 20;
     $sum = $user['pagenumber'] * $items_per_page;

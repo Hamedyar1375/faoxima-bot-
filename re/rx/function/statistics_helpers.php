@@ -121,3 +121,47 @@ if (!function_exists('rx_stats_real_payment_totals')) {
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
+
+if (!function_exists('rx_stats_wallet_balance_breakdown')) {
+    /**
+     * FX-ACCOUNT (2026-10-27): the REAL source of the global "bot balance" line
+     * in the main-bot overall report.
+     *
+     * It is the algebraic sum of EVERY user wallet in the database:
+     *   net = SUM(user.Balance)            (positive + negative)
+     *   positive = SUM(Balance) where > 0  — total credit users hold at the bot
+     *   negative = SUM(Balance) where < 0  — net debt users owe the bot
+     *              (in the NM model an agent's negative Balance IS his debt;
+     *               reseller wallets live in the same table, so they are
+     *               included exactly as stored — no re-derivation is done here)
+     *
+     * A negative `net` therefore means: total user debt > total user credit.
+     * It is NOT "cash in the bot" and NOT a single reseller's account balance.
+     *
+     * @return array{users:int,net:int,positive:int,negative:int,positive_users:int,negative_users:int,zero_users:int}
+     */
+    function rx_stats_wallet_balance_breakdown(\PDO $pdo): array
+    {
+        $row = $pdo->query(
+            "SELECT COUNT(*) AS users,
+                    COALESCE(SUM(Balance),0) AS net,
+                    COALESCE(SUM(CASE WHEN Balance > 0 THEN Balance ELSE 0 END),0) AS positive,
+                    COALESCE(SUM(CASE WHEN Balance < 0 THEN Balance ELSE 0 END),0) AS negative,
+                    SUM(CASE WHEN Balance > 0 THEN 1 ELSE 0 END) AS positive_users,
+                    SUM(CASE WHEN Balance < 0 THEN 1 ELSE 0 END) AS negative_users
+             FROM user"
+        )->fetch(PDO::FETCH_ASSOC) ?: [];
+        $users = (int)($row['users'] ?? 0);
+        $posU = (int)($row['positive_users'] ?? 0);
+        $negU = (int)($row['negative_users'] ?? 0);
+        return [
+            'users'          => $users,
+            'net'            => (int)round((float)($row['net'] ?? 0)),
+            'positive'       => (int)round((float)($row['positive'] ?? 0)),
+            'negative'       => (int)round((float)($row['negative'] ?? 0)),
+            'positive_users' => $posU,
+            'negative_users' => $negU,
+            'zero_users'     => max(0, $users - $posU - $negU),
+        ];
+    }
+}

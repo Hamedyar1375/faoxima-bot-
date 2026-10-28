@@ -85,9 +85,14 @@ final class CardPhotoUploadHandler extends BaseHandler
         try {
             $userId = (string)$this->user['id'];
             $pdo    = FaoximaDb::pdo();
-            $mRow   = FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-            $dMode  = is_array($mRow) ? ($mRow['ValuePay'] ?? 'random') : 'random';
+            $dMode = function_exists('rx_fetchTenantPaySetting')
+                ? (string) (rx_fetchTenantPaySetting('card_display_mode') ?? 'random')
+                : (string) ((FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1")['ValuePay'] ?? 'random'));
+            $dMode = $dMode !== '' ? $dMode : 'random';
             $accessSql = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = ?))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = ?)))";
+            if (function_exists('fx_tenant_sql_agent')) {
+                $accessSql .= " AND " . fx_tenant_sql_agent('cn');
+            }
 
             if ($dMode == 'direct') {
                 $stmt = $pdo->prepare("SELECT cardnumber, namecard FROM card_number cn WHERE {$accessSql} ORDER BY cn.created_at ASC LIMIT 2");
@@ -97,8 +102,9 @@ final class CardPhotoUploadHandler extends BaseHandler
                 $card2 = $rows[1] ?? null;
             } else {
                 $cycleKey = "card_cycle_{$userId}";
-                $seenRow  = FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = ? LIMIT 1", [$cycleKey]);
-                $seenStr  = is_array($seenRow) ? ($seenRow['ValuePay'] ?? '') : '';
+                $seenStr  = function_exists('rx_fetchTenantPaySetting')
+                    ? (string) (rx_fetchTenantPaySetting($cycleKey) ?? '')
+                    : (string) ((FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = ? LIMIT 1", [$cycleKey])['ValuePay'] ?? ''));
                 $seen     = array_values(array_filter(array_map('intval', explode(',', $seenStr))));
                 $excl     = !empty($seen) ? "AND cn.id NOT IN (" . implode(',', $seen) . ")" : "";
 
@@ -115,10 +121,14 @@ final class CardPhotoUploadHandler extends BaseHandler
 
                 if ($card) {
                     $newSeen  = implode(',', array_unique(array_merge($seen, [intval($card['id'])])));
-                    $updStmt  = $pdo->prepare("UPDATE PaySetting SET ValuePay = ? WHERE NamePay = ?");
-                    $updStmt->execute([$newSeen, $cycleKey]);
-                    if ($updStmt->rowCount() === 0) {
-                        $pdo->prepare("INSERT INTO PaySetting (NamePay, ValuePay) VALUES (?, ?)")->execute([$cycleKey, $newSeen]);
+                    if (function_exists('rx_writeTenantPaySetting')) {
+                        rx_writeTenantPaySetting($cycleKey, $newSeen);
+                    } else {
+                        $updStmt  = $pdo->prepare("UPDATE PaySetting SET ValuePay = ? WHERE NamePay = ?");
+                        $updStmt->execute([$newSeen, $cycleKey]);
+                        if ($updStmt->rowCount() === 0) {
+                            $pdo->prepare("INSERT INTO PaySetting (NamePay, ValuePay) VALUES (?, ?)")->execute([$cycleKey, $newSeen]);
+                        }
                     }
                 }
             }

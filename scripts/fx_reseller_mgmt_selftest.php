@@ -103,14 +103,25 @@ $lastV = $lm->fetchColumn();
 $lastDebt = ($lastV === false) ? null : (int)$lastV;
 $needsRec = nm_balance_needs_reconcile($balDb, $lastDebt);
 
-$wantBal = $needsRec
-    ? '🏦 مانده حساب با مالک: —'
-    : '🏦 مانده حساب با مالک: ' . nm_fmt_money_signed($balDb) . ' تومان';
-$wantState = $needsRec ? 'نیازمند تطبیق حساب'
-    : ($balDb < 0 ? 'بدهکار' : ($balDb > 0 ? 'بستانکار' : 'تسویه‌شده'));
+// واحد مرجع رندر = snapshot خوان‌تنهای fx_res_account_state (همان تابعی که
+// کارت/گزارش/دفتر از آن می‌سازند). ماندهٔ علامت‌دار B = کیف‌پول − بدهی فعلی.
+$acc = fx_res_account_state((int)$rid);
+check('B1b وضعیت حساب از DB معتبر است (ok=true)', !empty($acc['ok']));
+$wantBalLine    = '⚖️ مانده حساب: ' . fx_res_fmt_signed((int)$acc['balance']) . ' تومان';
+$wantDebtLine   = '💸 بدهی نماینده به ربات اصلی: ' . number_format((int)$acc['debt']) . ' تومان';
+$wantClaimLine  = '💰 طلب نماینده از ربات اصلی: ' . number_format((int)$acc['claim']) . ' تومان';
+$wantCeilLine   = ((int)$acc['ceiling'] > 0)
+    ? '🏦 سقف اعتبار: ' . number_format((int)$acc['ceiling']) . ' تومان'
+    : '🏦 سقف اعتبار: تنظیم نشده';
+$wantRemainLine = ((int)$acc['ceiling'] > 0)
+    ? '🌟 اعتبار بدهی باقی‌مانده: ' . number_format((int)$acc['remaining_credit']) . ' تومان' : '';
+$wantWalletLine = '👛 کیف پول (نقد نزد ربات): ' . number_format((int)$acc['wallet']) . ' تومان';
+$wantStateLine  = '📊 وضعیت: ' . ((int)$acc['balance'] > 0
+    ? 'بستانکار — ربات اصلی به نماینده بدهکار است'
+    : ((int)$acc['balance'] < 0 ? 'بدهکار — نماینده به ربات اصلی بدهکار است' : 'تسویه'));
 
-check('B2 خط مانده علامت‌دار مطابق Balance واقعی', strpos($txt, $wantBal) !== false, "want=$wantBal");
-check('B3 خط وضعیت حساب مطابق دفتر main', strpos($txt, '📊 وضعیت حساب: ' . $wantState) !== false, "want=$wantState");
+check('B2 کارت: خط مانده علامت‌دار دقیق (B = کیف‌پول − بدهی)', strpos($txt, $wantBalLine) !== false, 'want=' . $wantBalLine);
+check('B3 کارت: خط وضعیت دقیق', strpos($txt, $wantStateLine) !== false, 'want=' . $wantStateLine);
 check('B4 برچسب قدیمی «💰 موجودی:» حذف شده', strpos($txt, '💰 موجودی:') === false);
 check('B5 خط نام/آیدی در ابتدای کارت حفظ شده', strpos($txt, "👤 ") === 0);
 
@@ -123,29 +134,34 @@ if ($botName !== '') {
     check('B6 خط «ربات ثبت نشده» مطابق داده', strpos($txt, '⚠️ رباتی برای این نماینده ثبت نشده') !== false);
 }
 
-$debSt = fx_debt_state($rid);
-if ($debSt['mode'] === 'debt') {
-    check('B7 خط حالت اعتباری (scope=bot) حفظ شده', strpos($txt, '🏦 حالت: اعتباری (بدهی)') !== false);
-} else {
-    check('B7 خط حالت پیش‌پرداخت (scope=bot) حفظ شده', strpos($txt, '🏦 حالت: پیش‌پرداخت (موجودی)') !== false);
+// بلوک اعتباری/مانده در قرارداد جدید همیشه (نه فقط در حالت بدهی) رندر می‌شود:
+check('B7 کارت: خط بدهی دقیق (scope=bot)', strpos($txt, $wantDebtLine) !== false, 'want=' . $wantDebtLine);
+check('B7b کارت: خط طلب دقیق', strpos($txt, $wantClaimLine) !== false, 'want=' . $wantClaimLine);
+check('B7c کارت: خط سقف اعتبار دقیق', strpos($txt, $wantCeilLine) !== false, 'want=' . $wantCeilLine);
+if ($wantRemainLine !== '') {
+    check('B7d کارت: خط اعتبار باقی‌مانده دقیق', strpos($txt, $wantRemainLine) !== false, 'want=' . $wantRemainLine);
 }
+check('B7e کارت: خط کیف‌پول دقیق', strpos($txt, $wantWalletLine) !== false, 'want=' . $wantWalletLine);
 
 echo "\n== بخش C: رندر صفحه گزارش مالی و دفتر حساب (فقط SELECT) ==\n";
 $GLOBALS['__fx_cap'] = ['text' => '', 'kb' => null];
 fx_res_render_report((int)$rid, 0, (string)$rid);
 $rep = (string)($GLOBALS['__fx_cap']['text'] ?? '');
-check('C1 گزارش: خط «مانده حساب با مالک» مطابق DB', strpos($rep, $wantBal) !== false, '');
-check('C2 گزارش: خط وضعیت حساب مطابق دفتر main', strpos($rep, '📊 وضعیت حساب: ' . $wantState) !== false, '');
+check('C1 گزارش: خط مانده علامت‌دار دقیق', strpos($rep, $wantBalLine) !== false, 'want=' . $wantBalLine);
+check('C2 گزارش: خط وضعیت دقیق', strpos($rep, $wantStateLine) !== false, 'want=' . $wantStateLine);
 check('C3 گزارش: عبارت «کیف‌پول» برای مانده استفاده نشده', strpos($rep, 'کیف‌پول') === false, $rep);
-check('C4 گزارش: بلوک اعتباری ربات (scope=bot) حفظ شده',
-    strpos($rep, '📏 سقف بدهی') !== false && strpos($rep, '💸 بدهی فعلی') !== false && strpos($rep, '✅ اعتبار باقی‌مانده') !== false);
+check('C4 گزارش: بلوک اعتباری دقیق (سقف/بدهی/طلب/باقی‌مانده)',
+    strpos($rep, $wantCeilLine) !== false && strpos($rep, $wantDebtLine) !== false
+    && strpos($rep, $wantClaimLine) !== false
+    && ($wantRemainLine === '' || strpos($rep, $wantRemainLine) !== false),
+    'ceil=' . $wantCeilLine . ' debt=' . $wantDebtLine);
 check('C5 گزارش: دکمه بازگشت حفظ شده', is_string($GLOBALS['__fx_cap']['kb'] ?? null) && strpos((string)$GLOBALS['__fx_cap']['kb'], 'fx_res_sel_') !== false);
 
 $GLOBALS['__fx_cap'] = ['text' => '', 'kb' => null];
 fx_res_render_ledger((int)$rid, 0, (string)$rid);
 $led = (string)($GLOBALS['__fx_cap']['text'] ?? '');
-check('C6 دفتر: خط «مانده حساب با مالک» مطابق DB', strpos($led, $wantBal) !== false, '');
-check('C7 دفتر: «💸 بدهی ربات:» جدا از مانده (scope=bot)', strpos($led, '💸 بدهی ربات:') !== false, '');
+check('C6 دفتر: خط مانده علامت‌دار دقیق', strpos($led, $wantBalLine) !== false, 'want=' . $wantBalLine);
+check('C7 دفتر: خط بدهی دقیق', strpos($led, $wantDebtLine) !== false, 'want=' . $wantDebtLine);
 check('C8 دفتر: برچسب قدیمی «💰 موجودی:» حذف شده', strpos($led, '💰 موجودی:') === false, '');
 check('C9 دفتر: دکمه بازگشت حفظ شده', is_string($GLOBALS['__fx_cap']['kb'] ?? null) && strpos((string)$GLOBALS['__fx_cap']['kb'], 'fx_res_sel_') !== false);
 

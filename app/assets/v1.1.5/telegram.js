@@ -2,22 +2,61 @@ function tg() {
     return (typeof window !== 'undefined' && window.Telegram && window.Telegram.WebApp) || null;
 }
 
-const INIT_DATA_KEY = 'faoxima.initData';
+function initDataScope() {
+    try {
+        const fromCfg = Number((window.__APP_CONFIG__ && window.__APP_CONFIG__.tenant) || 0);
+        if (fromCfg > 0) return 'tenant_' + fromCfg;
+    } catch (_) {}
+    try {
+        const fromUrl = Number(new URLSearchParams(location.search).get('tenant') || 0);
+        if (fromUrl > 0) return 'tenant_' + fromUrl;
+    } catch (_) {}
+    return 'main';
+}
+
+function initDataStorageKey() {
+    return 'faoxima.initData.' + initDataScope();
+}
 
 function readPersistedInitData() {
     try {
-        const v = localStorage.getItem(INIT_DATA_KEY);
+        const v = localStorage.getItem(initDataStorageKey());
         return typeof v === 'string' ? v : '';
     } catch (_) { return ''; }
 }
 
+function readBootstrapInitData() {
+    // Only trust the initData embedded in THIS page's Telegram URL hash.
+    // sessionStorage may contain a stale initData from another bot/tenant
+    // opened earlier in the same WebView and must never be reused here.
+    try {
+        const hash = String(location.hash || '').replace(/^#/, '');
+        if (hash && hash.indexOf('tgWebAppData=') !== -1) {
+            const params = new URLSearchParams(hash);
+            const value = params.get('tgWebAppData');
+            if (typeof value === 'string' && value !== '') {
+                return value;
+            }
+        }
+    } catch (_) {}
+    return '';
+}
+
 export function persistInitData(value) {
     if (typeof value !== 'string' || value === '') return;
-    try { localStorage.setItem(INIT_DATA_KEY, value); } catch (_) {}
+    try {
+        // Remove the legacy unscoped key so a reseller initData can never leak
+        // into the main-bot mini app (and vice versa).
+        localStorage.removeItem('faoxima.initData');
+        localStorage.setItem(initDataStorageKey(), value);
+    } catch (_) {}
 }
 
 export function clearPersistedInitData() {
-    try { localStorage.removeItem(INIT_DATA_KEY); } catch (_) {}
+    try {
+        localStorage.removeItem(initDataStorageKey());
+        localStorage.removeItem('faoxima.initData');
+    } catch (_) {}
 }
 
 function applySafeAreaVars() {
@@ -74,6 +113,12 @@ export function getInitData() {
 
         persistInitData(live);
         return live;
+    }
+
+    const bootstrap = readBootstrapInitData();
+    if (bootstrap) {
+        persistInitData(bootstrap);
+        return bootstrap;
     }
 
     return readPersistedInitData();
@@ -168,6 +213,7 @@ export function diagnostics() {
         colorScheme:           (w && w.colorScheme) || null,
         hasInitData:           !!(w && w.initData),
         initDataLength:        (w && w.initData) ? w.initData.length : 0,
+        hasBootstrapInitData:  !!readBootstrapInitData(),
         hasPersistedInitData:  !!persisted,
         hasUnsafeUser:         !!(unsafe && unsafe.user && unsafe.user.id),
         unsafeUserId:          unsafe && unsafe.user ? unsafe.user.id : null,

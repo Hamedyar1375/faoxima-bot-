@@ -55,6 +55,18 @@ final class UserInfoHandler extends BaseHandler
 
         $isAdmin = $this->userIsAdmin();
 
+        // FX-RESELLER-SVCMGMT: expose reseller-admin status so the mini-app can
+        // show the self-service service-management entry to the right people.
+        $resellerId = function_exists('fx_res_svc_user_reseller_id')
+            ? fx_res_svc_user_reseller_id(null, (int) ($user['id'] ?? 0))
+            : null;
+        // Only expose reseller-admin UI when this authenticated session was
+        // opened through that reseller bot (tenant context), not in the main bot.
+        $sessionTenant = function_exists('fx_tenant_agent_id') ? (int) fx_tenant_agent_id() : 0;
+        if ($resellerId !== null && (int) $resellerId !== $sessionTenant) {
+            $resellerId = null;
+        }
+
         FaoximaResponse::ok([
             'codeInvitation'  => $user['codeInvitation'],
             'balance'         => $user['Balance'] ?? 0,
@@ -65,6 +77,8 @@ final class UserInfoHandler extends BaseHandler
             'time_join'       => $userJoin,
             'affiliatescount' => $user['affiliatescount'] ?? 0,
             'is_admin'        => $isAdmin,
+            'is_reseller_admin' => $resellerId !== null,
+            'reseller_id'     => $resellerId,
         ]);
     }
 }

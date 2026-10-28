@@ -74,6 +74,16 @@ $allowed = [
     ['', '', 'card_add_cardnumber'],
     ['', '', 'channel'],
     ['', '', 'fx_res_my_do_retail'],
+    ['', 'editstsuts-forced_miniapp-0', ''],
+    ['', 'editstsuts-forced_miniapp-1', ''],
+    ['', 'editstsuts-get_number-onAuthenticationphone', ''],
+    ['', 'editstsuts-Authenticationiran-onAuthenticationiran', ''],
+    ['', 'editstsuts-verifystart-onverify', ''],
+    ['', 'editstsuts-verifybyuser-onverify', ''],
+    ['', 'editstsuts-authscope-all', ''],
+    ['', 'editstsuts-cardverify-oncardverify', ''],
+    ['', 'editstsuts-inlinebtnmain-oninline', ''],
+    ['', 'editstsuts-auto_remove_kb-on', ''],
 ];
 foreach ($allowed as $case) {
     $check('allowed ' . json_encode($case, JSON_UNESCAPED_UNICODE), fx_reseller_main_only_hit($case[0], $case[1], $case[2]) === false);

@@ -27,6 +27,16 @@ if (function_exists('fx_myaccount_gate') && defined('FX_RESELLER_ID') && FX_RESE
         return;
     }
 }
+// === FX-RESELLER-SVCMGMT: reseller «مدیریت سرویس‌های من» (live require, NOT in any manifest) ===
+if (!defined('FX_RESELLER_SVCMGMT_LOADED')) {
+    $__fx_svcm = REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_reseller_service_mgmt.php';
+    if (is_file($__fx_svcm)) require_once $__fx_svcm;
+}
+if (function_exists('fx_res_svc_gate') && defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
+    if (fx_res_svc_gate((string)($datain ?? ''), (string)($text ?? ''), $from_id, (int)($message_id ?? 0), (array)$user, $backadmin)) {
+        return;
+    }
+}
 if (fx_res_mgmt_gate($datain ?? '', $from_id, $admin_ids, $message_id, $user, $backadmin)) {
     return;
 }
@@ -54,7 +64,55 @@ if (is_file($guardHelperPath)) {
     require_once $guardHelperPath;
 }
 
+// FX-RESELLER: reseller bots use their own time-filter stats keyboard (same flow as main bot)
+if (defined('FX_RESELLER_ID') && FX_RESELLER_ID && function_exists('fx_res_stats_keyboard')) {
+    $keyboard_stat = fx_res_stats_keyboard();
+}
+
 $textadmin = ["panel", "/panel", $textbotlang['Admin']['textpaneladmin']];
+
+// FX-RESELLER: dedicated early handler for the forced mini-app toggle. This
+// bypasses the main-only guards and works for BOTH callback and reply-keyboard
+// text buttons in the reseller admin panel.
+if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0
+    && isset($from_id) && in_array((string)$from_id, array_map('strval', (array)($admin_ids ?? [])), true)) {
+    $rxForceDatain = (string)($datain ?? '');
+    $rxForceText = (string)($text ?? '');
+    $rxForceHit = strpos($rxForceDatain, 'editstsuts-forced_miniapp') === 0
+        || strpos($rxForceText, 'هدایت کاربران به مینی‌اپ') !== false
+        || strpos($rxForceText, 'مینی‌اپ اجباری') !== false
+        || strpos($rxForceText, 'مینی اپ اجباری') !== false;
+    if ($rxForceHit && function_exists('fx_res_setting_patch')) {
+        $rxForceOld = function_exists('rx_forced_miniapp_mode_for_current_bot')
+            ? rx_forced_miniapp_mode_for_current_bot($setting ?? null)
+            : ((string)($setting['forced_miniapp_mode'] ?? '0') === '1' ? '1' : '0');
+        $rxForceNew = $rxForceOld === '1' ? '0' : '1';
+        fx_res_setting_patch((int)FX_RESELLER_ID, ['forced_miniapp_mode' => $rxForceNew]);
+        $rxForceLabel = $rxForceNew === '1'
+            ? '🚀 هدایت کاربران به مینی‌اپ: فعال ✅'
+            : '🚀 هدایت کاربران به مینی‌اپ: غیرفعال ⛔️';
+        $rxForceMsg = $rxForceNew === '1'
+            ? "✅ هدایت کاربران به مینی‌اپ فعال شد.\nاز این پس کاربران عادی این ربات به مینی‌اپ هدایت می‌شوند."
+            : "✅ هدایت کاربران به مینی‌اپ غیرفعال شد.";
+        $rxForceKb = json_encode(['inline_keyboard' => [
+            [['text' => $rxForceLabel, 'callback_data' => 'editstsuts-forced_miniapp-' . $rxForceNew]],
+            [['text' => '🏠 بازگشت به منوی مدیریت', 'callback_data' => 'adm_hub_main']],
+        ]], JSON_UNESCAPED_UNICODE);
+        if (!empty($callback_query_id)) {
+            @telegram('answerCallbackQuery', [
+                'callback_query_id' => $callback_query_id,
+                'text' => $rxForceNew === '1' ? '✅ فعال شد' : '⛔️ غیرفعال شد',
+                'cache_time' => 0,
+            ]);
+        }
+        if (!empty($callback_query_id) && !empty($message_id) && function_exists('Editmessagetext')) {
+            @Editmessagetext($from_id, $message_id, $rxForceMsg, $rxForceKb, 'HTML');
+        } else {
+            @sendmessage($from_id, $rxForceMsg, $rxForceKb, 'HTML');
+        }
+        return;
+    }
+}
 if (isset($datain) && $datain != "" && $text == "" && in_array($from_id, $admin_ids)) {
     $text = $datain;
 }

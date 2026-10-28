@@ -108,14 +108,14 @@ function nmStockConvertInvoiceToPanelService($chatId, array $userRow, array $inv
 خطا: {$msg}", 'parse_mode' => 'HTML']);
         return false;
     }
-    if (function_exists('balance_atomic_charge')) {
-        $__allowNegBl = (($userRow['agent'] ?? '') === 'n2') ? (int)($userRow['maxbuyagent'] ?? 0) : 0;
-        $__chargeBl = balance_atomic_charge($chatId, (float)$price, $__allowNegBl);
-        if (!empty($__chargeBl['ok']) && function_exists('wallet_ledger_record')) {
-            wallet_ledger_record($chatId, 'debit', $price, 'service_action', 'تمدید سرویس (تبدیل انبار)', null, 'invoice', (string)$invoice['id_invoice']);
-        }
-    } else {
-        update('user', 'Balance', (float)($userRow['Balance'] ?? 0) - $price, 'id', $chatId);
+    $__allowNegBl = (($userRow['agent'] ?? '') === 'n2') ? (int)($userRow['maxbuyagent'] ?? 0) : 0;
+    $__chargeBl = balance_atomic_charge($chatId, (float)$price, $__allowNegBl);
+    if (empty($__chargeBl['ok'])) {
+        error_log('[nm_stock] convert invoice charge failed for user ' . $chatId . ' amount=' . $price);
+        return false;
+    }
+    if (function_exists('wallet_ledger_record')) {
+        wallet_ledger_record($chatId, 'debit', $price, 'service_action', 'تمدید سرویس (تبدیل انبار)', null, 'invoice', (string)$invoice['id_invoice']);
     }
     update('invoice', 'username', $dataoutput['username'], 'id_invoice', $invoice['id_invoice']);
     update('invoice', 'Service_location', $panel['name_panel'], 'id_invoice', $invoice['id_invoice']);
@@ -409,14 +409,15 @@ function nmMaybeHandleStockCallback($datain,$chatId,$messageId=null,$callbackQue
         if(nmPanelNationalEnabled($panel)){
             $stockNew=nmStockReserveForProduct($panel,$product,$chatId,$invoice['id_invoice'],'stock_service_extend');
             if(!$stockNew){ sendmessage($chatId,faoxima_textbot_get('dyn_errors_stock_depleted_no_charge','❌ موجودی انبار برای این محصول تمام شده است. مبلغی کسر نشد.'),$keyboard??null,'HTML'); return true; }
-            if (function_exists('balance_atomic_charge')) {
-                $__allowNegRb=(($userRow['agent']??'')==='n2')?(int)($userRow['maxbuyagent']??0):0;
-                $__chargeRb=balance_atomic_charge($chatId,(float)$price,$__allowNegRb);
-                if (!empty($__chargeRb['ok']) && function_exists('wallet_ledger_record')) {
-                    wallet_ledger_record($chatId, 'debit', $price, 'service_action', 'تمدید سرویس (انبار ملی)', null, 'invoice', (string)$invoice['id_invoice']);
-                }
-            } else {
-                update('user','Balance',(float)($userRow['Balance']??0)-$price,'id',$chatId);
+            $__allowNegRb=(($userRow['agent']??'')==='n2')?(int)($userRow['maxbuyagent']??0):0;
+            $__chargeRb=balance_atomic_charge($chatId,(float)$price,$__allowNegRb);
+            if (empty($__chargeRb['ok'])) {
+                error_log('[nm_stock] stock extend charge failed for user ' . $chatId . ' amount=' . $price);
+                if (function_exists('nmStockReleaseReservation')) { nmStockReleaseReservation($stockNew); }
+                return true;
+            }
+            if (function_exists('wallet_ledger_record')) {
+                wallet_ledger_record($chatId, 'debit', $price, 'service_action', 'تمدید سرویس (انبار ملی)', null, 'invoice', (string)$invoice['id_invoice']);
             }
             update('invoice','name_product',$product['name_product'],'id_invoice',$invoice['id_invoice']);
             update('invoice','price_product',$product['price_product'],'id_invoice',$invoice['id_invoice']);
@@ -490,15 +491,14 @@ function nmStockCompleteExtendFallback($userId, array $userRow, array $invoice, 
     try {
         $priceToCharge = (float)$priceToCharge;
         if ($priceToCharge > 0 && isset($userRow['Balance'])) {
-            if (function_exists('balance_atomic_charge')) {
-                $__allowNegFb = (($userRow['agent'] ?? '') === 'n2') ? (int)($userRow['maxbuyagent'] ?? 0) : 0;
-                $__chargeFb = balance_atomic_charge($userId, $priceToCharge, $__allowNegFb);
-                if (!empty($__chargeFb['ok']) && function_exists('wallet_ledger_record')) {
-                    wallet_ledger_record($userId, 'debit', $priceToCharge, 'service_action', 'تمدید سرویس (جایگزین انبار)', null, 'invoice', (string)($invoice['id_invoice'] ?? ''));
-                }
-            } else {
-                $newBalance = (float)$userRow['Balance'] - $priceToCharge;
-                update('user', 'Balance', $newBalance, 'id', $userId);
+            $__allowNegFb = (($userRow['agent'] ?? '') === 'n2') ? (int)($userRow['maxbuyagent'] ?? 0) : 0;
+            $__chargeFb = balance_atomic_charge($userId, $priceToCharge, $__allowNegFb);
+            if (empty($__chargeFb['ok'])) {
+                error_log('[nm_stock] extend fallback charge failed for user ' . $userId . ' amount=' . $priceToCharge);
+                return false;
+            }
+            if (function_exists('wallet_ledger_record')) {
+                wallet_ledger_record($userId, 'debit', $priceToCharge, 'service_action', 'تمدید سرویس (جایگزین انبار)', null, 'invoice', (string)($invoice['id_invoice'] ?? ''));
             }
         }
         $value = json_encode([
@@ -964,8 +964,6 @@ function nmStockCompleteBuyFromInventory($userId, array $userRow, array $panel, 
                     if (function_exists('wallet_ledger_record')) {
                         wallet_ledger_record($userId, 'debit', $__pp3, 'purchase', 'خرید سرویس (انبار ملی)', (string)$invoiceId, 'invoice', (string)$invoiceId);
                     }
-                } else {
-                    update('user', 'Balance', (float)($userRow['Balance'] ?? 0) - $__pp3, 'id', $userId);
                 }
             }
         }

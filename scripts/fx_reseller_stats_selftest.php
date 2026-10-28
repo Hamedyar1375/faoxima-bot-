@@ -23,13 +23,13 @@ $FXI_SCOPE = "EXISTS (SELECT 1 FROM user ufx WHERE ufx.id = invoice.id_user AND 
 
 $pass = 0;
 $fail = 0;
-$check = static function ($label, $ok) use (&$pass, &$fail) {
+$check = static function ($label, $ok, $note = '') use (&$pass, &$fail) {
     if ($ok) {
         $pass++;
         echo "PASS {$label}\n";
     } else {
         $fail++;
-        echo "FAIL {$label}\n";
+        echo "FAIL {$label}" . ($note !== '' ? " [{$note}]" : '') . "\n";
     }
 };
 
@@ -84,6 +84,106 @@ $check('channels query returns integer', $fxChannels >= 0);
 $check('debt fields readable', $fxDebt >= 0 && $fxCeiling >= 0);
 $check('payment methods readable', is_array($fxPayments));
 $check('tenant users not above global users', $fxUsers <= $globalUsers);
+
+// === Time-filtered reseller stats (fx_reseller_stats.php) ===
+require_once REFACTORED_LEGACY_ROOT . '/re/rx/function/fx_reseller_stats.php';
+
+$check('stats keyboard is valid JSON', is_array(json_decode(fx_res_stats_keyboard(), true)));
+$fxKb = json_decode(fx_res_stats_keyboard(), true);
+$fxBtns = [];
+foreach (($fxKb['inline_keyboard'] ?? []) as $fxRow) {
+    foreach ($fxRow as $fxBtn) {
+        $fxBtns[] = $fxBtn['callback_data'] ?? null;
+    }
+}
+$check('keyboard has 8 filter buttons', count($fxBtns) === 8);
+$check('keyboard buttons are the expected set', $fxBtns === [
+    'stat_all_bot', 'hoursago_stat', 'today_stat', 'yesterday_stat',
+    'month_current_stat', 'month_old_stat', 'view_stat_time', 'close_stat',
+]);
+
+$check('is_active recognizes stat callbacks', fx_res_stats_is_active('today_stat', '') === true);
+$check('is_active recognizes date steps', fx_res_stats_is_active('', 'get_time_start') === true);
+$check('is_active rejects unrelated callbacks', fx_res_stats_is_active('buy', '') === false);
+
+$fxScopes = fx_res_stats_scopes();
+$check('scopes fallback matches manual scope', $fxScopes === [$FXU_SCOPE, $FXI_SCOPE]);
+
+$fxGlobalActive = (int) $pdo->query("SELECT COUNT(*) FROM invoice WHERE " . rx_stats_operational_service_predicate())->fetchColumn();
+$fxGlobalExtend = (int) $pdo->query("SELECT COUNT(*) FROM service_other WHERE status = 'paid' AND type IN ('extend_user','extend_user_by_admin')")->fetchColumn();
+
+$fxWindows = [
+    'hour' => fx_res_stats_window('hour'),
+    'today' => fx_res_stats_window('today'),
+    'yesterday' => fx_res_stats_window('yesterday'),
+    'month_current' => fx_res_stats_window('month_current'),
+    'month_old' => fx_res_stats_window('month_old'),
+];
+$fxWindowOk = true;
+foreach ($fxWindows as $fxWinName => $fxWin) {
+    if ($fxWin === null || $fxWin['ts_from'] > $fxWin['ts_to'] || $fxWin['title'] === '' || $fxWin['dt_from'] > $fxWin['dt_to']) {
+        $fxWindowOk = false;
+        break;
+    }
+}
+$check('all preset windows are valid', $fxWindowOk);
+
+$fxCustom = fx_res_stats_window('custom', '2020/01/01', '2030/01/01');
+$check('custom window full history is valid', $fxCustom !== null && $fxCustom['ts_from'] < $fxCustom['ts_to']);
+$check('custom window rejects inverted range', fx_res_stats_window('custom', '2030/01/01', '2020/01/01') === null);
+$fxWindows['custom_all'] = $fxCustom;
+
+$fxCollectOk = true;
+$fxCollectNotes = [];
+foreach ($fxWindows as $fxWinName => $fxWin) {
+    $fxM = fx_res_stats_collect($pdo, $fxWin, $FXU_SCOPE, $FXI_SCOPE);
+    if (
+        $fxM['orders_count'] < 0 || $fxM['orders_sum'] < 0
+        || $fxM['active_count'] < 0 || $fxM['test_count'] < 0 || $fxM['users_new'] < 0
+        || $fxM['extend_count'] < 0 || $fxM['extra_volume_count'] < 0
+        || $fxM['extra_time_count'] < 0 || $fxM['change_location_count'] < 0
+        || !is_array($fxM['payments'])
+    ) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':bad-metrics';
+        continue;
+    }
+    if ($fxM['orders_count'] > $fxSalesCount || $fxM['orders_sum'] > $fxSalesSum) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':orders>tenant';
+    }
+    if ($fxM['active_count'] > $fxGlobalActive) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':active>global';
+    }
+    if ($fxM['extend_count'] > $fxGlobalExtend) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':extend>global';
+    }
+    $fxPayStmtG = $pdo->prepare("SELECT COUNT(*) AS c FROM Payment_report WHERE payment_Status = 'paid' AND `time` BETWEEN :f AND :t");
+    $fxPayStmtG->bindValue(':f', $fxWin['dt_from']);
+    $fxPayStmtG->bindValue(':t', $fxWin['dt_to']);
+    $fxPayStmtG->execute();
+    $fxGlobalPaid = (int) ($fxPayStmtG->fetch(PDO::FETCH_ASSOC)['c'] ?? 0);
+    $fxPayTotal = 0;
+    foreach ($fxM['payments'] as $fxPr) {
+        $fxPayTotal += (int) $fxPr['c'];
+    }
+    if ($fxPayTotal > $fxGlobalPaid) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':payments>global';
+    }
+    $fxText = fx_res_stats_filtered_text($fxWin, $fxM);
+    if (strpos($fxText, $fxWin['title']) === false) {
+        $fxCollectOk = false;
+        $fxCollectNotes[] = $fxWinName . ':title-missing';
+    }
+}
+$check('collect() returns valid scoped metrics for all windows', $fxCollectOk, $fxCollectNotes ? implode(',', $fxCollectNotes) : '');
+
+$fxAllTimeText = fx_res_stats_all_time_text($pdo, $FXU_SCOPE, $FXI_SCOPE);
+$check('all-time reseller text renders', is_string($fxAllTimeText) && strpos($fxAllTimeText, 'آمار ربات نمایندگی') !== false);
+$check('all-time reseller text is tenant-scoped footer', strpos($fxAllTimeText, 'فقط داده‌های همین ربات نمایندگی') !== false);
 
 echo "\nTenant summary: users={$fxUsers} balance={$fxBalance} sales={$fxSalesCount} sum={$fxSalesSum} active={$fxActive} buyers={$fxBuyers} today={$fxTodaySum} panels={$fxPanels} cards={$fxCards} channels={$fxChannels} debt={$fxDebt}/{$fxCeiling}\n";
 echo "PASS={$pass} FAIL={$fail}\n";

@@ -412,6 +412,16 @@ function rx_buy_banner_file_id()
 }
 function rx_send_buy_first_step($chat_id, $message_id, $datain, $text, $keyboard, $isCallback)
 {
+    $remember = static function ($result, $fallbackId = 0) use ($chat_id): void {
+        if (!function_exists('rx_flow_message_store')) return;
+        $mid = 0;
+        if (is_array($result)) {
+            $mid = (int) ($result['result']['message_id'] ?? 0);
+        }
+        if ($mid <= 0) $mid = (int) $fallbackId;
+        if ($mid > 0) rx_flow_message_store($chat_id, 'purchase', $mid);
+    };
+
     $fileId = rx_buy_banner_file_id();
     if ($fileId !== '') {
         $photoResult = telegram('sendphoto', [
@@ -425,13 +435,18 @@ function rx_send_buy_first_step($chat_id, $message_id, $datain, $text, $keyboard
             if ($isCallback) {
                 deletemessage($chat_id, $message_id);
             }
+            $remember($photoResult);
             return $photoResult;
         }
     }
     if ($isCallback) {
-        return Editmessagetext($chat_id, $message_id, $text, $keyboard);
+        $result = Editmessagetext($chat_id, $message_id, $text, $keyboard);
+        $remember($result, $message_id);
+        return $result;
     }
-    return sendmessage($chat_id, $text, $keyboard, 'HTML');
+    $result = sendmessage($chat_id, $text, $keyboard, 'HTML');
+    $remember($result);
+    return $result;
 }
 function panel_feature_registry()
 {

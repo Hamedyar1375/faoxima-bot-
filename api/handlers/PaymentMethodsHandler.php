@@ -262,6 +262,23 @@ final class PaymentMethodsHandler extends BaseHandler
         $displayMin = $envMin !== null ? $envMin : (int)$minBalance;
         $displayMax = $envMax !== null ? $envMax : (int)$maxBalance;
 
+        $pendingPurchase = null;
+        if (function_exists('rx_pending_purchase_deficiency_due')) {
+            $pendingDue = (int) rx_pending_purchase_deficiency_due($user);
+            if ($pendingDue > 0 && function_exists('rx_pending_purchase_get_active')) {
+                $pendingInvoice = rx_pending_purchase_get_active($user['id'] ?? 0);
+                if (is_array($pendingInvoice)) {
+                    $pendingPurchase = [
+                        'amount_due' => $pendingDue,
+                        'username' => (string) ($pendingInvoice['username'] ?? ''),
+                        'invoice_id' => (string) ($pendingInvoice['id_invoice'] ?? ''),
+                        'price' => (float) ($pendingInvoice['price_product'] ?? 0),
+                        'product_name' => (string) ($pendingInvoice['name_product'] ?? ''),
+                    ];
+                }
+            }
+        }
+
         $randomWalletDefaultAmounts = [50000, 75000, 100000, 150000, 200000, 250000, 500000, 1000000];
         $randomWalletDecoded = json_decode($get('randomwallet_amounts'), true);
         $randomWalletAmounts = (is_array($randomWalletDecoded) && count($randomWalletDecoded) === 8)
@@ -281,6 +298,7 @@ final class PaymentMethodsHandler extends BaseHandler
                 'enabled' => $get('randomwallet_status') === '1',
                 'amounts' => $randomWalletAmounts,
             ],
+            'pending_purchase' => $pendingPurchase,
             'balance'  => (float)($user['Balance'] ?? 0),
             'currency' => 'تومان',
         ]);

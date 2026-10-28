@@ -1078,6 +1078,13 @@ img, svg { display: block; max-width: 100%; }
     background: var(--surface);
     border-top: 1px solid var(--border);
 }
+/* FX-RESELLER-SVCMGMT: reseller admins get a 5th tab (unhidden from app.js). */
+.tabbar.has-reseller-tab {
+    grid-template-columns: repeat(5, 1fr);
+}
+.tabbar.has-reseller-tab .tab span {
+    font-size: 11px;
+}
 .tab {
     display: flex;
     flex-direction: column;

@@ -132,6 +132,7 @@ $config = [
     'apiUrl'      => $apiUrl,
     'assetPrefix' => $assetPrefix,
     'version'     => $version,
+    'tenant'      => (int) ($_GET['tenant'] ?? 0),
     'qrEnabled'   => $qrEnabled,
     'forceDark'   => ($brandMode === 'dark'),
     'brand'       => [
@@ -226,9 +227,7 @@ $jsUrl       = htmlspecialchars($assetPrefix . 'assets/v1.1.5/app.js?v=' . fx_as
     <link rel="stylesheet" href="<?php echo $cssUrl; ?>" />
 
     
-    <script src="<?php echo $sdkLocal; ?>
-" onerror="this.onerror=null;var s=document.createElement('script');s.src='<?php echo $sdkFallback; ?>';document.head.appendChild(s);">
-</script>
+    <script src="<?php echo $sdkLocal; ?>" onerror="this.onerror=null;var s=document.createElement('script');s.src='<?php echo $sdkFallback; ?>';document.head.appendChild(s);"></script>
     <script>
       (function () {
         if (window.Telegram && window.Telegram.WebApp) return;
@@ -358,7 +357,7 @@ $jsUrl       = htmlspecialchars($assetPrefix . 'assets/v1.1.5/app.js?v=' . fx_as
 
         // پاکسازی localStorage با حفظ لاگین و تم
         try {
-            var preserveKeys = ['faoxima.theme.accent', 'faoxima.theme.mode', 'faoxima.initData', 'faoxima.initDataUnsafe'];
+            var preserveKeys = ['faoxima.theme.accent', 'faoxima.theme.mode'];
             var keep = {};
             for (var i = 0; i < preserveKeys.length; i++) {
                 try { keep[preserveKeys[i]] = localStorage.getItem(preserveKeys[i]); } catch (e) {}
@@ -429,6 +428,7 @@ $jsUrl       = htmlspecialchars($assetPrefix . 'assets/v1.1.5/app.js?v=' . fx_as
             <a href="#/services" data-route="/services" class="tab"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/></svg><span>سرویس‌ها</span></a>
             <a href="#/buy" data-route="/buy" class="tab tab-cta"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg><span>خرید</span></a>
             <a href="#/account" data-route="/account" class="tab"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>حساب</span></a>
+            <a href="#/reseller" data-route="/reseller" class="tab tab-reseller" style="display:none"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg><span>مدیریت</span></a>
         </nav>
 
         <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true"></div>

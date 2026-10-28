@@ -160,17 +160,21 @@ if ($table_exists) {
         }
     }
 }
-$adminrulecheck = select("admin", "*", "id_admin", $from_id,"select");
-if (!$adminrulecheck) {
-    // === Phase 2: reseller owner gets full administrator rights (guarded) ===
-    if (defined('FX_RESELLER_ID') && isset($admin_ids) && in_array((string)$from_id, array_map('strval', (array)$admin_ids), true)) {
-        $adminrulecheck = array('rule' => 'administrator', 'id_admin' => (string)$from_id);
-    } else {
-        $adminrulecheck = array(
-            'rule' => '',
-        );
-    }
-    // === end Phase 2 ===
+if (defined('FX_RESELLER_ID')) {
+    // Reseller bot: authorization comes ONLY from this tenant's owner/admin_ids.
+    // A main-bot admin (e.g. 8400624309) must not inherit admin rights here
+    // unless explicitly listed in botsaz for this tenant.
+    $rxTenantAdminOk = isset($admin_ids)
+        && in_array((string) $from_id, array_map('strval', (array) $admin_ids), true);
+    $adminrulecheck = $rxTenantAdminOk
+        ? array('rule' => 'administrator', 'id_admin' => (string) $from_id)
+        : array('rule' => '');
+    unset($rxTenantAdminOk);
+} else {
+    // Main bot: only central/main administrators from the filtered main list.
+    $adminrulecheck = (isset($admin_ids) && in_array((string) $from_id, array_map('strval', (array) $admin_ids), true))
+        ? array('rule' => 'administrator', 'id_admin' => (string) $from_id)
+        : array('rule' => '');
 }
 $users = select("user", "*", "id", $from_id,"select");
 if ($users == false) {
@@ -196,7 +200,10 @@ $replacements = [
     'text_wheel_luck' => $datatextbot['text_wheel_luck'],
     'text_extend' => $datatextbot['text_extend']
 ];
-$admin_idss = select("admin", "*", "id_admin", $from_id,"count");
+$admin_idss = (isset($admin_ids) && in_array((string) $from_id, array_map('strval', (array) $admin_ids), true)) ? 1 : 0;
+if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0 && (string)$from_id === (string)FX_RESELLER_ID) {
+    $admin_idss = 1;
+}
 $temp_addtional_key = [];
 $keyboardLayout = json_decode($setting['keyboardmain'], true);
 $keyboardRows = [];
@@ -210,6 +217,9 @@ $rxMiniAppApply = function (array $rows) use ($datatextbot, $rxMiniAppDomain) {
     $rxMiniAppHost = rtrim((string)preg_replace('#^https?://#i', '', trim($rxMiniAppDomain)), '/');
     if ($rxMiniAppHost !== '') {
         $rxMiniAppCandidate = 'https://' . $rxMiniAppHost . '/app/';
+        if (defined('FX_RESELLER_ID') && (int) FX_RESELLER_ID > 0) {
+            $rxMiniAppCandidate .= '?tenant=' . (int) FX_RESELLER_ID;
+        }
         if (filter_var($rxMiniAppCandidate, FILTER_VALIDATE_URL) !== false
             && strtolower((string)parse_url($rxMiniAppCandidate, PHP_URL_SCHEME)) === 'https'
             && (string)parse_url($rxMiniAppCandidate, PHP_URL_HOST) !== '') {
@@ -531,40 +541,92 @@ $__fx_myprices_rows_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
 $__fx_myacc_rows_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
     [rx_kb_style(['text' => "🏦 حساب من", 'callback_data' => 'fx_myaccount_menu'], 'fx_myaccount_menu', $_rx_adm_styles)],
 ] : [];
+// FX-RESELLER-SVCMGMT: reseller-bot-only «مدیریت سرویس‌های من» entry (self-service panel mgmt, additive)
+$__fx_svcmgmt_rows_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
+    [rx_kb_style(['text' => "🛠 مدیریت سرویس‌های من", 'callback_data' => 'fx_res_svc_menu'], 'fx_res_svc_menu', $_rx_adm_styles)],
+] : [];
+// FX-RESELLER-LINKS: reseller-admin-only Web Panel + Mini App shortcuts.
+// Visibility is RBAC-scoped to the reseller owner / delegated admins (admin_ids);
+// the gate re-checks the same rule before building any link.
+// NOTE: the keyboard section loads BEFORE the admin section, so the gate's
+// fx_res_svc_actor_allowed() is not available yet here — fall back to the
+// identical inline check (owner or botsaz.admin_ids) when it is not loaded.
+$__fx_access_rows_adm = [];
+if (defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
+    $fxAccessOk = false;
+    if (function_exists('fx_res_svc_actor_allowed')) {
+        $fxAccessOk = fx_res_svc_actor_allowed($from_id, FX_RESELLER_ID);
+    } else {
+        $fxAccessOk = ((int) $from_id === (int) FX_RESELLER_ID);
+        if (!$fxAccessOk) {
+            $fxBotsazRow = select("botsaz", "admin_ids", "id_user", (string) FX_RESELLER_ID, "select", ['cache' => false]);
+            $fxBotsazIds = is_array($fxBotsazRow) ? json_decode((string) ($fxBotsazRow['admin_ids'] ?? '[]'), true) : null;
+            $fxAccessOk = is_array($fxBotsazIds) && in_array((string) $from_id, array_map('strval', $fxBotsazIds), true);
+        }
+    }
+    if ($fxAccessOk) {
+        $__fx_access_rows_adm = [
+            [
+                rx_kb_style(['text' => "🌐 پنل وب مدیریت", 'callback_data' => 'fx_res_svc_link_panel'], 'fx_res_svc_link_panel', $_rx_adm_styles),
+                rx_kb_style(['text' => "🚀 مینی‌اپ", 'callback_data' => 'fx_res_svc_link_app'], 'fx_res_svc_link_app', $_rx_adm_styles),
+            ],
+        ];
+    }
+}
+// FX-RESELLER: direct one-tap toggle for forced mini-app mode in the reseller hub.
+$__fx_force_app_rows_adm = [];
+if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0) {
+    $__fxForceMode = (string)($setting['forced_miniapp_mode'] ?? '0');
+    $__fxForceRow = select('botsaz', 'setting', 'id_user', FX_RESELLER_ID, 'select', ['cache' => false]);
+    $__fxForceJson = is_array($__fxForceRow) ? json_decode((string)($__fxForceRow['setting'] ?? ''), true) : null;
+    if (is_array($__fxForceJson) && array_key_exists('forced_miniapp_mode', $__fxForceJson)) {
+        $__fxForceMode = (string)$__fxForceJson['forced_miniapp_mode'];
+    }
+    $__fxForceMode = ($__fxForceMode === '1') ? '1' : '0';
+    $__fxForceLabel = $__fxForceMode === '1'
+        ? '🚀 هدایت کاربران به مینی‌اپ: فعال ✅'
+        : '🚀 هدایت کاربران به مینی‌اپ: غیرفعال ⛔️';
+    $__fx_force_app_rows_adm[] = [
+        rx_kb_style(['text' => $__fxForceLabel, 'callback_data' => 'editstsuts-forced_miniapp-' . $__fxForceMode], 'forced_miniapp', $_rx_adm_styles),
+    ];
+    unset($__fxForceRow, $__fxForceJson, $__fxForceMode, $__fxForceLabel);
+}
+
 if($adminrulecheck['rule'] == "administrator"){
 // FX-RESELLER (2026-10-16): full administrator menu RESTORED for reseller owners.
 // The reduced (locked) menu is only used when FX_RESELLER_LOCK is explicitly
 // enabled in the reseller wrapper (define('FX_RESELLER_LOCK', 1)).
-$__fx_shop_finance_row_adm = (defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [
-            rx_kb_style(['text' => "💎 مالی و گزارشات", 'callback_data' => 'admin_finance'], 'admin_finance', $_rx_adm_styles)
-        ] : [
+$__fx_shop_finance_row_adm = [
             rx_kb_style(['text' => "🏬 تنظیمات فروشگاه", 'callback_data' => 'admin_shop'], 'admin_shop', $_rx_adm_styles),
             rx_kb_style(['text' => "💎 مالی و گزارشات", 'callback_data' => 'admin_finance'], 'admin_finance', $_rx_adm_styles)
         ];
 $__fx_menu_rows_adm = [
         [rx_kb_style(['text' => $textbotlang['Admin']['Status']['btn'], 'callback_data' => 'admin_status'], 'admin_status', $_rx_adm_styles)],
+        ...$__fx_force_app_rows_adm,
         [rx_kb_style(['text' => "📁 مدیریت پنل‌ها و سرورها", 'callback_data' => 'admin_panels'], 'admin_panels', $_rx_adm_styles)],
         $__fx_shop_finance_row_adm,
         [rx_kb_style(['text' => "👥 مدیریت کاربران", 'callback_data' => 'admin_usershub'], 'admin_usershub', $_rx_adm_styles)],
         ...$__fx_mgmt_rows_adm,
         ...$__fx_myprices_rows_adm,
         ...$__fx_myacc_rows_adm,
+        ...$__fx_svcmgmt_rows_adm,
+        ...$__fx_access_rows_adm,
         [
             rx_kb_style(['text' => "🤙 بخش پشتیبانی", 'callback_data' => 'admin_support'], 'admin_support', $_rx_adm_styles),
             rx_kb_style(['text' => "📚 بخش آموزش", 'callback_data' => 'admin_help'], 'admin_help', $_rx_adm_styles)
         ],
         [rx_kb_style(['text' => "📢 کانال و اطلاع‌رسانی", 'callback_data' => 'admin_channelhub'], 'admin_channelhub', $_rx_adm_styles)],
-        ...((defined('FX_RESELLER_ID') && FX_RESELLER_ID) ? [] : [
-            [rx_kb_style(['text' => "⚙️ تنظیمات فنی و ربات", 'callback_data' => 'admin_settings'], 'admin_settings', $_rx_adm_styles)]
-        ]),
+        [rx_kb_style(['text' => "⚙️ تنظیمات فنی و ربات", 'callback_data' => 'admin_settings'], 'admin_settings', $_rx_adm_styles)],
         [rx_kb_style(['text' => $textbotlang['users']['backbtn'], 'callback_data' => 'admin_back'], 'admin_back', $_rx_adm_styles)]
     ];
 if (defined('FX_RESELLER_LOCK') && FX_RESELLER_LOCK && defined('FX_RESELLER_ID')) {
 $keyboardadmin = rx_kb_encode([
         [rx_kb_style(['text' => $textbotlang['Admin']['Status']['btn'], 'callback_data' => 'admin_status'], 'admin_status', $_rx_adm_styles)],
+        ...$__fx_force_app_rows_adm,
         [rx_kb_style(['text' => "👥 مدیریت کاربران", 'callback_data' => 'admin_usershub'], 'admin_usershub', $_rx_adm_styles)],
         ...$__fx_myprices_rows_adm,
         ...$__fx_myacc_rows_adm,
+        ...$__fx_access_rows_adm,
         [rx_kb_style(['text' => "📢 کانال و اطلاع‌رسانی", 'callback_data' => 'admin_channelhub'], 'admin_channelhub', $_rx_adm_styles)],
         [rx_kb_style(['text' => $textbotlang['users']['backbtn'], 'callback_data' => 'admin_back'], 'admin_back', $_rx_adm_styles)]
     ]);

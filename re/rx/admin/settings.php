@@ -5068,7 +5068,12 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     ]);
     nm_adminInstantReply($from_id, "📌 با فعال کردن این قابلیت  در زمان هایی که آنلاین نیستید ربات بصورت خودکار تمامی تراکنش های کارت به کارت را تایید می کند سپس بعد از آنلاین شدن شما رسید ها را بررسی میکنید سپس اگر رسید فیک  ارسال شده تراکنش را کنسل میکنید", $keyboardverify, 'HTML');
 } elseif ($datain == "onauto") {
-    update("PaySetting", "ValuePay", "offauto", "NamePay", "autoconfirmcart");
+    if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0) {
+        $rxAutoStmt = $pdo->prepare("UPDATE PaySetting SET ValuePay='offauto' WHERE NamePay='autoconfirmcart' AND agent=:a");
+        $rxAutoStmt->execute([':a' => (int)FX_RESELLER_ID]);
+    } else {
+        update("PaySetting", "ValuePay", "offauto", "NamePay", "autoconfirmcart");
+    }
     $paymentverify = select("PaySetting", "ValuePay", "NamePay", "autoconfirmcart", "select")['ValuePay'];
     $keyboardverify = json_encode([
         'inline_keyboard' => [
@@ -5082,7 +5087,12 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     ]);
     Editmessagetext($from_id, $message_id, "خاموش شد", $keyboardverify);
 } elseif ($datain == "offauto") {
-    update("PaySetting", "ValuePay", "onauto", "NamePay", "autoconfirmcart");
+    if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0) {
+        $rxAutoStmt = $pdo->prepare("UPDATE PaySetting SET ValuePay='onauto' WHERE NamePay='autoconfirmcart' AND agent=:a");
+        $rxAutoStmt->execute([':a' => (int)FX_RESELLER_ID]);
+    } else {
+        update("PaySetting", "ValuePay", "onauto", "NamePay", "autoconfirmcart");
+    }
     $paymentverify = select("PaySetting", "ValuePay", "NamePay", "autoconfirmcart", "select")['ValuePay'];
     $keyboardverify = json_encode([
         'inline_keyboard' => [

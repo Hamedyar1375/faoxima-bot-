@@ -336,6 +336,64 @@ switch ($data['actions'] ?? '') {
             sendJsonResponse(false, "An error occurred while delete panel");
         }
         break;
+
+    // ==== FX-RESELLER-SVCMGMT: tenant-scoped service (panel) operations ====
+    // The caller (main admin API) specifies the target reseller via "agent".
+    // Every read/write is scoped to that reseller's own panels by the shared
+    // core, so a panel that does not belong to the given reseller is untouched.
+    case 'svc_panels':
+        validateMethod('GET', $method);
+        $svcRid = (int) ($data['agent'] ?? 0);
+        if ($svcRid <= 0) {
+            sendJsonResponse(false, "agent (reseller id) required", [], 200);
+        }
+        $svcRows = function_exists('fx_res_svc_list_panels') ? fx_res_svc_list_panels($pdo, $svcRid, 100) : [];
+        sendJsonResponse(true, "Successful", ['reseller_id' => $svcRid, 'panels' => $svcRows]);
+        break;
+
+    case 'svc_update':
+        validateMethod('POST', $method);
+        $svcRid = (int) ($data['agent'] ?? 0);
+        $svcPanel = (int) ($data['panel'] ?? 0);
+        $svcField = (string) ($data['field'] ?? '');
+        // $data was htmlspecialchars()-sanitised above; credentials must be stored
+        // exactly as provided (same as the bot/mini-app paths).
+        $svcValue = htmlspecialchars_decode((string) ($data['value'] ?? ''), ENT_QUOTES);
+        if ($svcRid <= 0 || $svcPanel <= 0 || !in_array($svcField, ['password', 'username', 'url', 'sublink'], true)) {
+            sendJsonResponse(false, "agent, panel and a valid field (password|username|url|sublink) required", [], 200);
+        }
+        if ($svcField === 'url' && $svcValue !== '' && !preg_match('#^https?://#i', $svcValue)) {
+            $svcValue = 'https://' . ltrim($svcValue, '/');
+        }
+        $svcOk = false;
+        switch ($svcField) {
+            case 'password':  $svcOk = fx_res_svc_set_password($pdo, $svcRid, $svcPanel, $svcValue); break;
+            case 'username':  $svcOk = fx_res_svc_set_username($pdo, $svcRid, $svcPanel, $svcValue); break;
+            case 'url':       $svcOk = fx_res_svc_set_url($pdo, $svcRid, $svcPanel, $svcValue); break;
+            case 'sublink':   $svcOk = fx_res_svc_set_sublink($pdo, $svcRid, $svcPanel, $svcValue); break;
+        }
+        if (!$svcOk) {
+            sendJsonResponse(false, "update failed (invalid value or panel not owned by this reseller)", [], 200);
+        }
+        sendJsonResponse(true, "service updated successfully", ['field' => $svcField], 200);
+        break;
+
+    case 'svc_toggle':
+        validateMethod('POST', $method);
+        $svcRid = (int) ($data['agent'] ?? 0);
+        $svcPanel = (int) ($data['panel'] ?? 0);
+        $svcField = (string) ($data['field'] ?? '');
+        if ($svcRid <= 0 || $svcPanel <= 0 || !in_array($svcField, ['status', 'status_extend'], true)) {
+            sendJsonResponse(false, "agent, panel and a valid field (status|status_extend) required", [], 200);
+        }
+        $svcNext = fx_res_svc_toggle($pdo, $svcRid, $svcPanel, $svcField);
+        if ($svcNext === null) {
+            sendJsonResponse(false, "toggle failed (panel not owned by this reseller)", [], 200);
+        }
+        sendJsonResponse(true, "service toggled", ['field' => $svcField, 'value' => $svcNext], 200);
+        break;
+    // ==== end FX-RESELLER-SVCMGMT ====
+
     case 'set_inbounds':
         validateMethod('POST', $method);
         $required_fields = ['id', 'input'];

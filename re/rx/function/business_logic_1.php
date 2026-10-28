@@ -22,7 +22,7 @@ if (!function_exists('rx_randomWalletAmounts')) {
 }
 
 if (!function_exists('rx_promptWalletChargeCustomAmount')) {
-    function rx_promptWalletChargeCustomAmount($from_id, $message_id, $user)
+    function rx_promptWalletChargeCustomAmount($from_id, $message_id, $user, $prefix = '')
     {
         global $textbotlang, $datatextbot, $setting;
 
@@ -47,36 +47,66 @@ if (!function_exists('rx_promptWalletChargeCustomAmount')) {
             ]
         ]);
         $rxWalletAmountPromptTpl = $datatextbot['dyn_wallet_prompt_amount_prompt'] ?? "💸 مبلغ را  به تومان وارد کنید:\n✅  حداقل مبلغ %s حداکثر مبلغ %s تومان می باشد";
-        Editmessagetext($from_id, $message_id, sprintf($rxWalletAmountPromptTpl, $minbalance, $maxbalance), $bakinfos, 'HTML');
+        Editmessagetext($from_id, $message_id, (string) $prefix . sprintf($rxWalletAmountPromptTpl, $minbalance, $maxbalance), $bakinfos, 'HTML');
         step('getprice', $from_id);
         update("user", 'Processing_value', $message_id, "id", $from_id);
     }
 }
 
 if (!function_exists('rx_walletChargeAmountAccepted')) {
-    function rx_walletChargeAmountAccepted($from_id, $user, $amount)
+    function rx_walletChargeAmountAccepted($from_id, $user, $amount, $message_id = 0, $successPrefix = '')
     {
         global $setting, $textbotlang, $datatextbot;
+        $message_id = (int) $message_id;
+        $successPrefix = (string) $successPrefix;
+        $reply = static function ($text, $keyboard = null, $parseMode = 'HTML') use ($from_id, $message_id) {
+            if ($message_id > 0 && function_exists('Editmessagetext')) {
+                return Editmessagetext($from_id, $message_id, $text, $keyboard, $parseMode);
+            }
+            return sendmessage($from_id, $text, $keyboard, $parseMode);
+        };
 
         if (!is_numeric($amount)) {
-            sendmessage($from_id, $textbotlang['users']['Balance']['errorprice'], null, 'HTML');
+            $reply($textbotlang['users']['Balance']['errorprice'], null, 'HTML');
             return false;
         }
 
-        [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
-        if ($amount > $maxbalance or $amount < $minbalance) {
-            $minbalanceFmt = number_format($minbalance);
-            $maxbalanceFmt = number_format($maxbalance);
-            $rxWalletOutOfRangeTpl = $datatextbot['dyn_wallet_prompt_amount_out_of_range'] ?? "❌ خطا\n💬 مبلغ باید حداقل %s تومان و حداکثر %s تومان باشد";
-            sendmessage($from_id, sprintf($rxWalletOutOfRangeTpl, $minbalanceFmt, $maxbalanceFmt), null, 'HTML');
-            return false;
+        $__pendingDue = function_exists('rx_pending_purchase_deficiency_due')
+            ? (int) rx_pending_purchase_deficiency_due($user)
+            : 0;
+
+        if ($__pendingDue > 0) {
+            // Deficiency payment for an existing pending order: the normal
+            // wallet-charge minimum (e.g. 20,000 T) does not apply here. The
+            // exact/partial remaining due is a valid invoice amount.
+            if ((int) $amount <= 0) {
+                $reply($textbotlang['users']['Balance']['errorprice'], null, 'HTML');
+                return false;
+            }
+            if ((int) $amount > $__pendingDue) {
+                $reply(
+                    "❌ برای تکمیل سفارش معوق، حداکثر مبلغ کسری یعنی <b>" . number_format($__pendingDue) . "</b> تومان قابل پرداخت است.\n\nبرای شارژ بیشتر، ابتدا سفارش معوق را لغو کنید.",
+                    null,
+                    'HTML'
+                );
+                return false;
+            }
+        } else {
+            [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
+            if ($amount > $maxbalance or $amount < $minbalance) {
+                $minbalanceFmt = number_format($minbalance);
+                $maxbalanceFmt = number_format($maxbalance);
+                $rxWalletOutOfRangeTpl = $datatextbot['dyn_wallet_prompt_amount_out_of_range'] ?? "❌ خطا\n💬 مبلغ باید حداقل %s تومان و حداکثر %s تومان باشد";
+                $reply(sprintf($rxWalletOutOfRangeTpl, $minbalanceFmt, $maxbalanceFmt), null, 'HTML');
+                return false;
+            }
         }
 
         if ($user['Balance'] < 0 and intval($setting['Debtsettlement']) == 1) {
             $balancruser = abs($user['Balance']);
             if ($amount < $balancruser) {
                 $rxDebtMustPayTpl = $datatextbot['dyn_wallet_prompt_debt_must_pay_first'] ?? "❌ شما بدهی دارید، باید حداقل %s تومان پرداخت کنید.\n         میبغ خود را مجددا ارسال نمایید";
-                sendmessage($from_id, sprintf($rxDebtMustPayTpl, $balancruser), null, 'HTML');
+                $reply(sprintf($rxDebtMustPayTpl, $balancruser), null, 'HTML');
                 return false;
             }
         }
@@ -87,7 +117,7 @@ if (!function_exists('rx_walletChargeAmountAccepted')) {
         $__discEligibleCharge = class_exists('MiniDiscount') ? MiniDiscount::hasEligible('charge', '', '', '', $user) : false;
         if (!$__discEligibleCharge) {
             global $step_payment;
-            sendmessage($from_id, $textbotlang['users']['Balance']['selectPatment'], $step_payment, 'HTML');
+            $reply($successPrefix . $textbotlang['users']['Balance']['selectPatment'], $step_payment, 'HTML');
             step('get_step_payment', $from_id);
             return true;
         }
@@ -102,7 +132,7 @@ if (!function_exists('rx_walletChargeAmountAccepted')) {
                 ]
             ]
         ]);
-        sendmessage($from_id, $datatextbot['dyn_wallet_prompt_ask_has_discount'] ?? "🎁 آیا برای شارژ کیف پول کد تخفیف دارید؟", $__askdisc, 'HTML');
+        $reply($successPrefix . ($datatextbot['dyn_wallet_prompt_ask_has_discount'] ?? "🎁 آیا برای شارژ کیف پول کد تخفیف دارید؟"), $__askdisc, 'HTML');
         step('home', $from_id);
         return true;
     }
@@ -191,12 +221,17 @@ function rxReceiptDeliveryRoute($topicKey = 'receiptreport')
     // when unset/0 return topic_enabled=false so callers fall back to private
     // delivery to botsaz.admin_ids using the ambient (reseller) bot token.
     // No thread mapping here: topicid thread ids belong to the main group.
-    if (defined('FX_RESELLER_ID')) {
+    // API/mini-app requests do not define FX_RESELLER_ID; use the authenticated
+    // tenant context so their receipts go to the reseller's own group too.
+    $fxTenantId = defined('FX_RESELLER_ID')
+        ? (int) FX_RESELLER_ID
+        : (function_exists('fx_tenant_agent_id') ? (int) fx_tenant_agent_id() : 0);
+    if ($fxTenantId > 0) {
         $fxRow = null;
         if ($pdo instanceof PDO) {
             try {
                 $stmt = $pdo->prepare('SELECT setting FROM botsaz WHERE id_user = ? LIMIT 1');
-                $stmt->execute([(string) FX_RESELLER_ID]);
+                $stmt->execute([(string) $fxTenantId]);
                 $fxJson = $stmt->fetchColumn();
                 if (is_string($fxJson) && $fxJson !== '') {
                     $fxDecoded = json_decode($fxJson, true);

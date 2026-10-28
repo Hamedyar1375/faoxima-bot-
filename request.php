@@ -66,7 +66,10 @@ class CurlRequest {
             $this->timeout = $cfgTimeout > 0 ? $cfgTimeout : 20;
         }
         $connectTimeout = max(6, (int)round($this->timeout * 0.4));
-        $maxAttempts = 2;
+        // Mutating panel calls (create/update/delete) must not be retried after a
+        // timeout: the first request may already have created the service/user.
+        // Retrying POST here can duplicate accounts or extend the user's wait.
+        $maxAttempts = in_array(strtoupper((string) $method), ['POST', 'PUT', 'PATCH', 'DELETE'], true) ? 1 : 2;
         $lastError = '';
         $response = false;
         $httpCode  = 0;

@@ -62,6 +62,38 @@ if (!function_exists('rx_log_event')) {
     }
 }
 
+if (!function_exists('rx_notify_callback_failure')) {
+    function rx_notify_callback_failure($reason = '')
+    {
+        $ctx = $GLOBALS['rx_callback_failure_context'] ?? null;
+        if (!is_array($ctx) || empty($ctx['from_id'])) {
+            return false;
+        }
+        if (!empty($GLOBALS['rx_callback_failure_notified'])) {
+            return false;
+        }
+        $GLOBALS['rx_callback_failure_notified'] = true;
+        $uid = $ctx['from_id'];
+        $cb = $ctx['callback_query_id'] ?? null;
+        $message = "❌ عملیات پرداخت/ساخت سرویس انجام نشد.\nلطفاً دوباره تلاش کنید. اگر مبلغی از کیف پول شما کسر شد، با پشتیبانی تماس بگیرید.";
+        try {
+            if (function_exists('sendmessage')) {
+                @sendmessage($uid, $message, null, 'HTML');
+            }
+            if (!empty($cb) && function_exists('telegram')) {
+                @telegram('answerCallbackQuery', [
+                    'callback_query_id' => $cb,
+                    'text' => '❌ خطا در انجام عملیات',
+                    'show_alert' => true,
+                    'cache_time' => 0,
+                ]);
+            }
+        } catch (Throwable $e) {
+        }
+        return true;
+    }
+}
+
 set_error_handler(function($severity, $message, $file, $line) {
 
 
@@ -90,6 +122,7 @@ set_exception_handler(function($e) {
         'file' => $e->getFile(),
         'line' => $e->getLine(),
     ]);
+    rx_notify_callback_failure($e->getMessage());
     if (!headers_sent()) {
         http_response_code(500);
         header('Content-Type: text/plain; charset=utf-8');
@@ -105,6 +138,7 @@ register_shutdown_function(function() {
             'file' => $err['file'],
             'line' => $err['line'],
         ]);
+        rx_notify_callback_failure($err['message']);
         if (!headers_sent()) {
             http_response_code(500);
         }

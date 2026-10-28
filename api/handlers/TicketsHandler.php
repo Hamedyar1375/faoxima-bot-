@@ -474,23 +474,74 @@ final class TicketsHandler extends BaseHandler
         return $list;
     }
 
+    /**
+     * Resolve notification recipients for the active authenticated tenant.
+     * Main bot (tenant 0): main administrators only. Reseller tenant: owner and
+     * delegated admins of that exact bot only.
+     *
+     * @return array{tenant:int,recipients:string[],bot_token:?string}
+     */
+    private function tenantNotificationContext(string $idsupport = ''): array
+    {
+        $tenant = function_exists('fx_tenant_agent_id') ? max(0, (int) fx_tenant_agent_id()) : 0;
+        $recipients = [];
+        $botToken = null;
+
+        $add = static function ($id) use (&$recipients): void {
+            $id = trim((string) $id);
+            if ($id !== '' && ctype_digit($id) && (int) $id > 0) {
+                $recipients[$id] = true;
+            }
+        };
+
+        if ($tenant > 0) {
+            $row = FaoximaDb::fetchOne(
+                'SELECT id_user, bot_token, admin_ids FROM botsaz WHERE id_user = :id LIMIT 1',
+                [':id' => (string) $tenant]
+            );
+            if (is_array($row)) {
+                $botToken = trim((string) ($row['bot_token'] ?? '')) ?: null;
+                $add($row['id_user'] ?? $tenant);
+                $adminIds = json_decode((string) ($row['admin_ids'] ?? '[]'), true);
+                if (is_array($adminIds)) {
+                    foreach ($adminIds as $aid) $add($aid);
+                }
+            }
+        } else {
+            $add($GLOBALS['adminnumber'] ?? '');
+            // Main admins only: exclude IDs that are owners of reseller bots.
+            $rows = FaoximaDb::fetchAll(
+                'SELECT a.id_admin FROM admin a LEFT JOIN botsaz b ON b.id_user = a.id_admin WHERE b.id_user IS NULL'
+            );
+            foreach ($rows as $row) $add($row['id_admin'] ?? '');
+            if ($idsupport !== '') $add($idsupport);
+        }
+
+        return [
+            'tenant' => $tenant,
+            'recipients' => array_keys($recipients),
+            'bot_token' => $botToken,
+        ];
+    }
+
     private function uploadMediaMulti(string $preferred, array $uploads): array
     {
-        $channel = (string)($this->setting['Channel_Report'] ?? '');
-        $main = trim((string)($GLOBALS['adminnumber'] ?? ''));
-        $target = ($main !== '' && $main !== '0')
-            ? $main
-            : ($channel !== '' ? $channel : (($preferred !== '' && $preferred !== '0') ? $preferred : $this->uid()));
+        $ctx = $this->tenantNotificationContext($preferred);
+        $token = $ctx['bot_token'];
+        $target = (string) ($ctx['recipients'][0] ?? '');
+        if ($target === '') {
+            $target = $this->uid();
+        }
         $media = [];
         if (count($uploads) === 1) {
             $u = $uploads[0];
             $cf = new CURLFile($u['tmp'], $u['mime'] !== '' ? $u['mime'] : ($u['video'] ? 'video/mp4' : 'image/jpeg'), $u['name']);
             if ($u['video']) {
-                $res = telegram('sendVideo', ['chat_id' => $target, 'video' => $cf]);
+                $res = telegram('sendVideo', ['chat_id' => $target, 'video' => $cf], $token);
                 $fid = $res['result']['video']['file_id'] ?? '';
                 if ($fid !== '') $media[] = ['type' => 'video', 'file_id' => (string)$fid];
             } else {
-                $res = telegram('sendPhoto', ['chat_id' => $target, 'photo' => $cf]);
+                $res = telegram('sendPhoto', ['chat_id' => $target, 'photo' => $cf], $token);
                 $ph = $res['result']['photo'] ?? [];
                 $fid = (is_array($ph) && $ph) ? (end($ph)['file_id'] ?? '') : '';
                 if ($fid !== '') $media[] = ['type' => 'photo', 'file_id' => (string)$fid];
@@ -503,7 +554,7 @@ final class TicketsHandler extends BaseHandler
                 $arr[] = ['type' => $u['video'] ? 'video' : 'photo', 'media' => 'attach://' . $key];
                 $payload[$key] = new CURLFile($u['tmp'], $u['mime'] !== '' ? $u['mime'] : ($u['video'] ? 'video/mp4' : 'image/jpeg'), $u['name']);
             }
-            $res = telegram('sendMediaGroup', array_merge(['chat_id' => $target, 'media' => $arr], $payload));
+            $res = telegram('sendMediaGroup', array_merge(['chat_id' => $target, 'media' => $arr], $payload), $token);
             foreach (($res['result'] ?? []) as $r) {
                 if (isset($r['photo']) && is_array($r['photo'])) {
                     $fid = end($r['photo'])['file_id'] ?? '';
@@ -518,7 +569,18 @@ final class TicketsHandler extends BaseHandler
 
     private function notifyAdmins(string $idsupport, string $text, array $mediaArr, string $uploadTarget, string $tracking = ''): void
     {
-        $channel = (string)($this->setting['Channel_Report'] ?? '');
+        $ctx = $this->tenantNotificationContext($idsupport);
+        $recipients = $ctx['recipients'];
+        $token = $ctx['bot_token'];
+        $tenant = (int) $ctx['tenant'];
+        if (empty($recipients)) {
+            FaoximaLogger::warn('Ticket notification skipped: no tenant recipients', [
+                'tenant' => $tenant,
+                'tracking' => $tracking,
+            ]);
+            return;
+        }
+
         $topicRow = select('topicid', 'idreport', 'report', 'otherservice', 'select');
         $topic = is_array($topicRow) ? (string)($topicRow['idreport'] ?? '') : '';
         $miniappOnly = (string)($this->setting['miniapp_ticket_mode'] ?? '0') === '1';
@@ -527,13 +589,13 @@ final class TicketsHandler extends BaseHandler
         }
         $replyKb = ($tracking !== '' && !$miniappOnly) ? json_encode(['inline_keyboard' => [[['text' => '💬 پاسخ به تیکت', 'callback_data' => 'ticketadminreply_' . $tracking]]]], JSON_UNESCAPED_UNICODE) : '';
 
-        $sendAlbum = function (string $chat, ?string $topicId) use ($mediaArr) {
+        $sendAlbum = function (string $chat, ?string $topicId) use ($mediaArr, $token) {
             if (count($mediaArr) === 0) return;
             if (count($mediaArr) === 1) {
                 $m = $mediaArr[0];
                 $p = ['chat_id' => $chat, $m['type'] => $m['file_id']];
                 if ($topicId !== null) $p['message_thread_id'] = $topicId;
-                telegram($m['type'] === 'video' ? 'sendvideo' : 'sendphoto', $p);
+                telegram($m['type'] === 'video' ? 'sendvideo' : 'sendphoto', $p, $token);
             } else {
                 $arr = [];
                 foreach ($mediaArr as $m) {
@@ -541,36 +603,23 @@ final class TicketsHandler extends BaseHandler
                 }
                 $p = ['chat_id' => $chat, 'media' => $arr];
                 if ($topicId !== null) $p['message_thread_id'] = $topicId;
-                telegram('sendMediaGroup', $p);
+                telegram('sendMediaGroup', $p, $token);
             }
         };
 
-        $deliver = function (string $chat, bool $useTopic, bool $withButton) use ($text, $replyKb, $topic, $uploadTarget, $mediaArr, $sendAlbum) {
+        $deliver = function (string $chat, bool $useTopic, bool $withButton) use ($text, $replyKb, $topic, $uploadTarget, $mediaArr, $sendAlbum, $token) {
             $tid = ($useTopic && $topic !== '') ? $topic : null;
             $p = ['chat_id' => $chat, 'text' => $text, 'parse_mode' => 'HTML'];
             if ($tid !== null) $p['message_thread_id'] = $tid;
             if ($withButton && $replyKb !== '') $p['reply_markup'] = $replyKb;
-            telegram('sendmessage', $p);
+            telegram('sendmessage', $p, $token);
             if (count($mediaArr) > 0 && $chat !== $uploadTarget) {
                 $sendAlbum($chat, $tid);
             }
         };
 
-        $main = trim((string)($GLOBALS['adminnumber'] ?? ''));
-        $pv = [];
-        if ($idsupport !== '' && $idsupport !== '0') $pv[$idsupport] = true;
-        if ($main !== '' && $main !== '0') $pv[$main] = true;
-        if (count($pv) === 0) {
-            foreach (FaoximaDb::fetchAll("SELECT id_admin FROM admin WHERE id_admin IS NOT NULL AND id_admin <> '' AND id_admin <> '0'", []) as $a) {
-                $aid = (string)($a['id_admin'] ?? '');
-                if ($aid !== '') $pv[$aid] = true;
-            }
-        }
-        foreach (array_keys($pv) as $chat) {
-            $deliver((string)$chat, false, true);
-        }
-        if ($channel !== '') {
-            $deliver((string)$channel, true, false);
+        foreach ($recipients as $chat) {
+            $deliver((string) $chat, false, true);
         }
     }
 }

@@ -154,6 +154,10 @@ try {
         'test_account_info'      => ['class' => 'TestAccountHandler', 'mode' => 'info'],
         'test_account_create'    => ['class' => 'TestAccountHandler', 'mode' => 'create'],
         'service_locations'      => 'ServiceLocationsHandler',
+        // FX-RESELLER-SVCMGMT: reseller self-service panel management (scoped to the caller's own reseller).
+        'reseller_svc_panels'    => ['class' => 'ResellerServiceHandler', 'mode' => 'list'],
+        'reseller_svc_update'    => ['class' => 'ResellerServiceHandler', 'mode' => 'update'],
+        'reseller_svc_toggle'    => ['class' => 'ResellerServiceHandler', 'mode' => 'toggle'],
     ];
 
     $payload = FaoximaInput::payload();
@@ -199,9 +203,32 @@ try {
         FaoximaResponse::fail(403, 'user blocked');
     }
 
+    // Resolve the tenant from the authenticated token/session first. The same
+    // Telegram user can be both main-bot admin and reseller owner, so user.agent
+    // alone is NOT a safe tenant source. Fall back to the legacy resolver only
+    // for older tokens that do not yet have a stored auth-session tenant.
+    if (function_exists('fx_set_tenant_agent_id')) {
+        $__fxSessionTenant = (is_string($token) && $token !== '' && class_exists('FaoximaAuth'))
+            ? FaoximaAuth::sessionTenantForToken($token, (int) $user['id'])
+            : null;
+        $__fxTenant = $__fxSessionTenant !== null
+            ? (int) $__fxSessionTenant
+            : (function_exists('rx_resolve_authenticated_tenant_agent_id')
+                ? (int) rx_resolve_authenticated_tenant_agent_id($user)
+                : 0);
+        fx_set_tenant_agent_id($__fxTenant);
+        unset($__fxSessionTenant, $__fxTenant);
+    }
+
     $adminIds = select('admin', 'id_admin', null, null, 'FETCH_COLUMN', ['cache' => false]);
     $isAdmin = is_array($adminIds) && in_array((int)$user['id'], array_map('intval', $adminIds), true);
-    if (!$isAdmin && ($user['joinchannel'] ?? '') !== 'active') {
+    // FX-RESELLER-SVCMGMT: a reseller admin (owner/delegated admin of a reseller
+    // bot) is NOT a main-bot customer — the main-bot force-join channel gate does
+    // not apply to them. They self-serve their own reseller's panels.
+    $fxSvcResellerId = function_exists('fx_res_svc_user_reseller_id')
+        ? fx_res_svc_user_reseller_id(null, (int) $user['id'])
+        : null;
+    if (!$isAdmin && $fxSvcResellerId === null && ($user['joinchannel'] ?? '') !== 'active') {
         $channelsId = select('channels', 'link', null, null, 'FETCH_COLUMN', ['cache' => false]);
         if (!empty($channelsId) && is_array($channelsId)) {
             FaoximaResponse::fail(403, 'join channel required');

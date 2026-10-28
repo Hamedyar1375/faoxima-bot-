@@ -1383,3 +1383,79 @@ if (!function_exists('rxAssertUniqueMenuCallbacks')) {
         return $collisions;
     }
 }
+
+if (!function_exists('rx_nav_guard_keyboard')) {
+    /**
+     * FX-NAV-GUARD (2026-10-18): guarantee every private-chat message has a way
+     * back. Adds missing inline navigation rows without replacing existing
+     * buttons. Reply keyboards are left untouched (they already provide nav and
+     * cannot be mixed with inline_keyboard in one reply_markup object).
+     *
+     * @param mixed $keyboard Existing reply_markup (JSON string, array or null)
+     * @return string JSON reply_markup
+     */
+    function rx_nav_guard_keyboard($keyboard, $chatId = null)
+    {
+        $original = is_string($keyboard) ? $keyboard : null;
+        $data = is_array($keyboard) ? $keyboard : (is_string($keyboard) ? json_decode($keyboard, true) : null);
+        if (!is_array($data)) {
+            $data = [];
+        }
+
+        // Reply keyboard / remove-keyboard cannot carry inline buttons.
+        if (isset($data['keyboard']) || !empty($data['remove_keyboard'])) {
+            return $original !== null && trim($original) !== ''
+                ? $original
+                : json_encode($data, JSON_UNESCAPED_UNICODE);
+        }
+
+        if (!isset($data['inline_keyboard']) || !is_array($data['inline_keyboard'])) {
+            $data['inline_keyboard'] = [];
+        }
+
+        $hasBack = false;
+        $hasHome = false;
+        foreach ($data['inline_keyboard'] as $row) {
+            if (!is_array($row)) continue;
+            foreach ($row as $btn) {
+                if (!is_array($btn)) continue;
+                $cb = isset($btn['callback_data']) && is_string($btn['callback_data'])
+                    ? strtolower(trim($btn['callback_data'])) : '';
+                $label = isset($btn['text']) && is_string($btn['text'])
+                    ? trim(preg_replace('/[\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FE0E}\x{FE0F}]/u', '', $btn['text']))
+                    : '';
+
+                if (in_array($cb, ['backuser', 'backadmin', 'adm_hub_main', 'admin', 'home', 'start', 'fx_nav_home'], true)) {
+                    $hasHome = true;
+                }
+                if ($cb !== '' && (
+                    in_array($cb, ['backmenu', 'fx_nav_back', 'fx_unlock_retry', 'helpbtns', 'helpbtn', 'backorder', 'backproductadmin', 'cat_back', 'shopitem_back'], true)
+                    || strpos($cb, 'fx_cancel_receipt_') === 0
+                    || preg_match('/(^|_)back(menu)?($|_)|_back$/', $cb)
+                )) {
+                    $hasBack = true;
+                }
+                if ($label !== '') {
+                    if (strpos($label, 'منوی اصلی') !== false || strpos($label, 'منو اصلی') !== false || strpos($label, 'خانه') !== false || strpos($label, 'منوی مدیریت') !== false) {
+                        $hasHome = true;
+                    }
+                    if (strpos($label, 'بازگشت') !== false || strpos($label, 'منوی قبل') !== false || strpos($label, 'منو قبل') !== false) {
+                        $hasBack = true;
+                    }
+                }
+            }
+        }
+
+        $backBtn = ['text' => '🔙 بازگشت به منوی قبل', 'callback_data' => 'fx_nav_back'];
+        $homeBtn = ['text' => '🏠 منوی اصلی', 'callback_data' => 'fx_nav_home'];
+        if (!$hasBack && !$hasHome) {
+            $data['inline_keyboard'][] = [$backBtn, $homeBtn];
+        } elseif (!$hasBack) {
+            $data['inline_keyboard'][] = [$backBtn];
+        } elseif (!$hasHome) {
+            $data['inline_keyboard'][] = [$homeBtn];
+        }
+
+        return json_encode($data, JSON_UNESCAPED_UNICODE);
+    }
+}

@@ -165,6 +165,27 @@ if (!function_exists('rxReceiptSyncTelegram')) {
     }
 }
 
+if (!function_exists('rxReceiptActorDisplay')) {
+    /** Display the confirming admin as @username when available, otherwise numeric ID. */
+    function rxReceiptActorDisplay($actorId, string $actorLabel = ''): string
+    {
+        $actorId = trim((string)$actorId);
+        $username = '';
+        if ($actorId !== '' && ctype_digit($actorId) && function_exists('select')) {
+            $row = select('user', 'username', 'id', $actorId, 'select', ['cache' => false]);
+            if (is_array($row)) {
+                $username = trim((string)($row['username'] ?? ''));
+            }
+        }
+        if ($username !== '' && !in_array(strtolower($username), ['none', 'null', '0'], true)) {
+            return '@' . ltrim($username, '@');
+        }
+        $actorLabel = trim($actorLabel);
+        if ($actorLabel !== '' && $actorLabel !== $actorId) return $actorLabel;
+        return $actorId !== '' ? $actorId : 'نامشخص';
+    }
+}
+
 if (!function_exists('rxReceiptConfirm')) {
     function rxReceiptConfirm(string $orderId, array $ctx = []): array
     {
@@ -298,9 +319,12 @@ if (!function_exists('rxReceiptConfirm')) {
 
         if (function_exists('update')) {
             update('Payment_report', 'at_updated', date('Y/m/d H:i:s'), 'id_order', $finalReport['id_order']);
-            update('user', 'Processing_value_one', 'none', 'id', $balanceUser['id']);
-            update('user', 'Processing_value_tow', 'none', 'id', $balanceUser['id']);
-            update('user', 'Processing_value_four', 'none', 'id', $balanceUser['id']);
+            $__keepPendingState = strpos((string) ($finalReport['dec_not_confirmed'] ?? ''), 'pending_purchase_waiting') !== false;
+            if (!$__keepPendingState) {
+                update('user', 'Processing_value_one', 'none', 'id', $balanceUser['id']);
+                update('user', 'Processing_value_tow', 'none', 'id', $balanceUser['id']);
+                update('user', 'Processing_value_four', 'none', 'id', $balanceUser['id']);
+            }
         }
 
         $formatPriceCart = number_format((int)$finalReport['price']);
@@ -309,11 +333,12 @@ if (!function_exists('rxReceiptConfirm')) {
             $topicRow = select('topicid', 'idreport', 'report', 'paymentreport', 'select');
             $paymentreports = is_array($topicRow) ? ($topicRow['idreport'] ?? null) : null;
         }
+        $rxActorDisplay = rxReceiptActorDisplay($actorId, $actorLabel);
         if (is_array($setting ?? null) && !empty($setting['Channel_Report']) && function_exists('telegram')) {
             $textReport = "📣 یک ادمین رسید پرداخت  را تایید کرد.\n\n"
                 . "اطلاعات :\n"
                 . "<blockquote>💸 روش پرداخت : {$finalReport['Payment_Method']}</blockquote>\n"
-                . "<blockquote>👤آیدی عددی  ادمین تایید کننده : " . htmlspecialchars((string)$actorLabel, ENT_QUOTES, 'UTF-8') . "</blockquote>\n"
+                . "<blockquote>👤 ادمین تایید کننده : " . htmlspecialchars($rxActorDisplay, ENT_QUOTES, 'UTF-8') . "</blockquote>\n"
                 . "<blockquote>💰 مبلغ پرداخت : {$formatPriceCart}</blockquote>\n"
                 . "<blockquote>👤 ایدی عددی کاربر : <code>{$finalReport['id_user']}</code></blockquote>\n"
                 . "<blockquote>👤 نام کاربری کاربر : @{$balanceUser['username']}</blockquote>\n"
@@ -335,6 +360,7 @@ if (!function_exists('rxReceiptConfirm')) {
             ]);
             $balanceFmt = function_exists('rxFormatToman') ? rxFormatToman($balanceUser['Balance'] ?? 0) : number_format((int)($balanceUser['Balance'] ?? 0));
             $textConfirm = "✅ پرداخت توسط ادمین تایید شده\n"
+                . "👤 تایید کننده: " . htmlspecialchars($rxActorDisplay, ENT_QUOTES, 'UTF-8') . "\n"
                 . "👤 شناسه کاربر: <code>{$finalReport['id_user']}</code>\n"
                 . "🛒 کد پیگیری پرداخت: {$orderId}\n"
                 . "⚜️ نام کاربری: @{$balanceUser['username']}\n"
@@ -398,12 +424,13 @@ if (!function_exists('rxReceiptReject')) {
 
         $finalReport = rxReceiptGet($orderId, false);
         $reasonEsc = htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
+        $rxRejectActorDisplay = rxReceiptActorDisplay($actorId, $actorLabel);
 
         if (!$skipTelegramSync) {
             $textConfirmed = "❌ رسید پرداخت رد شد.\n\n"
                 . "اطلاعات :\n"
                 . "<blockquote>💸 روش پرداخت : {$finalReport['Payment_Method']}</blockquote>\n"
-                . "<blockquote>👤آیدی عددی  ادمین رد کننده : " . htmlspecialchars((string)$actorLabel, ENT_QUOTES, 'UTF-8') . "</blockquote>\n"
+                . "<blockquote>👤 ادمین رد کننده : " . htmlspecialchars($rxRejectActorDisplay, ENT_QUOTES, 'UTF-8') . "</blockquote>\n"
                 . "<blockquote>💰 مبلغ پرداخت : " . (function_exists('rxFormatToman') ? rxFormatToman($finalReport['price']) : number_format((int)$finalReport['price'])) . "</blockquote>\n"
                 . "<blockquote>دلیل رد کردن : {$reasonEsc}</blockquote>\n"
                 . "<blockquote>👤 ایدی عددی کاربر: {$finalReport['id_user']}</blockquote>";
@@ -413,6 +440,7 @@ if (!function_exists('rxReceiptReject')) {
         if ($notifyUser && function_exists('sendmessage')) {
             $textReject = "❌ کاربر گرامی پرداخت شما به دلیل زیر رد گردید.\n"
                 . "✍️ {$reason}\n"
+                . "👤 رد کننده: " . htmlspecialchars(rxReceiptActorDisplay($actorId, $actorLabel), ENT_QUOTES, 'UTF-8') . "\n"
                 . "🛒 کد پیگیری پرداخت: {$orderId}\n                ";
             $targetUserId = $finalReport['id_user'] ?? null;
             if ($targetUserId) {
@@ -421,6 +449,173 @@ if (!function_exists('rxReceiptReject')) {
         }
 
         return ['ok' => true, 'report' => $finalReport];
+    }
+}
+
+if (!function_exists('rxReceiptUserCancel')) {
+    /**
+     * User/auto cancellation of a submitted receipt. Unlike admin reject, this
+     * also supports a half-uploaded 'pending' receipt and invalidates the
+     * related pending-purchase invoice so the account is not blocked forever.
+     */
+    function rxReceiptUserCancel(string $orderId, $userId, string $reason = 'cancelled_by_user'): array
+    {
+        global $pdo;
+        if (!($pdo instanceof PDO)) {
+            return ['ok' => false, 'reason' => 'pdo_unavailable'];
+        }
+        $orderId = trim($orderId);
+        $userId = trim((string) $userId);
+        if ($orderId === '' || $userId === '') {
+            return ['ok' => false, 'reason' => 'invalid_args'];
+        }
+
+        $ownTx = !$pdo->inTransaction();
+        $invoiceInvalidated = false;
+        try {
+            if ($ownTx) $pdo->beginTransaction();
+            $stmt = $pdo->prepare('SELECT * FROM Payment_report WHERE id_order = :o LIMIT 1 FOR UPDATE');
+            $stmt->execute([':o' => $orderId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                if ($ownTx) $pdo->rollBack();
+                return ['ok' => false, 'reason' => 'not_found'];
+            }
+            if ((string) ($row['id_user'] ?? '') !== $userId) {
+                if ($ownTx) $pdo->rollBack();
+                return ['ok' => false, 'reason' => 'not_owner'];
+            }
+            $status = strtolower((string) ($row['payment_Status'] ?? ''));
+            if (!in_array($status, ['waiting', 'pending'], true)) {
+                if ($ownTx) $pdo->rollBack();
+                return ['ok' => false, 'reason' => 'already_final', 'report' => $row];
+            }
+
+            $targetStatus = $status === 'waiting' ? 'reject' : 'cancelled';
+            $marker = substr('cancelled:' . $reason, 0, 190);
+            $now = date('Y/m/d H:i:s');
+            $upd = $pdo->prepare(
+                'UPDATE Payment_report SET payment_Status = :s, dec_not_confirmed = :d, at_updated = :au
+                  WHERE id_order = :o AND id_user = :u AND LOWER(payment_Status) = :src'
+            );
+            $upd->execute([
+                ':s' => $targetStatus, ':d' => $marker, ':au' => $now,
+                ':o' => $orderId, ':u' => $userId, ':src' => $status,
+            ]);
+            if ($upd->rowCount() !== 1) {
+                if ($ownTx) $pdo->rollBack();
+                return ['ok' => false, 'reason' => 'race_lost'];
+            }
+
+            $idInvoice = (string) ($row['id_invoice'] ?? '');
+            $parts = explode('|', $idInvoice, 2);
+            $invUsername = trim((string) ($parts[1] ?? ''));
+            if (($parts[0] ?? '') === 'getconfigafterpay' && $invUsername !== '') {
+                $live = $pdo->prepare(
+                    "SELECT COUNT(*) FROM Payment_report
+                      WHERE id_user = :u AND id_invoice = :i AND id_order <> :o
+                        AND COALESCE(payment_Status, '') NOT IN ('expire','cancelled','reject')"
+                );
+                $live->execute([':u' => $userId, ':i' => $idInvoice, ':o' => $orderId]);
+                if ((int) $live->fetchColumn() === 0) {
+                    if (rxInvoiceHasInvalidatedAt($pdo)) {
+                        $inv = $pdo->prepare("UPDATE invoice SET Status = 'cancelled', invalidated_at = :t WHERE id_user = :u AND username = :n AND Status IN ('unpaid','Unpaid')");
+                        $inv->execute([':t' => time(), ':u' => $userId, ':n' => $invUsername]);
+                    } else {
+                        $inv = $pdo->prepare("UPDATE invoice SET Status = 'cancelled' WHERE id_user = :u AND username = :n AND Status IN ('unpaid','Unpaid')");
+                        $inv->execute([':u' => $userId, ':n' => $invUsername]);
+                    }
+                    $invoiceInvalidated = $inv->rowCount() > 0;
+                }
+            }
+            if ($ownTx) $pdo->commit();
+        } catch (Throwable $e) {
+            if ($ownTx && $pdo->inTransaction()) {
+                try { $pdo->rollBack(); } catch (Throwable $re) {}
+            }
+            if (function_exists('rx_log_event')) {
+                rx_log_event('RECEIPT_USER_CANCEL_FAILED', $e->getMessage(), ['id_order' => $orderId, 'id_user' => $userId]);
+            }
+            return ['ok' => false, 'reason' => 'db_error'];
+        }
+
+        if (function_exists('clearSelectCache')) {
+            clearSelectCache('Payment_report');
+            if ($invoiceInvalidated) clearSelectCache('invoice');
+        }
+        if (function_exists('rx_redis_del')) {
+            rx_redis_del('faoxima:paystatus:' . $orderId . ':' . $userId);
+        }
+
+        $finalReport = rxReceiptGet($orderId, false);
+        if (is_array($finalReport)) {
+            $reasonLabels = [
+                'cancelled_by_user' => 'لغو توسط کاربر',
+                'expired_no_admin_review' => 'عدم بررسی توسط ادمین در زمان مقرر',
+            ];
+            $reasonLabel = $reasonLabels[$reason] ?? $reason;
+            $adminText = "❌ رسید پرداخت بسته شد.\n\n"
+                . "🛒 کد پیگیری: {$orderId}\n"
+                . "👤 آیدی کاربر: {$userId}\n"
+                . "📝 دلیل: " . htmlspecialchars($reasonLabel, ENT_QUOTES, 'UTF-8');
+            rxReceiptSyncTelegram($finalReport, $adminText, null);
+        }
+        return ['ok' => true, 'report' => $finalReport, 'invoice_cancelled' => $invoiceInvalidated];
+    }
+}
+
+if (!function_exists('rxExpireStalePendingReceipts')) {
+    /**
+     * Legacy entry point retained for cron/backward compatibility.
+     * Receipts are NEVER expired by time anymore: every submitted receipt must
+     * be explicitly approved or rejected by an admin. This routine only heals
+     * receipts whose fulfillment/direct payment is already completed.
+     */
+    function rxExpireStalePendingReceipts(int $olderThanSeconds = 1800, int $limit = 100): int
+    {
+        global $pdo;
+        if (!($pdo instanceof PDO)) return 0;
+
+        try {
+            $pdo->exec("UPDATE Payment_report
+                   SET payment_Status = 'paid'
+                 WHERE payment_Status IN ('waiting','pending','processing','reconciling','manual_review')
+                   AND COALESCE(direct_payment_done, 0) = 1
+                   AND (dec_not_confirmed IS NULL OR dec_not_confirmed NOT LIKE '%auto-refund%')");
+        } catch (Throwable $e) {
+            if (function_exists('rx_log_event')) {
+                rx_log_event('RECEIPT_COMPLETED_STATUS_REPAIR_FAILED', $e->getMessage(), []);
+            }
+        }
+
+        $hasFulfillmentTable = false;
+        if (function_exists('rx_pf_ensure_schema')) {
+            try { $hasFulfillmentTable = (bool) rx_pf_ensure_schema(); } catch (Throwable $e) { $hasFulfillmentTable = false; }
+        }
+        if (!$hasFulfillmentTable) {
+            try {
+                $pdo->query('SELECT 1 FROM payment_fulfillment LIMIT 1');
+                $hasFulfillmentTable = true;
+            } catch (Throwable $e) {
+                $hasFulfillmentTable = false;
+            }
+        }
+        if ($hasFulfillmentTable) {
+            try {
+                $pdo->exec("UPDATE Payment_report pr
+                    INNER JOIN payment_fulfillment pf ON pf.id_order = pr.id_order
+                       SET pr.payment_Status = 'paid', pr.direct_payment_done = 1
+                     WHERE pr.payment_Status IN ('waiting','pending','processing','reconciling','manual_review')
+                       AND pf.state = 'completed'");
+            } catch (Throwable $e) {
+                if (function_exists('rx_log_event')) {
+                    rx_log_event('RECEIPT_COMPLETED_STATUS_REPAIR_FAILED', $e->getMessage(), []);
+                }
+            }
+        }
+
+        // Deliberately no time-based cancellation. Only admins may reject a receipt.
+        return 0;
     }
 }
 

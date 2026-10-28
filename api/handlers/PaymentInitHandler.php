@@ -26,10 +26,18 @@ final class PaymentInitHandler extends BaseHandler
 
         $serverRenewUsername = FaoximaInput::nullableString($this->data, 'renew_username');
         $serverPurchaseUsername = FaoximaInput::nullableString($this->data, 'purchase_username');
+        $isPurchaseFlow = ($serverPurchaseUsername !== null && $serverPurchaseUsername !== '');
         if ($serverRenewUsername !== null && $serverRenewUsername !== '') {
             $amount = $this->serverPendingActionAmount();
-        } elseif ($serverPurchaseUsername !== null && $serverPurchaseUsername !== '') {
+        } elseif ($isPurchaseFlow) {
             $amount = $this->serverPurchaseDueAmount($serverPurchaseUsername);
+        }
+
+        $pendingDeficiency = function_exists('rx_pending_purchase_deficiency_due')
+            ? (int) rx_pending_purchase_deficiency_due($this->user)
+            : 0;
+        if ($pendingDeficiency > 0 && $amount > $pendingDeficiency) {
+            FaoximaResponse::fail(422, '❌ مبلغ پرداخت از کسری باقی‌مانده سفارش بیشتر است.');
         }
 
         if ($method === '') {
@@ -47,6 +55,11 @@ final class PaymentInitHandler extends BaseHandler
 
 
         [$min, $max] = $this->methodLimits($method, $agent, $get);
+        // Order deficiency payments are tied to an existing invoice and may be
+        // below the normal wallet-top-up minimum.
+        if ($isPurchaseFlow || $pendingDeficiency > 0) {
+            $min = 1;
+        }
         if ($amount < $min || $amount > $max) {
             FaoximaResponse::fail(422, faoxima_render_text(faoxima_textbot_get('dyn_paymentinit_amount_out_of_range', '❌ مبلغ باید بین {min} و {max} تومان باشد'), [
                 'min' => number_format($min),
@@ -56,55 +69,65 @@ final class PaymentInitHandler extends BaseHandler
 
 
         $lockMethodKey = ($method === 'carttocart' || $method === 'carttocart_pv') ? 'carttocart' : $method;
-        $lockName = 'faoxima_payment_init_' . $this->user['id'] . '_' . $lockMethodKey;
         $pdo = FaoximaDb::pdo();
-        $lockStmt = $pdo->prepare('SELECT GET_LOCK(:n, 5)');
-        $lockStmt->execute([':n' => $lockName]);
-        $lockAcquired = (int) $lockStmt->fetchColumn() === 1;
+        $lockName = function_exists('rx_callback_lock_acquire')
+            ? rx_callback_lock_acquire($this->user['id'], 'payment_init_' . $lockMethodKey, 5)
+            : ('faoxima_payment_init_' . $this->user['id'] . '_' . $lockMethodKey);
+        $lockAcquired = $lockName !== false;
         if (!$lockAcquired) {
             FaoximaResponse::fail(409, faoxima_textbot_get('dyn_paymentinit_pending_request_exists', '⏳ یک درخواست پرداخت در انتظار بررسی دارید. لطفاً ابتدا آن را تکمیل یا لغو کنید.'));
         }
 
-        register_shutdown_function(static function () use ($pdo, $lockName): void {
-            try {
-                $releaseStmt = $pdo->prepare('SELECT RELEASE_LOCK(:n)');
-                $releaseStmt->execute([':n' => $lockName]);
-            } catch (Throwable $e) {
-            }
-        });
+        if (is_string($lockName) && $lockName !== '' && function_exists('rx_callback_lock_release')) {
+            register_shutdown_function(static function () use ($lockName): void {
+                try {
+                    rx_callback_lock_release($lockName);
+                } catch (Throwable $e) {
+                }
+            });
+        }
+
+        $keepInvoiceKey = ($serverPurchaseUsername !== null && $serverPurchaseUsername !== '')
+            ? 'getconfigafterpay|' . $serverPurchaseUsername
+            : null;
 
         try {
             if ($method === 'carttocart' || $method === 'carttocart_pv') {
-                $keepInvoiceKey = ($serverPurchaseUsername !== null && $serverPurchaseUsername !== '')
-                    ? 'getconfigafterpay|' . $serverPurchaseUsername
-                    : null;
                 $this->purgeStaleCarttocart((int)$this->user['id'], $keepInvoiceKey);
                 $this->purgeAbandonedCarttocart((int)$this->user['id'], $keepInvoiceKey);
 
-                $pendingFresh = (int) FaoximaDb::fetchScalar(
-                    "SELECT COUNT(*) FROM Payment_report
-                      WHERE id_user = :u
-                        AND payment_Status IN ('Unpaid','pending','waiting')
-                        AND (Payment_Method = 'cart to cart' OR Payment_Method = 'carttocart_pv')
-                        AND source = 'miniapp'",
-                    [':u' => $this->user['id']]
-                );
+                $pendingFresh = 0;
+                if ($keepInvoiceKey !== null) {
+                    $pendingFresh = (int) FaoximaDb::fetchScalar(
+                        "SELECT COUNT(*) FROM Payment_report
+                          WHERE id_user = :u
+                            AND payment_Status IN ('pending','waiting')
+                            AND (Payment_Method = 'cart to cart' OR Payment_Method = 'carttocart_pv')
+                            AND source = 'miniapp'
+                            AND id_invoice = :inv",
+                        [':u' => $this->user['id'], ':inv' => $keepInvoiceKey]
+                    );
+                }
                 if ($pendingFresh > 0) {
-                    FaoximaResponse::fail(409, faoxima_textbot_get('dyn_paymentinit_pending_request_exists', '⏳ یک درخواست پرداخت در انتظار بررسی دارید. لطفاً ابتدا آن را تکمیل یا لغو کنید.'));
+                    FaoximaResponse::fail(409, faoxima_textbot_get('dyn_paymentinit_pending_request_exists', '⏳ برای همین سفارش یک رسید در انتظار بررسی دارید. آن را تکمیل یا لغو کنید یا سفارش جدید ثبت کنید.'));
                 }
             } else {
                 $this->purgeStaleGatewayOrders((int)$this->user['id'], $method);
 
-                $pendingFreshGateway = (int) FaoximaDb::fetchScalar(
-                    "SELECT COUNT(*) FROM Payment_report
-                      WHERE id_user = :u
-                        AND payment_Status IN ('Unpaid','pending','waiting')
-                        AND Payment_Method = :m
-                        AND source = 'miniapp'",
-                    [':u' => $this->user['id'], ':m' => $method]
-                );
+                $pendingFreshGateway = 0;
+                if ($keepInvoiceKey !== null) {
+                    $pendingFreshGateway = (int) FaoximaDb::fetchScalar(
+                        "SELECT COUNT(*) FROM Payment_report
+                          WHERE id_user = :u
+                            AND payment_Status IN ('pending','waiting')
+                            AND Payment_Method = :m
+                            AND source = 'miniapp'
+                            AND id_invoice = :inv",
+                        [':u' => $this->user['id'], ':m' => $method, ':inv' => $keepInvoiceKey]
+                    );
+                }
                 if ($pendingFreshGateway > 0) {
-                    FaoximaResponse::fail(409, faoxima_textbot_get('dyn_paymentinit_pending_request_exists', '⏳ یک درخواست پرداخت در انتظار بررسی دارید. لطفاً ابتدا آن را تکمیل یا لغو کنید.'));
+                    FaoximaResponse::fail(409, faoxima_textbot_get('dyn_paymentinit_pending_request_exists', '⏳ برای همین سفارش یک پرداخت در انتظار بررسی دارید. آن را تکمیل یا لغو کنید یا سفارش جدید ثبت کنید.'));
                 }
             }
 
@@ -254,8 +277,12 @@ final class PaymentInitHandler extends BaseHandler
 
             FaoximaResponse::badRequest('Unknown payment method: ' . $method);
         } finally {
-            $releaseStmt = $pdo->prepare('SELECT RELEASE_LOCK(:n)');
-            $releaseStmt->execute([':n' => $lockName]);
+            if (is_string($lockName) && $lockName !== '' && function_exists('rx_callback_lock_release')) {
+                try {
+                    rx_callback_lock_release($lockName);
+                } catch (Throwable $e) {
+                }
+            }
         }
     }
 
@@ -467,9 +494,16 @@ final class PaymentInitHandler extends BaseHandler
         try {
             $userId = (string)$this->user['id'];
             $pdo    = FaoximaDb::pdo();
-            $mRow   = FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1");
-            $dMode  = is_array($mRow) ? ($mRow['ValuePay'] ?? 'random') : 'random';
+            $dMode = function_exists('rx_fetchTenantPaySetting')
+                ? (string) (rx_fetchTenantPaySetting('card_display_mode') ?? 'random')
+                : (string) ((FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = 'card_display_mode' LIMIT 1")['ValuePay'] ?? 'random'));
+            $dMode = $dMode !== '' ? $dMode : 'random';
             $accessSql = "((cn.is_active = 1 AND (NOT EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id) OR EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = ?))) OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = ?))) AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = ?)";
+            // Tenant isolation: a mini-app request must only receive cards that
+            // belong to the authenticated user's tenant.
+            if (function_exists('fx_tenant_sql_agent')) {
+                $accessSql .= " AND " . fx_tenant_sql_agent('cn');
+            }
 
             if ($dMode == 'direct') {
                 $stmt = $pdo->prepare("SELECT cardnumber, namecard FROM card_number cn WHERE {$accessSql} ORDER BY cn.created_at ASC LIMIT 50");
@@ -479,8 +513,9 @@ final class PaymentInitHandler extends BaseHandler
                 $card2 = $directRows[1] ?? null;
             } else {
                 $cycleKey = "card_cycle_{$userId}";
-                $seenRow  = FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = ? LIMIT 1", [$cycleKey]);
-                $seenStr  = is_array($seenRow) ? ($seenRow['ValuePay'] ?? '') : '';
+                $seenStr  = function_exists('rx_fetchTenantPaySetting')
+                    ? (string) (rx_fetchTenantPaySetting($cycleKey) ?? '')
+                    : (string) ((FaoximaDb::fetchOne("SELECT ValuePay FROM PaySetting WHERE NamePay = ? LIMIT 1", [$cycleKey])['ValuePay'] ?? ''));
                 $seen     = array_values(array_filter(array_map('intval', explode(',', $seenStr))));
                 $excl     = !empty($seen) ? "AND cn.id NOT IN (" . implode(',', $seen) . ")" : "";
 
@@ -497,10 +532,14 @@ final class PaymentInitHandler extends BaseHandler
 
                 if ($card) {
                     $newSeen  = implode(',', array_unique(array_merge($seen, [intval($card['id'])])));
-                    $updStmt  = $pdo->prepare("UPDATE PaySetting SET ValuePay = ? WHERE NamePay = ?");
-                    $updStmt->execute([$newSeen, $cycleKey]);
-                    if ($updStmt->rowCount() === 0) {
-                        $pdo->prepare("INSERT INTO PaySetting (NamePay, ValuePay) VALUES (?, ?)")->execute([$cycleKey, $newSeen]);
+                    if (function_exists('rx_writeTenantPaySetting')) {
+                        rx_writeTenantPaySetting($cycleKey, $newSeen);
+                    } else {
+                        $updStmt  = $pdo->prepare("UPDATE PaySetting SET ValuePay = ? WHERE NamePay = ?");
+                        $updStmt->execute([$newSeen, $cycleKey]);
+                        if ($updStmt->rowCount() === 0) {
+                            $pdo->prepare("INSERT INTO PaySetting (NamePay, ValuePay) VALUES (?, ?)")->execute([$cycleKey, $newSeen]);
+                        }
                     }
                 }
             }

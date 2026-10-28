@@ -52,11 +52,93 @@ if (is_string($datain) && $datain !== '') {
         }
     }
 }
+// FX-NAV-GUARD (2026-10-18): universal navigation callbacks injected by
+// rx_nav_guard_keyboard(). Admins keep their step-aware backmenu/backadmin
+// routers; normal users fall back to the main menu so no page can trap them.
+if (is_string($datain ?? null) && in_array($datain, ['fx_nav_back', 'fx_nav_home'], true)) {
+    if (!empty($callback_query_id)) {
+        @telegram('answerCallbackQuery', [
+            'callback_query_id' => $callback_query_id,
+            'cache_time' => 0,
+        ]);
+    }
+    $rxNavGuardAdmin = false;
+    if (!empty($from_id) && function_exists('rx_main_admin_ids')) {
+        $rxNavGuardAdmin = in_array((string) $from_id, array_map('strval', rx_main_admin_ids()), true);
+    }
+    if ($datain === 'fx_nav_home') {
+        $datain = $rxNavGuardAdmin ? 'backadmin' : 'backuser';
+    } else {
+        $datain = $rxNavGuardAdmin ? 'backmenu' : 'backuser';
+    }
+    $text = '';
+}
+// FX-FINANCIAL-LOCK: user-initiated cancellation of their own waiting receipt.
+// The button is attached to the "unconfirmed payment" message. It closes the
+// receipt, cancels its invoice, releases locks and returns to the main menu.
+if (is_string($datain ?? null) && preg_match('/^fx_cancel_receipt_([A-Za-z0-9_\-]+)$/', $datain, $rxCancelReceiptMatch)) {
+    $rxCancelReceiptNotice = '❌ رسید پرداخت پیدا نشد یا قبلاً بسته شده است.';
+    if (!empty($from_id) && function_exists('rxReceiptUserCancel')) {
+        try {
+            $rxCancelReceiptRes = rxReceiptUserCancel((string) $rxCancelReceiptMatch[1], (string) $from_id, 'cancelled_by_user');
+            if (!empty($rxCancelReceiptRes['ok'])) {
+                $rxCancelReceiptNotice = '✅ پرداخت قبلی لغو شد و قفل آن برداشته شد. اکنون می‌توانید سفارش جدید ثبت کنید.';
+            } elseif (($rxCancelReceiptRes['reason'] ?? '') === 'already_final') {
+                $rxCancelReceiptNotice = '✅ این پرداخت قبلاً بسته شده است. اکنون می‌توانید سفارش جدید ثبت کنید.';
+            }
+        } catch (Throwable $e) {}
+    }
+    if (!empty($from_id) && function_exists('rx_callback_lock_release_for_owner')) {
+        @rx_callback_lock_release_for_owner($from_id);
+    }
+    if (!empty($from_id) && function_exists('rx_pending_purchase_cancel')) {
+        try { @rx_pending_purchase_cancel($from_id); } catch (Throwable $e) {}
+    }
+    $GLOBALS['fx_unlock_retry_notice'] = $rxCancelReceiptNotice;
+    $datain = 'backuser';
+    $text = '';
+}
+
+// FX-FINANCIAL-LOCK: one-tap escape hatch shown with the busy message/pending
+// invoice. It force-releases this user's runtime locks, best-effort cancels the
+// old unpaid order, resets the step and returns to the main menu.
+if (is_string($datain ?? null) && $datain === 'fx_unlock_retry') {
+    $rxUnlockCancel = null;
+    if (!empty($from_id) && function_exists('rx_callback_lock_release_for_owner')) {
+        @rx_callback_lock_release_for_owner($from_id);
+    }
+    if (!empty($from_id) && function_exists('rx_pending_purchase_cancel')) {
+        try { $rxUnlockCancel = rx_pending_purchase_cancel($from_id); } catch (Throwable $e) { $rxUnlockCancel = null; }
+    }
+    $GLOBALS['fx_unlock_retry_notice'] = (!empty($rxUnlockCancel['ok']))
+        ? "✅ سفارش قبلی لغو شد و قفل پردازش آزاد شد. اکنون می‌توانید خرید جدید انجام دهید."
+        : "✅ قفل پردازش آزاد شد. اگر سفارش قبلی در انتظار بررسی رسید است، وضعیت آن جداگانه بررسی می‌شود.";
+    $datain = 'backuser';
+    $text = '';
+}
+if ($_rxMoneyNeedLock && !empty($from_id)) {
+    $GLOBALS['rx_callback_failure_context'] = [
+        'from_id' => $from_id,
+        'callback_query_id' => $callback_query_id ?? null,
+        'message_id' => $message_id ?? null,
+    ];
+    $GLOBALS['rx_callback_failure_notified'] = false;
+}
 if ($_rxMoneyNeedLock && !empty($from_id) && function_exists('rx_callback_lock_acquire')) {
+    if (function_exists('rx_callback_lock_cleanup_expired')) {
+        rx_callback_lock_cleanup_expired(200);
+    }
     $_rxMoneyLockName = rx_callback_lock_acquire($from_id, 'money', 2.5);
     if ($_rxMoneyLockName === false) {
         if (function_exists('rx_callback_busy_reply')) {
-            rx_callback_busy_reply($callback_query_id);
+            rx_callback_busy_reply($callback_query_id, '⏳ درخواست قبلی شما هنوز در حال پردازش است…');
+        }
+        if (function_exists('sendmessage')) {
+            $rxMoneyUnlockKb = json_encode(['inline_keyboard' => [
+                [['text' => '❌ لغو سفارش قبلی و تلاش مجدد', 'callback_data' => 'fx_unlock_retry']],
+                [['text' => '🏠 منوی اصلی', 'callback_data' => 'fx_nav_home']],
+            ]], JSON_UNESCAPED_UNICODE);
+            @sendmessage($from_id, "⏳ یک عملیات مالی قبلی برای حساب شما در حال پردازش است.\n\nمی‌توانید چند لحظه صبر کنید، یا با دکمه زیر قفل را فوراً آزاد کنید.", $rxMoneyUnlockKb, 'HTML');
         }
         if (!headers_sent()) {
             http_response_code(200);
@@ -70,11 +152,16 @@ if ($_rxMoneyNeedLock && !empty($from_id) && function_exists('rx_callback_lock_a
     }
 }
 // === end money lock ===
-require_once 'keyboard.php';
+// keyboard.php MUST load after the effective admin_ids list is resolved below;
+// otherwise layouts_1 builds a normal-user keyboard and reseller/main admins
+// never receive the admin menu after entering the panel.
 require_once 'vendor/autoload.php';
 require_once 'panels.php';
 require_once 'infocard.php';
 $setting = select("setting", "*");
+if (defined('FX_RESELLER_ID') && function_exists('rx_reseller_apply_setting_overrides')) {
+    $setting = rx_reseller_apply_setting_overrides($setting);
+}
 $textbotlang = languagechange('text.json');
 if ($is_bot)
     return;
@@ -192,6 +279,9 @@ $stmt->execute();
     $user = select("user", "*", "id", $from_id, "select", ['cache' => false]);
     $isNewUser = !is_array($user);
 }
+if (is_array($user) && function_exists('rx_guard_bot_context_switch')) {
+    $user = rx_guard_bot_context_switch($from_id, $user);
+}
 if (!is_array($user)) {
     $user = array();
     $user = array(
@@ -218,7 +308,9 @@ if (!is_array($user)) {
 } else {
     $user['codeInvitation'] = ensureUserInvitationCode($from_id, $user['codeInvitation'] ?? null);
 }
-$admin_ids = select("admin", "id_admin", null, null, "FETCH_COLUMN", ['cache' => false]);
+$admin_ids = function_exists('rx_main_admin_ids')
+    ? rx_main_admin_ids()
+    : select("admin", "id_admin", null, null, "FETCH_COLUMN", ['cache' => false]);
 if (!is_array($admin_ids)) {
     $admin_ids = [];
 }
@@ -226,18 +318,66 @@ if (!is_array($admin_ids)) {
 if (defined('FX_RESELLER_ID')) {
     $_fx_brow = select("botsaz", "admin_ids", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
     $_fx_badmin = is_array($_fx_brow) ? json_decode((string)($_fx_brow['admin_ids'] ?? '[]'), true) : null;
-    $admin_ids = (is_array($_fx_badmin) && $_fx_badmin) ? array_map('strval', $_fx_badmin) : [(string)FX_RESELLER_ID];
+    $admin_ids = (is_array($_fx_badmin) && $_fx_badmin) ? array_map('strval', $_fx_badmin) : [];
+    // The reseller owner must ALWAYS keep admin access, even if admin_ids is
+    // misconfigured or an older record omitted the owner.
+    $admin_ids[] = (string)FX_RESELLER_ID;
+    $admin_ids = array_values(array_unique(array_filter($admin_ids, static fn($v) => trim((string)$v) !== '')));
     unset($_fx_brow, $_fx_badmin);
 }
 // === end Phase 2 ===
 $admin_ids_str = array_map('strval', $admin_ids);
 
+// Build all keyboards now that the correct admin list is known (main + reseller).
+require_once 'keyboard.php';
+
+if (!function_exists('rx_miniapp_url')) {
+    /** Build the mini-app URL with tenant hint for reseller bots. */
+    function rx_miniapp_url(string $path = ''): string
+    {
+        global $domainhosts;
+        $host = rtrim(preg_replace('#^https?://#i', '', trim((string)($domainhosts ?? ''))), '/');
+        if ($host === '') return '';
+        $path = '/' . ltrim($path, '/');
+        if ($path === '/') $path = '/app/';
+        $url = 'https://' . $host . $path;
+        if (defined('FX_RESELLER_ID') && (int)FX_RESELLER_ID > 0) {
+            $url .= (strpos($url, '?') === false ? '?' : '&') . 'tenant=' . (int)FX_RESELLER_ID;
+        }
+        return $url;
+    }
+}
+
+if (!function_exists('rx_forced_miniapp_mode_for_current_bot')) {
+    /** Per-reseller override with global setting as fallback. */
+    function rx_forced_miniapp_mode_for_current_bot($setting = null): string
+    {
+        $global = is_array($setting) ? (string)($setting['forced_miniapp_mode'] ?? '0') : '0';
+        if (!defined('FX_RESELLER_ID') || (int)FX_RESELLER_ID <= 0) {
+            return $global === '1' ? '1' : '0';
+        }
+        try {
+            $row = select('botsaz', 'setting', 'id_user', FX_RESELLER_ID, 'select', ['cache' => false]);
+            $json = is_array($row) ? json_decode((string)($row['setting'] ?? ''), true) : null;
+            if (is_array($json) && array_key_exists('forced_miniapp_mode', $json)) {
+                return (string)$json['forced_miniapp_mode'] === '1' ? '1' : '0';
+            }
+        } catch (Throwable $e) {
+        }
+        // Reseller bots must NEVER inherit the main bot's forced-mini-app mode.
+        // Each tenant defaults to OFF until its owner enables it explicitly.
+        return '0';
+    }
+}
+
 if (!function_exists('rx_forced_miniapp_active')) {
     function rx_forced_miniapp_active($setting, $from_id, $admin_ids_str)
     {
-        return is_array($setting)
-            && (string)($setting['forced_miniapp_mode'] ?? '0') === '1'
-            && !in_array((string)$from_id, $admin_ids_str, true);
+        if (!is_array($setting)) return false;
+        $mode = function_exists('rx_forced_miniapp_mode_for_current_bot')
+            ? rx_forced_miniapp_mode_for_current_bot($setting)
+            : (string)($setting['forced_miniapp_mode'] ?? '0');
+        return $mode === '1' && !in_array((string)$from_id, $admin_ids_str, true);
     }
 }
 if (!function_exists('rx_send_forced_miniapp_redirect')) {
@@ -253,8 +393,8 @@ if (!function_exists('rx_send_forced_miniapp_redirect')) {
         }
         $first = trim((string)($user['first_name'] ?? ''));
         $text = str_replace('{first_name}', $first !== '' ? $first : 'کاربر', $text);
-        $host = isset($domainhosts) ? rtrim(preg_replace('#^https?://#', '', (string)$domainhosts), '/') : '';
-        $kb = ($host !== '') ? json_encode(['inline_keyboard' => [[['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => 'https://' . $host . '/app/']]]]], JSON_UNESCAPED_UNICODE) : null;
+        $appUrl = function_exists('rx_miniapp_url') ? rx_miniapp_url('/app/') : '';
+        $kb = ($appUrl !== '') ? json_encode(['inline_keyboard' => [[['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => $appUrl]]]]], JSON_UNESCAPED_UNICODE) : null;
         if (!empty($callback_query_id)) {
             telegram('answerCallbackQuery', [
                 'callback_query_id' => $callback_query_id,
@@ -270,6 +410,18 @@ if (!function_exists('rx_send_forced_miniapp_redirect')) {
 }
 if (rx_forced_miniapp_active($setting, $from_id, $admin_ids_str)) {
     rx_send_forced_miniapp_redirect($from_id, $message_id, $user, $callback_query_id);
+    return;
+}
+
+// Direct mini-app launcher (works even when forced mode is off).
+if (isset($text) && is_string($text) && in_array(strtolower(trim($text)), ['/app', '/miniapp', 'مینی اپ', 'مینی‌اپ'], true)) {
+    $appUrl = function_exists('rx_miniapp_url') ? rx_miniapp_url('/app/') : '';
+    if ($appUrl === '') {
+        sendmessage($from_id, '❌ آدرس مینی‌اپ روی سرور تنظیم نشده است.', null, 'HTML');
+        return;
+    }
+    $kb = json_encode(['inline_keyboard' => [[['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => $appUrl]]]]], JSON_UNESCAPED_UNICODE);
+    sendmessage($from_id, '📱 برای ورود سریع، روی دکمه زیر بزنید:', $kb, 'HTML');
     return;
 }
 
@@ -1208,7 +1360,19 @@ if ($shouldCheckChannel && !in_array($from_id, $admin_ids)) {
     }
 }
 if ($text == "/start" || $datain == "start" || $text == "start" || $rxStartLanding) {
-    $rxStartResetStmt = $pdo->prepare("UPDATE user SET Processing_value = '0', Processing_value_one = '0', Processing_value_tow = '0', Processing_value_four = '0' WHERE id = ?");
+    if (function_exists('rx_callback_lock_release_for_owner')) {
+        @rx_callback_lock_release_for_owner($from_id);
+    }
+    if (function_exists('rx_pending_purchase_cancel')) {
+        try { @rx_pending_purchase_cancel($from_id); } catch (Throwable $e) {}
+    }
+    if (function_exists('rx_flow_message_clear_all')) {
+        rx_flow_message_clear_all($from_id);
+    }
+    // FX-FLOW-CLEANUP: hard-reset every temporary state field. step('home')
+    // below also repairs the wizard stack, but this explicit UPDATE guarantees
+    // a stuck receipt/payment/hash step cannot survive /start.
+    $rxStartResetStmt = $pdo->prepare("UPDATE user SET step = 'home', Processing_value = '0', Processing_value_one = '0', Processing_value_tow = '0', Processing_value_four = '0', Processing_value_price = '0' WHERE id = ?");
     $rxStartResetStmt->execute([$from_id]);
     if (function_exists('clearSelectCacheRow')) {
         clearSelectCacheRow('user', 'id', $from_id);
@@ -1233,11 +1397,25 @@ if ($text == "/start" || $datain == "start" || $text == "start" || $rxStartLandi
    handled by the section itself so it can return to the logical parent screen instead of
    kicking the admin out to the main menu. */
 $_rxGlobalCancelSkip = (!defined('FX_RESELLER_ID') && strpos((string)($user['step'] ?? ''), 'fx_res_') === 0);
-if ($text === "/cancel" && !empty($user['step']) && $user['step'] != 'home' && !$_rxGlobalCancelSkip) {
-    update("user", "Processing_value", "0", "id", $from_id);
-    update("user", "Processing_value_one", "0", "id", $from_id);
-    update("user", "Processing_value_tow", "0", "id", $from_id);
-    update("user", "Processing_value_four", "0", "id", $from_id);
+if ($text === "/cancel" && !$_rxGlobalCancelSkip) {
+    if (function_exists('rx_callback_lock_release_for_owner')) {
+        @rx_callback_lock_release_for_owner($from_id);
+    }
+    if (function_exists('rx_pending_purchase_cancel')) {
+        try { @rx_pending_purchase_cancel($from_id); } catch (Throwable $e) {}
+    }
+    if (function_exists('rx_flow_message_clear_all')) {
+        rx_flow_message_clear_all($from_id);
+    }
+    // Hard reset even when the user is already on 'home': a stale receipt
+    // prompt or pending invoice must not survive an explicit cancel.
+    $rxCancelResetStmt = $pdo->prepare("UPDATE user SET step = 'home', Processing_value = '0', Processing_value_one = '0', Processing_value_tow = '0', Processing_value_four = '0', Processing_value_price = '0' WHERE id = ?");
+    $rxCancelResetStmt->execute([$from_id]);
+    if (function_exists('clearSelectCacheRow')) {
+        clearSelectCacheRow('user', 'id', $from_id);
+    } else {
+        clearSelectCache('user');
+    }
     step('home', $from_id);
     if (function_exists('rxCancelAbandonedCardPaymentsForUser')) {
         rxCancelAbandonedCardPaymentsForUser($from_id, 'user_cancel', ['methods' => ['cart to cart']]);
@@ -1251,14 +1429,29 @@ if ((!isset($connect) || !($connect instanceof mysqli)) && function_exists('getM
 if ($text == "version") {
     sendmessage($from_id, $version, null, 'html');
 } elseif ($text == $textbotlang['users']['backbtn'] || $datain == "backuser" || $datain == "admin_back") {
+    if (function_exists('rx_callback_lock_release_for_owner')) {
+        @rx_callback_lock_release_for_owner($from_id);
+    }
+    if (function_exists('rx_pending_purchase_cancel')) {
+        try { @rx_pending_purchase_cancel($from_id); } catch (Throwable $e) {}
+    }
+    if (function_exists('rx_flow_message_clear_all')) {
+        rx_flow_message_clear_all($from_id);
+    }
     if ($datain == "backuser" || $datain == "admin_back")
         deletemessage($from_id, $message_id);
-    $message_id = sendmessage($from_id, $textbotlang['users']['back'], $keyboard, 'html');
+    $rxBackMessage = $textbotlang['users']['back'];
+    if (!empty($GLOBALS['fx_unlock_retry_notice'])) {
+        $rxBackMessage = (string) $GLOBALS['fx_unlock_retry_notice'];
+        unset($GLOBALS['fx_unlock_retry_notice']);
+    }
+    $message_id = sendmessage($from_id, $rxBackMessage, $keyboard, 'html');
     step('home', $from_id);
     update("user", "Processing_value", "0", "id", $from_id);
     update("user", "Processing_value_one", "0", "id", $from_id);
     update("user", "Processing_value_tow", "0", "id", $from_id);
     update("user", "Processing_value_four", "0", "id", $from_id);
+    update("user", "Processing_value_price", "0", "id", $from_id);
     if (function_exists('rxCancelAbandonedCardPaymentsForUser')) {
         rxCancelAbandonedCardPaymentsForUser($from_id, 'user_back', ['methods' => ['cart to cart']]);
     }
@@ -1285,6 +1478,9 @@ if ($text == "version") {
     }
     step('home', $from_id);
 } elseif (($text !== '' && $text == $datatextbot['text_Purchased_services']) || $datain == "backorder" || $text == "/services") {
+    if (function_exists('rx_pending_purchase_expire_stale')) {
+        rx_pending_purchase_expire_stale($from_id, 86400, 50);
+    }
     $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :id_user AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disabled' OR status = 'disablebyadmin')");
     $stmt->bindParam(':id_user', $from_id);
     $stmt->execute();
@@ -1352,7 +1548,7 @@ if ($text == "version") {
 
 
 } elseif ($datain == 'next_page') {
-    $numpage = select("invoice", "id_user", "id_user", $from_id, "count");
+    $numpage = function_exists('rx_user_visible_invoice_count') ? rx_user_visible_invoice_count($from_id) : select("invoice", "id_user", "id_user", $from_id, "count");
     $page = $user['pagenumber'];
     $items_per_page = 20;
     $sum = $user['pagenumber'] * $items_per_page;
@@ -1415,7 +1611,7 @@ if ($text == "version") {
     Editmessagetext($from_id, $message_id, $textbotlang['users']['sell']['service_sell'], $keyboard_json);
 
 } elseif ($datain == 'previous_page') {
-    $numpage = select("invoice", "id_user", "id_user", $from_id, "count");
+    $numpage = function_exists('rx_user_visible_invoice_count') ? rx_user_visible_invoice_count($from_id) : select("invoice", "id_user", "id_user", $from_id, "count");
     $page = $user['pagenumber'];
     $items_per_page = 20;
     $sum = $user['pagenumber'] * $items_per_page;
@@ -3030,21 +3226,36 @@ $nameconfig";
             ]
         ]
     ]);
-    $currentStatusData = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
-    if (is_array($currentStatusData) && $currentStatusData['status'] === 'active' && !$ManagePanel->HasLiveConnectionHistory(is_array($marzban_list_get) ? $marzban_list_get : null, $currentStatusData)) {
-        Editmessagetext($from_id, $message_id, "ابتدا به کانفیگ متصل شوید و سپس مجدداً تلاش کنید.", $bakinfos);
-        return;
-    }
     $dataoutput = $ManagePanel->Change_status($nameloc['username'], $nameloc['Service_location']);
-    if ($dataoutput['status'] == "Unsuccessful") {
-        if (($dataoutput['code'] ?? '') === 'not_connected') {
-            Editmessagetext($from_id, $message_id, $dataoutput['msg'], $bakinfos);
-            return;
+    if (!is_array($dataoutput) || (string)($dataoutput['status'] ?? '') === 'Unsuccessful') {
+        $reason = is_array($dataoutput) ? (string)($dataoutput['msg'] ?? '') : '';
+        if (function_exists('rx_panel_error_text')) {
+            $reasonText = rx_panel_error_text($reason !== '' ? $reason : 'نامشخص', $dataoutput['detail'] ?? null, false);
+        } else {
+            $reasonText = $reason !== '' ? $reason : 'نامشخص';
         }
-        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['notchanged'], $bakinfos);
+        if (function_exists('rx_log_event')) {
+            rx_log_event('SERVICE_STATUS_CHANGE_FAILED', 'Service status change failed', [
+                'user_id' => (string)$from_id,
+                'invoice' => (string)$nameloc['id_invoice'],
+                'panel' => (string)$nameloc['Service_location'],
+                'username' => (string)$nameloc['username'],
+                'reason' => $reasonText,
+            ]);
+        }
+        $errMsg = $textbotlang['users']['stateus']['notchanged'] . "\n\n🔎 علت: <code>" . htmlspecialchars($reasonText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>";
+        Editmessagetext($from_id, $message_id, $errMsg, $bakinfos);
         return;
     }
     $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
+    if (!is_array($DataUserOut) || (string)($DataUserOut['status'] ?? '') === 'Unsuccessful') {
+        $reason = is_array($DataUserOut) ? (string)($DataUserOut['msg'] ?? '') : '';
+        $reasonText = function_exists('rx_panel_error_text')
+            ? rx_panel_error_text($reason !== '' ? $reason : 'نامشخص', $DataUserOut['detail'] ?? null, false)
+            : ($reason !== '' ? $reason : 'نامشخص');
+        Editmessagetext($from_id, $message_id, "⚠️ تغییر وضعیت انجام شد اما خواندن وضعیت جدید از پنل ممکن نشد.\n\n🔎 علت: <code>" . htmlspecialchars($reasonText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>", $bakinfos);
+        return;
+    }
     if ($DataUserOut['status'] == "active") {
         update("invoice", "Status", "active", "id_invoice", $nameloc['id_invoice']);
         Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['activedconfig'], $bakinfos);

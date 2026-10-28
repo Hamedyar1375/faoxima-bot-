@@ -228,6 +228,14 @@ final class PurchaseHandler extends BaseHandler
             }
             fx_store_invoice_snapshot($orderId, $fxSnapshot);
 
+            // Bind this pending invoice to the authenticated mini-app session so
+            // the recharge page can prefill the exact deficiency amount.
+            update('user', 'Processing_value_tow', 'getconfigafterpay', 'id', $this->user['id']);
+            update('user', 'Processing_value_one', (string) $usernameAc, 'id', $this->user['id']);
+            update('user', 'Processing_value_four', '0', 'id', $this->user['id']);
+            $this->user['Processing_value_tow'] = 'getconfigafterpay';
+            $this->user['Processing_value_one'] = (string) $usernameAc;
+
             $amountDue = (int) ceil($shortfall);
 
 

@@ -243,6 +243,65 @@ final class FaoximaAuth
         return is_array($row) ? $row : null;
     }
 
+    private static function ensureSessionTenantTable(): bool
+    {
+        global $pdo;
+        static $ready = false;
+        if ($ready) return true;
+        if (!($pdo instanceof PDO)) return false;
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS miniapp_auth_sessions (
+                token varchar(191) NOT NULL,
+                user_id varchar(64) NOT NULL,
+                tenant_id bigint NOT NULL DEFAULT 0,
+                created_at int unsigned NOT NULL DEFAULT 0,
+                expires_at int unsigned NOT NULL DEFAULT 0,
+                PRIMARY KEY (token),
+                KEY idx_miniapp_session_user (user_id),
+                KEY idx_miniapp_session_expiry (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            $ready = true;
+            return true;
+        } catch (Throwable $e) {
+            error_log('miniapp session tenant table: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    public static function storeSessionTenant(string $token, int $userId, int $tenantId): void
+    {
+        global $pdo;
+        if ($token === '' || $userId <= 0 || !self::ensureSessionTenantTable()) return;
+        $tenantId = max(0, $tenantId);
+        $now = time();
+        $expires = $now + 30 * 86400;
+        try {
+            $stmt = $pdo->prepare(
+                'INSERT INTO miniapp_auth_sessions (token, user_id, tenant_id, created_at, expires_at) '
+                . 'VALUES (?, ?, ?, ?, ?) '
+                . 'ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), tenant_id = VALUES(tenant_id), created_at = VALUES(created_at), expires_at = VALUES(expires_at)'
+            );
+            $stmt->execute([$token, (string) $userId, $tenantId, $now, $expires]);
+        } catch (Throwable $e) {
+            error_log('storeSessionTenant: ' . $e->getMessage());
+        }
+    }
+
+    public static function sessionTenantForToken(string $token, int $userId): ?int
+    {
+        global $pdo;
+        if ($token === '' || $userId <= 0 || !self::ensureSessionTenantTable()) return null;
+        try {
+            $stmt = $pdo->prepare('SELECT tenant_id FROM miniapp_auth_sessions WHERE token = ? AND user_id = ? AND expires_at > ? LIMIT 1');
+            $stmt->execute([$token, (string) $userId, time()]);
+            $value = $stmt->fetchColumn();
+            return $value === false || $value === null ? null : max(0, (int) $value);
+        } catch (Throwable $e) {
+            error_log('sessionTenantForToken: ' . $e->getMessage());
+            return null;
+        }
+    }
+
 
     public static function issueToken(int $userId): string
     {

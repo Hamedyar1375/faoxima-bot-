@@ -98,6 +98,10 @@ export async function recharge(view) {
 
     const limits = data.limits || { min: 0, max: 0 };
     const balance = Number(data.balance || 0);
+    const pending = data.pending_purchase && Number(data.pending_purchase.amount_due || 0) > 0
+        ? data.pending_purchase : null;
+    const pendingAmount = pending ? Number(pending.amount_due || 0) : 0;
+    const pendingUsername = pending ? String(pending.username || '') : '';
 
     $host.innerHTML = `
         <div class="kv">
@@ -171,15 +175,21 @@ export async function recharge(view) {
         }
 
 
-        const methodLimits = resolveMethodLimits(method, limits);
+        let methodLimits = resolveMethodLimits(method, limits);
+        if (pendingAmount > 0) {
+            methodLimits = {
+                min: Math.min(methodLimits.min || pendingAmount, pendingAmount),
+                max: Math.max(methodLimits.max || pendingAmount, pendingAmount),
+            };
+        }
 
         const cryptoOfflineIds = ['crypto_offline', 'digitaltron'];
         if (method.kind === 'crypto_offline' || cryptoOfflineIds.includes(method.id)) {
-            renderCryptoOfflineForm(view, methodLimits, data.randomWallet);
+            renderCryptoOfflineForm(view, methodLimits, data.randomWallet, pending);
             return;
         }
 
-        renderForm(view, method.id, method, methodLimits, data.randomWallet);
+        renderForm(view, method.id, method, methodLimits, data.randomWallet, pending);
     });
 }
 
@@ -241,7 +251,9 @@ function wirePresetAmountGrid($host, randomWallet, $amountInput, $customWrap) {
     }
 }
 
-function renderCryptoOfflineForm(view, limits, randomWallet) {
+function renderCryptoOfflineForm(view, limits, randomWallet, pending = null) {
+    const pendingAmount = pending ? Number(pending.amount_due || 0) : 0;
+    const pendingUsername = pending ? String(pending.username || '') : '';
     const $host = view.querySelector('#pay-form-host');
     const $result = view.querySelector('#pay-result-host');
     if (!$host) return;
@@ -250,13 +262,15 @@ function renderCryptoOfflineForm(view, limits, randomWallet) {
     $host.innerHTML = `
         <div class="card-section">
             <p class="section-title">${exchangeSvgIcon('ico-accent')} ارز آفلاین (هش‌چکر)</p>
-            <p class="muted" style="font-size:13px">ابتدا مبلغ شارژ (تومان) را وارد کنید — سپس ارز و حالت پرداخت را انتخاب می‌کنید.</p>
+            <p class="muted" style="font-size:13px">${pendingAmount > 0 ? `مبلغ کسری سفارش شما: <b>${fmtNum(pendingAmount)}</b> تومان` : 'ابتدا مبلغ شارژ (تومان) را وارد کنید — سپس ارز و حالت پرداخت را انتخاب می‌کنید.'}</p>
 
-            ${presetAmountGridHtml(randomWallet)}
+            ${pendingAmount > 0 ? '' : presetAmountGridHtml(randomWallet)}
 
             <div class="form-row mt-sm" id="crypto-amount-wrap">
                 <label for="crypto-amount" class="muted" style="font-size:12px">مبلغ شارژ (تومان)</label>
                 <input id="crypto-amount" type="text" inputmode="numeric"
+                       value="${pendingAmount > 0 ? pendingAmount : ''}"
+                       ${pendingAmount > 0 ? 'readonly' : ''}
                        placeholder="مثال: ${fmtNum(Math.max(limits.min, 50000))}" />
             </div>
 
@@ -270,7 +284,9 @@ function renderCryptoOfflineForm(view, limits, randomWallet) {
     const $btn = $host.querySelector('#crypto-start');
     const $amtWrap = $host.querySelector('#crypto-amount-wrap');
     wireAmountInput($amt);
-    wirePresetAmountGrid($host, randomWallet, $amt, $amtWrap);
+    if (pendingAmount <= 0) {
+        wirePresetAmountGrid($host, randomWallet, $amt, $amtWrap);
+    }
     $btn.addEventListener('click', async () => {
         const amount = parseInt(amountValue($amt) || '0', 10);
         if (!amount || amount < limits.min || amount > limits.max) {
@@ -282,6 +298,7 @@ function renderCryptoOfflineForm(view, limits, randomWallet) {
             if (mod && typeof mod.renderCryptoOffline === 'function') {
                 mod.renderCryptoOffline(view, {
                     amount,
+                    purchaseUsername: pendingUsername,
                     onBack: () => recharge(view),
                 });
                 return;
@@ -302,7 +319,9 @@ function renderMethodCard(m) {
         </button>`;
 }
 
-function renderForm(view, methodId, method, limits, randomWallet) {
+function renderForm(view, methodId, method, limits, randomWallet, pending = null) {
+    const pendingAmount = pending ? Number(pending.amount_due || 0) : 0;
+    const pendingUsername = pending ? String(pending.username || '') : '';
     const $host = view.querySelector('#pay-form-host');
     const $result = view.querySelector('#pay-result-host');
     if (!$host) return;
@@ -311,13 +330,15 @@ function renderForm(view, methodId, method, limits, randomWallet) {
     $host.innerHTML = `
         <div class="card-section">
             <p class="section-title">${methodVisualHtml(method, 'ico-accent')} ${escapeHtml(stripEmoji(method.label))}</p>
-            <p class="muted" style="font-size:13px">مبلغ مورد نظر را به تومان وارد کنید (بین <span class="mono accent">${fmtNum(limits.min)}</span> و <span class="mono accent">${fmtNum(limits.max)}</span>)</p>
+            <p class="muted" style="font-size:13px">${pendingAmount > 0 ? `مبلغ کسری سفارش شما: <b>${fmtNum(pendingAmount)}</b> تومان` : `مبلغ مورد نظر را به تومان وارد کنید (بین <span class="mono accent">${fmtNum(limits.min)}</span> و <span class="mono accent">${fmtNum(limits.max)}</span>)`}</p>
 
-            ${presetAmountGridHtml(randomWallet)}
+            ${pendingAmount > 0 ? '' : presetAmountGridHtml(randomWallet)}
 
             <div class="form-row mt-sm" id="pay-amount-wrap">
                 <label for="pay-amount" class="muted" style="font-size:12px">مبلغ (تومان)</label>
                 <input id="pay-amount" type="text" inputmode="numeric"
+                       value="${pendingAmount > 0 ? pendingAmount : ''}"
+                       ${pendingAmount > 0 ? 'readonly' : ''}
                        placeholder="مثال: ${fmtNum(Math.max(limits.min, 50000))}" />
             </div>
 
@@ -338,7 +359,9 @@ function renderForm(view, methodId, method, limits, randomWallet) {
     const $amt = $host.querySelector('#pay-amount');
     const $amtWrap = $host.querySelector('#pay-amount-wrap');
     wireAmountInput($amt);
-    wirePresetAmountGrid($host, randomWallet, $amt, $amtWrap);
+    if (pendingAmount <= 0) {
+        wirePresetAmountGrid($host, randomWallet, $amt, $amtWrap);
+    }
     const $btn = $host.querySelector('#pay-submit');
     const $btnLabel = $btn.querySelector('.pay-submit-label');
 
@@ -401,9 +424,12 @@ function renderForm(view, methodId, method, limits, randomWallet) {
         try {
             const res = await call('payment_init', {
                 method: 'POST',
-                body: appliedChargeCode
-                    ? { method: methodId, amount, discount_code: appliedChargeCode }
-                    : { method: methodId, amount },
+                body: {
+                    method: methodId,
+                    amount,
+                    ...(pendingUsername ? { purchase_username: pendingUsername } : {}),
+                    ...(appliedChargeCode ? { discount_code: appliedChargeCode } : {}),
+                },
             });
             const obj = res?.obj || {};
             handleInitResult(view, methodId, obj);

@@ -1357,6 +1357,9 @@ if (!function_exists('cm_apply_payment')) {
     {
         global $pdo;
         if (!($pdo instanceof PDO)) return;
+        $cmAdminDisplay = function_exists('rxReceiptActorDisplay')
+            ? rxReceiptActorDisplay($adminId, (string)$adminUsername)
+            : ((trim((string)$adminUsername) !== '' && strtolower(trim((string)$adminUsername)) !== 'none') ? '@' . ltrim((string)$adminUsername, '@') : (string)$adminId);
         $atomic = $pdo->prepare(
             "UPDATE Payment_report SET payment_Status = 'paid' "
             . "WHERE id_order = :id AND payment_Status <> 'paid'"
@@ -1397,7 +1400,7 @@ if (!function_exists('cm_apply_payment')) {
                 ]);
             }
             if ($messageId && function_exists('Editmessagetext')) {
-                $doneNote = "\n\n━━━━━━━━━━━━\n✅ <b>تایید شده</b> (مبلغ: " . number_format($finalIrr) . " تومان)\n👨‍💼 توسط ادمین: <code>{$adminId}</code>\n⏰ " . date('Y/m/d H:i:s');
+                $doneNote = "\n\n━━━━━━━━━━━━\n✅ <b>تایید شده</b> (مبلغ: " . number_format($finalIrr) . " تومان)\n👨‍💼 توسط ادمین: " . htmlspecialchars($cmAdminDisplay, ENT_QUOTES, 'HTML') . "\n⏰ " . date('Y/m/d H:i:s');
                 @Editmessagetext($adminId, $messageId, $textInline . $doneNote, null);
             }
             if (!empty($setting['Channel_Report']) && function_exists('telegram')) {
@@ -1408,7 +1411,7 @@ if (!function_exists('cm_apply_payment')) {
                         . "👤 کاربر: <code>{$payment['id_user']}</code>\n"
                         . "💎 ارز: " . htmlspecialchars((string) ($payment['crypto_currency'] ?? '')) . "\n"
                         . "💵 مبلغ: " . number_format($finalIrr) . " تومان\n"
-                        . "👨‍💼 ادمین تاییدکننده: <code>{$adminId}</code> (@{$adminUsername})",
+                        . "👨‍💼 ادمین تاییدکننده: " . htmlspecialchars($cmAdminDisplay, ENT_QUOTES, 'HTML') . "\n",
                     'parse_mode' => 'HTML',
                 ];
                 if (!empty($paymentreports)) {
@@ -1484,6 +1487,7 @@ if (!function_exists('cm_apply_payment')) {
                 . "💎 ارز: <b>" . htmlspecialchars((string) ($payment['crypto_currency'] ?? '')) . "</b>\n"
                 . "🪙 مقدار: <code>{$coinAmt}</code>\n"
                 . "💵 مبلغ شارژ شده: " . number_format($finalIrr) . " تومان\n"
+                . "👤 تایید کننده: " . htmlspecialchars($cmAdminDisplay, ENT_QUOTES, 'HTML') . "\n"
                 . "💰 موجودی جدید: " . number_format($newBalance) . " تومان"
                 . ($explorerLine !== '' ? "\n{$explorerLine}" : ''),
                 null,
@@ -1498,7 +1502,7 @@ if (!function_exists('cm_apply_payment')) {
             ]);
         }
         if ($messageId && function_exists('Editmessagetext')) {
-            $doneNote = "\n\n━━━━━━━━━━━━\n✅ <b>تایید شده</b> (مبلغ: " . number_format($finalIrr) . " تومان)\n👨‍💼 توسط ادمین: <code>{$adminId}</code>\n⏰ " . date('Y/m/d H:i:s');
+            $doneNote = "\n\n━━━━━━━━━━━━\n✅ <b>تایید شده</b> (مبلغ: " . number_format($finalIrr) . " تومان)\n👨‍💼 توسط ادمین: " . htmlspecialchars($cmAdminDisplay, ENT_QUOTES, 'HTML') . "\n⏰ " . date('Y/m/d H:i:s');
             @Editmessagetext($adminId, $messageId, $textInline . $doneNote, null);
         }
         if (!empty($setting['Channel_Report']) && function_exists('telegram')) {
@@ -1510,7 +1514,7 @@ if (!function_exists('cm_apply_payment')) {
                     . "💎 ارز: " . htmlspecialchars((string) ($payment['crypto_currency'] ?? '')) . "\n"
                     . "🪙 مقدار: <code>{$coinAmt}</code>\n"
                     . "💵 مبلغ شارژ: " . number_format($finalIrr) . " تومان\n"
-                    . "👨‍💼 ادمین تاییدکننده: <code>{$adminId}</code> (@{$adminUsername})",
+                    . "👨‍💼 ادمین تاییدکننده: " . htmlspecialchars($cmAdminDisplay, ENT_QUOTES, 'HTML') . "\n",
                 'parse_mode' => 'HTML',
             ];
             if (!empty($paymentreports)) {

@@ -22,7 +22,11 @@ if (!function_exists('tk_send_miniapp_redirect')) {
         $first = trim((string)($user['first_name'] ?? ''));
         $text = str_replace('{first_name}', $first !== '' ? $first : 'کاربر', $text);
         $host = isset($domainhosts) ? rtrim(preg_replace('#^https?://#', '', (string)$domainhosts), '/') : '';
-        $kb = ($host !== '') ? json_encode(['inline_keyboard' => [[['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => 'https://' . $host . '/app/#/tickets']]]]], JSON_UNESCAPED_UNICODE) : null;
+        $appUrl = $host !== '' ? 'https://' . $host . '/app/' : '';
+        if ($appUrl !== '' && defined('FX_RESELLER_ID') && (int) FX_RESELLER_ID > 0) {
+            $appUrl .= '?tenant=' . (int) FX_RESELLER_ID;
+        }
+        $kb = ($appUrl !== '') ? json_encode(['inline_keyboard' => [[['text' => '🚀 باز کردن مینی‌اپ', 'web_app' => ['url' => $appUrl . '#/tickets']]]]], JSON_UNESCAPED_UNICODE) : null;
         if (intval($message_id) > 0) {
             Editmessagetext($from_id, $message_id, $text, $kb, 'HTML');
         } else {
@@ -32,21 +36,52 @@ if (!function_exists('tk_send_miniapp_redirect')) {
 }
 
 if (!function_exists('tk_album_send')) {
-    function tk_album_send($chat, $topic, $media)
+    function tk_album_send($chat, $topic, $media, $botToken = null)
     {
         if (!is_array($media) || count($media) === 0) return;
         if (count($media) === 1) {
             $m = $media[0];
             $p = ['chat_id' => $chat, $m['type'] => $m['file_id']];
             if ($topic) $p['message_thread_id'] = $topic;
-            telegram($m['type'] === 'video' ? 'sendvideo' : 'sendphoto', $p);
+            telegram($m['type'] === 'video' ? 'sendvideo' : 'sendphoto', $p, $botToken);
             return;
         }
         $arr = [];
         foreach ($media as $m) { $arr[] = ['type' => $m['type'], 'media' => $m['file_id']]; }
         $p = ['chat_id' => $chat, 'media' => $arr];
         if ($topic) $p['message_thread_id'] = $topic;
-        telegram('sendMediaGroup', $p);
+        telegram('sendMediaGroup', $p, $botToken);
+    }
+
+    function tk_ticket_notify_context($idsupport = '')
+    {
+        $tenant = function_exists('fx_tenant_agent_id') ? max(0, (int) fx_tenant_agent_id()) : 0;
+        $recipients = [];
+        $token = null;
+        $add = static function ($id) use (&$recipients): void {
+            $id = trim((string) $id);
+            if ($id !== '' && ctype_digit($id) && (int) $id > 0) $recipients[$id] = true;
+        };
+
+        if ($tenant > 0) {
+            $row = select('botsaz', '*', 'id_user', (string) $tenant, 'select');
+            if (is_array($row)) {
+                $token = trim((string) ($row['bot_token'] ?? '')) ?: null;
+                $add($row['id_user'] ?? $tenant);
+                $ids = json_decode((string) ($row['admin_ids'] ?? '[]'), true);
+                if (is_array($ids)) { foreach ($ids as $id) $add($id); }
+            }
+        } else {
+            $add($GLOBALS['adminnumber'] ?? '');
+            $pdo = function_exists('getDatabaseConnection') ? getDatabaseConnection() : null;
+            if ($pdo instanceof PDO) {
+                $rows = $pdo->query('SELECT a.id_admin FROM admin a LEFT JOIN botsaz b ON b.id_user = a.id_admin WHERE b.id_user IS NULL')->fetchAll(PDO::FETCH_ASSOC);
+                foreach (($rows ?: []) as $r) $add($r['id_admin'] ?? '');
+            }
+            if ($idsupport !== '') $add($idsupport);
+        }
+
+        return ['tenant' => $tenant, 'recipients' => array_keys($recipients), 'bot_token' => $token];
     }
 }
 
@@ -563,17 +598,10 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
         update("support_message", "status", "Customerresponse", "Tracking", $idtraking);
         $textreport = "💬 پاسخ جدید کاربر در تیکت\n\nکاربر : <a href=\"tg://user?id=$from_id\">$from_id</a>\nیوزرنیم : @$username\nدپارتمان : {$tkdetail['name_departman']}\nکد پیگیری : <code>$idtraking</code>\nزمان : $timejalali\n\nمتن : $desc";
         $adminReplyKb = json_encode(['inline_keyboard' => [[['text' => '💬 پاسخ به تیکت', 'callback_data' => 'ticketadminreply_' . $idtraking]]]], JSON_UNESCAPED_UNICODE);
-        $pvTargets = [];
-        $isp = (string)($tkdetail['idsupport'] ?? '');
-        if ($isp !== '' && $isp !== '0') $pvTargets[$isp] = true;
-        if ($mainadmin !== '' && $mainadmin !== '0') $pvTargets[$mainadmin] = true;
-        foreach (array_keys($pvTargets) as $tg) {
-            sendmessage($tg, $textreport, $adminReplyKb, 'HTML');
-            tk_album_send($tg, null, $media);
-        }
-        if ($channel !== '') {
-            telegram('sendmessage', ['chat_id' => $channel, 'message_thread_id' => $reportTopic, 'text' => $textreport, 'parse_mode' => 'HTML']);
-            tk_album_send($channel, $reportTopic, $media);
+        $tkCtx = tk_ticket_notify_context((string)($tkdetail['idsupport'] ?? ''));
+        foreach ($tkCtx['recipients'] as $tg) {
+            sendmessage($tg, $textreport, $adminReplyKb, 'HTML', $tkCtx['bot_token']);
+            tk_album_send($tg, null, $media, $tkCtx['bot_token']);
         }
         sendmessage($from_id, $datatextbot['dyn_tickets_reply_recorded'] ?? "✅ پیام شما ثبت شد و پس از بررسی پاسخ داده می‌شود.", $keyboard, 'HTML');
     } else {
@@ -587,17 +615,10 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
         $stmt->execute([$randomString, $departeman['idsupport'], $from_id, $departeman['name_departman'], $body, 'user', $time, 'Unseen']);
         $textreport = "🎫 تیکت جدید پشتیبانی\n\nکاربر : <a href=\"tg://user?id=$from_id\">$from_id</a>\nیوزرنیم : @$username\nدپارتمان : {$departeman['name_departman']}\nموضوع : " . ($subject !== '' ? $subject : '—') . "\nکد پیگیری : <code>$randomString</code>\nزمان : $timejalali\n\nمتن : $desc";
         $adminReplyKb = json_encode(['inline_keyboard' => [[['text' => '💬 پاسخ به تیکت', 'callback_data' => 'ticketadminreply_' . $randomString]]]], JSON_UNESCAPED_UNICODE);
-        $pvTargets = [];
-        $isp = (string)($departeman['idsupport'] ?? '');
-        if ($isp !== '' && $isp !== '0') $pvTargets[$isp] = true;
-        if ($mainadmin !== '' && $mainadmin !== '0') $pvTargets[$mainadmin] = true;
-        foreach (array_keys($pvTargets) as $tg) {
-            sendmessage($tg, $textreport, $adminReplyKb, 'HTML');
-            tk_album_send($tg, null, $media);
-        }
-        if ($channel !== '') {
-            telegram('sendmessage', ['chat_id' => $channel, 'message_thread_id' => $reportTopic, 'text' => $textreport, 'parse_mode' => 'HTML']);
-            tk_album_send($channel, $reportTopic, $media);
+        $tkCtx = tk_ticket_notify_context((string)($departeman['idsupport'] ?? ''));
+        foreach ($tkCtx['recipients'] as $tg) {
+            sendmessage($tg, $textreport, $adminReplyKb, 'HTML', $tkCtx['bot_token']);
+            tk_album_send($tg, null, $media, $tkCtx['bot_token']);
         }
         $rxTkCreatedTpl = $datatextbot['dyn_tickets_created'] ?? "✅ تیکت شما با کد پیگیری <code>%s</code> ثبت شد و پس از بررسی پاسخ داده می‌شود.";
         sendmessage($from_id, sprintf($rxTkCreatedTpl, $randomString), $keyboard, 'HTML');
@@ -704,16 +725,9 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
     update("support_message", "status", "close", "Tracking", $idtraking);
     $reportTopic = select("topicid", "idreport", "report", "otherservice", "select")['idreport'] ?? null;
     $closetext = "🔒 کاربر <a href=\"tg://user?id=$from_id\">$from_id</a> تیکت <code>$idtraking</code> را بست.";
-    $adminpv = (string)($tkdetail['idsupport'] ?? '');
-    $mainadmin = trim((string)($GLOBALS['adminnumber'] ?? ''));
-    $pvTargets = [];
-    if ($adminpv !== '' && $adminpv !== '0') $pvTargets[$adminpv] = true;
-    if ($mainadmin !== '' && $mainadmin !== '0') $pvTargets[$mainadmin] = true;
-    foreach (array_keys($pvTargets) as $tg) {
-        sendmessage($tg, $closetext, null, 'HTML');
-    }
-    if (strlen($setting['Channel_Report'] ?? '') > 0) {
-        telegram('sendmessage', ['chat_id' => $setting['Channel_Report'], 'message_thread_id' => $reportTopic, 'text' => $closetext, 'parse_mode' => 'HTML']);
+    $tkCtx = tk_ticket_notify_context((string)($tkdetail['idsupport'] ?? ''));
+    foreach ($tkCtx['recipients'] as $tg) {
+        sendmessage($tg, $closetext, null, 'HTML', $tkCtx['bot_token']);
     }
     $rxTkClosedTpl = $datatextbot['dyn_tickets_closed_confirm'] ?? "🔒 تیکت <code>%s</code> بسته شد. برای ارسال پیام جدید باید پشتیبانی پاسخ دهد یا آن را باز کند.";
     $_rx_nav_s = (isset($_rx_nav_styles) && is_array($_rx_nav_styles)) ? $_rx_nav_styles : [];
@@ -1050,6 +1064,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     sendmessage($from_id, sprintf("🔄 تایید انتقال موجودی\n\n👤 گیرنده: %s\n💰 مبلغ: %s تومان\n\nآیا از انجام این تراکنش اطمینان دارید؟", $trRecipientLabel, number_format($trAmount)), $trConfirmKb, 'HTML');
     step('getTransferConfirm', $from_id);
 } elseif ($datain == "transferbal_cancel") {
+    if (function_exists('rx_flow_message_clear_all')) { rx_flow_message_clear_all($from_id); }
     update("user", "Processing_value", "0", "id", $from_id);
     update("user", "Processing_value_one", "", "id", $from_id);
     Editmessagetext($from_id, $message_id, "❌ انتقال موجودی لغو شد.", null, 'HTML');
@@ -1139,6 +1154,9 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     if ($user['number'] == "none" && (($setting['get_number'] == "onAuthenticationphone") || ($setting['iran_number'] == "onAuthenticationiran")) && !rx_auth_skip_user($user))
         return;
 
+    if (function_exists('rx_flow_message_delete_previous')) {
+        rx_flow_message_delete_previous($from_id, 'purchase', $message_id);
+    }
     if (!isset($datatextbot['textselectlocation']) || trim((string)$datatextbot['textselectlocation']) === '') {
         $datatextbot['textselectlocation'] = '📍 لطفاً لوکیشن (سرور) مورد نظر را انتخاب کنید:';
     }
@@ -1711,6 +1729,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
     }
     step('payment', $from_id);
 } elseif ($user['step'] == "payment" && in_array($datain, ["confirmandgetservice", "confirmandgetserviceDiscount"], true)) {
+    try {
     $__nmLimit = 0;
     if (function_exists('fx_debt_state') && !function_exists('nm_agent_purchase_guard')) {
         // STEP_3/4: مدیریت نمایندگی (v2baz) — سقف بدهکاری + کسر اتمیک + پنل ادمین (require ایمن)
@@ -1883,17 +1902,30 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         if ($Balance_prim <= 1)
             $Balance_prim = 0;
         if ($marzbandirectpay == "offdirectbuy") {
+            if (function_exists('rx_pending_purchase_set_session')) {
+                rx_pending_purchase_set_session($from_id, ['username' => $username_ac, 'id_invoice' => $randomString]);
+            }
             [$minbalance, $maxbalance] = rx_getDepositLimits($user['agent']);
             $minbalance = number_format($minbalance);
             $maxbalance = number_format($maxbalance);
-            $bakinfos = json_encode([
-                'inline_keyboard' => [
-                    [
-                        ['text' => $textbotlang['users']['stateus']['backinfo'], 'callback_data' => "account"],
+            $__pendingDue = max(0, (int) ceil((float) $Balance_prim));
+            $__pendingDueFmt = number_format($__pendingDue);
+            if (function_exists('rx_pending_purchase_keyboard')) {
+                $bakinfos = rx_pending_purchase_keyboard($__pendingDue, (string) ($textbotlang['users']['stateus']['backinfo'] ?? ''));
+            } else {
+                $bakinfos = json_encode([
+                    'inline_keyboard' => [
+                        [['text' => '💳 پرداخت کسری: ' . $__pendingDueFmt . ' تومان', 'callback_data' => 'pending_purchase_pay']],
+                        [['text' => '❌ انصراف از سفارش معوق', 'callback_data' => 'pending_purchase_cancel']],
                     ]
-                ]
-            ]);
-            Editmessagetext($from_id, $message_id, sprintf($textbotlang['users']['Balance']['insufficientbalance'], $minbalance, $maxbalance), $bakinfos, 'HTML');
+                ], JSON_UNESCAPED_UNICODE);
+            }
+            $__pendingText = sprintf($textbotlang['users']['Balance']['insufficientbalance'], $minbalance, $maxbalance)
+                . "\n\n🕒 سفارش انتخابی شما ذخیره شد.\n"
+                . "💰 مبلغ کسری دقیق: <b>{$__pendingDueFmt}</b> تومان\n"
+                . "لطفاً دقیقاً همین مبلغ را کارت‌به‌کارت کرده و رسید آن را ارسال کنید تا سفارش پس از تأیید، خودکار ساخته شود.";
+            Editmessagetext($from_id, $message_id, $__pendingText, $bakinfos, 'HTML');
+            if (function_exists('rx_flow_message_store')) { rx_flow_message_store($from_id, 'purchase', $message_id); }
             step('getprice', $from_id);
         } else {
             update("user", "Processing_value", $Balance_prim, "id", $from_id);
@@ -2096,6 +2128,7 @@ https://t.me/$usernamebot?start={$user['codeInvitation']}";
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
     }
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
+    if (function_exists('rx_flow_message_delete_previous')) { rx_flow_message_delete_previous($from_id, 'purchase', 0); }
     if (!empty($__fxDebtAlert)) { sendmessage($__fxRid, $__fxDebtAlert, null, 'HTML', function_exists('fx_reseller_bot_token') ? fx_reseller_bot_token($__fxRid) : null); }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     // FX-ACCOUNT (2026-10-17): خرید خودِ مالکِ ربات نمایندگی در حالت اعتباری فقط هزینهٔ عمده (fx) است؛
@@ -2295,6 +2328,21 @@ $textonebuy
     }
     update("user", "Processing_value_four", "none", "id", $from_id);
     step('home', $from_id);
+    } catch (Throwable $rxCheckoutError) {
+        if (function_exists('rx_log_event')) {
+            rx_log_event('CHECKOUT_HANDLER_FAILED', $rxCheckoutError->getMessage(), [
+                'user_id' => (string) $from_id,
+                'order' => (string) ($randomString ?? ''),
+                'class' => get_class($rxCheckoutError),
+                'file' => $rxCheckoutError->getFile(),
+                'line' => $rxCheckoutError->getLine(),
+            ]);
+        } else {
+            error_log('[CHECKOUT_HANDLER_FAILED] uid=' . $from_id . ' ' . $rxCheckoutError->getMessage());
+        }
+        rx_notify_callback_failure($rxCheckoutError->getMessage());
+        step('home', $from_id);
+    }
 } elseif ($datain == "aptdc") {
     sendmessage($from_id, $textbotlang['users']['Discount']['getcodesell'], $backuser, 'HTML');
     step('getcodesellDiscount', $from_id);
@@ -2429,6 +2477,9 @@ $textonebuy
     fx_quote_store($from_id, fx_quote_context_key('buy_discount', (string) $user['Processing_value_one']), $info_product['price_product'], $marzban_list_get, $fxBuyKinds);
     sendmessage($from_id, $textin, $paymentDiscount, 'HTML');
 } elseif ($text == "🗂 خرید انبوه" || $datain == "kharidanbuh") {
+    if (function_exists('rx_flow_message_delete_previous')) {
+        rx_flow_message_delete_previous($from_id, 'purchase', $message_id);
+    }
     if ($setting['bulkbuy'] == "offbulk") {
         sendmessage($from_id, $datatextbot['dyn_errors_section_disabled'] ?? "❌ این بخش در حال غیرفعال می باشد", null, 'HTML');
         return;
@@ -3058,6 +3109,7 @@ $textonebuy
         $textcreatuser = str_replace('{volume}', $info_product['Volume_constraint'], $textcreatuser);
         $textcreatuser = applyConnectionPlaceholders($textcreatuser, $output_config_link, $config);
         sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
+    if (function_exists('rx_flow_message_delete_previous')) { rx_flow_message_delete_previous($from_id, 'purchase', 0); }
         if (!$__bulkOwnerCostOnly) {
             if (function_exists('balance_atomic_charge')) {
                 // FX-DEBT-P1: atomic charge; on failure the service stays (panel
@@ -3128,11 +3180,52 @@ $textonebuy
         ], $setting);
     }
     step('home', $from_id);
+} elseif ($datain == "pending_purchase_pay") {
+    $__pendingInv = function_exists('rx_pending_purchase_get_active') ? rx_pending_purchase_get_active($from_id) : null;
+    if (!is_array($__pendingInv)) {
+        sendmessage($from_id, "❌ سفارش معوق فعالی برای شما پیدا نشد.", $keyboard, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+    rx_pending_purchase_set_session($from_id, $__pendingInv);
+    $__pendingDue = rx_pending_purchase_remaining_due($__pendingInv, $user['Balance']);
+    if ($__pendingDue <= 0) {
+        sendmessage($from_id, "✅ موجودی شما برای این سفارش کافی است. لطفاً از منوی خرید، سفارش را دوباره ثبت کنید.", $keyboard, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+    $__pendingName = htmlspecialchars((string) ($__pendingInv['name_product'] ?? ''), ENT_QUOTES, 'UTF-8');
+    $__pendingDueFmt = number_format($__pendingDue);
+    $__pendingPrefix = "🕒 <b>سفارش معوق شما</b>\n\n🛍 سرویس: {$__pendingName}\n💰 مبلغ کسری: <b>{$__pendingDueFmt}</b> تومان\n\nمبلغ کسری به‌صورت خودکار تنظیم شد؛ لطفاً روش پرداخت را انتخاب کنید.\n\n";
+    if (function_exists('rx_flow_message_store')) { rx_flow_message_store($from_id, 'purchase', $message_id); }
+    if (function_exists('rx_walletChargeAmountAccepted')) {
+        rx_walletChargeAmountAccepted($from_id, $user, $__pendingDue, $message_id, $__pendingPrefix);
+    } else {
+        update("user", "Processing_value", $__pendingDue, "id", $from_id);
+        Editmessagetext($from_id, $message_id, $__pendingPrefix . $textbotlang['users']['Balance']['selectPatment'], $step_payment, 'HTML');
+        step('get_step_payment', $from_id);
+    }
+} elseif ($datain == "pending_purchase_cancel") {
+    $__cancelRes = function_exists('rx_pending_purchase_cancel') ? rx_pending_purchase_cancel($from_id) : ['ok' => false, 'reason' => 'unavailable'];
+    if (!empty($__cancelRes['ok'])) {
+        if (function_exists('rx_flow_message_clear')) { rx_flow_message_clear($from_id, 'purchase'); }
+        Editmessagetext($from_id, $message_id, "✅ سفارش معوق شما لغو شد.", $keyboard, 'HTML');
+        step('home', $from_id);
+    } elseif (($__cancelRes['reason'] ?? '') === 'payment_in_progress') {
+        Editmessagetext($from_id, $message_id, "⏳ برای این سفارش یک رسید/پرداخت در حال بررسی است؛ پس از تعیین وضعیت آن می‌توانید سفارش را لغو کنید.", null, 'HTML');
+    } else {
+        Editmessagetext($from_id, $message_id, "❌ سفارش معوق فعالی برای لغو پیدا نشد.", $keyboard, 'HTML');
+    }
 } elseif ($datain == "Add_Balance") {
-    update("user", "Processing_value", "0", "id", $from_id);
-    update("user", "Processing_value_one", "0", "id", $from_id);
-    update("user", "Processing_value_tow", "0", "id", $from_id);
-    update("user", "Processing_value_four", "0", "id", $from_id);
+    $__pendingPurchase = function_exists('rx_pending_purchase_get_active') ? rx_pending_purchase_get_active($from_id) : null;
+    if (is_array($__pendingPurchase)) {
+        rx_pending_purchase_set_session($from_id, $__pendingPurchase);
+    } else {
+        update("user", "Processing_value", "0", "id", $from_id);
+        update("user", "Processing_value_one", "0", "id", $from_id);
+        update("user", "Processing_value_tow", "0", "id", $from_id);
+        update("user", "Processing_value_four", "0", "id", $from_id);
+    }
     step('home', $from_id);
     if ((($setting['get_number'] == "onAuthenticationphone") || ($setting['iran_number'] == "onAuthenticationiran")) && $user['step'] != "get_number" && $user['number'] == "none" && !rx_auth_skip_user($user)) {
         sendmessage($from_id, $textbotlang['users']['number']['Confirming'], $request_contact, 'HTML');
@@ -3140,6 +3233,13 @@ $textonebuy
     }
     if ($user['number'] == "none" && (($setting['get_number'] == "onAuthenticationphone") || ($setting['iran_number'] == "onAuthenticationiran")) && !rx_auth_skip_user($user))
         return;
+    $__pendingPrefix = '';
+    if (is_array($__pendingPurchase)) {
+        $__pendingDue = rx_pending_purchase_remaining_due($__pendingPurchase, $user['Balance']);
+        $__pendingName = htmlspecialchars((string) ($__pendingPurchase['name_product'] ?? ''), ENT_QUOTES, 'UTF-8');
+        $__pendingDueFmt = number_format($__pendingDue);
+        $__pendingPrefix = "🕒 سفارش معوق شما فعال است:\n🛍 {$__pendingName}\n💰 مبلغ کسری دقیق: <b>{$__pendingDueFmt}</b> تومان\n\nلطفاً دقیقاً مبلغ <b>{$__pendingDueFmt} تومان</b> را پرداخت کنید تا سفارش پس از تأیید، خودکار تکمیل شود.\n\n";
+    }
     $randomWalletStatusRow = select("PaySetting", "ValuePay", "NamePay", "randomwallet_status", "select");
     $randomWalletStatusValue = is_array($randomWalletStatusRow) ? (string)($randomWalletStatusRow['ValuePay'] ?? '0') : '0';
     if ($randomWalletStatusValue === '1') {
@@ -3156,17 +3256,17 @@ $textonebuy
         $rwRows[] = [rx_kb_style(['text' => "✍️ رقم دلخواه", 'callback_data' => "rw_custom"], 'rw_custom', $_rx_acc_s)];
         $rwRows[] = [rx_kb_style(['text' => $textbotlang['users']['stateus']['backinfo'], 'callback_data' => "account"], 'backinfo', $_rx_acc_s)];
         $rwKeyboard = json_encode(['inline_keyboard' => $rwRows], JSON_UNESCAPED_UNICODE);
-        Editmessagetext($from_id, $message_id, $datatextbot['dyn_wallet_select_amount'] ?? "💰 مبلغ مورد نظر را برای شارژ کیف پول انتخاب کنید:", $rwKeyboard, 'HTML');
+        Editmessagetext($from_id, $message_id, $__pendingPrefix . ($datatextbot['dyn_wallet_select_amount'] ?? "💰 مبلغ مورد نظر را برای شارژ کیف پول انتخاب کنید:"), $rwKeyboard, 'HTML');
         return;
     }
-    rx_promptWalletChargeCustomAmount($from_id, $message_id, $user);
+    rx_promptWalletChargeCustomAmount($from_id, $message_id, $user, $__pendingPrefix);
 } elseif (preg_match('/^rw_pick_(\d+)$/', (string)$datain, $rwPickMatch)) {
     $rwAmount = (int)$rwPickMatch[1];
-    deletemessage($from_id, $message_id);
-    rx_walletChargeAmountAccepted($from_id, $user, $rwAmount);
+    rx_walletChargeAmountAccepted($from_id, $user, $rwAmount, $message_id);
 } elseif ($datain == "rw_custom") {
     rx_promptWalletChargeCustomAmount($from_id, $message_id, $user);
 } elseif ($datain == "rcc_cancel") {
+    if (function_exists('rx_flow_message_clear_all')) { rx_flow_message_clear_all($from_id); }
     update("user", "Processing_value", "0", "id", $from_id);
     update("user", "Processing_value_one", "0", "id", $from_id);
     update("user", "Processing_value_tow", "0", "id", $from_id);
@@ -3605,8 +3705,9 @@ $textonebuy
     step('home', $from_id);
 } elseif ($user['step'] == "getprice") {
     if (!isset($update['message']) && empty($text)) { return; }
-    deletemessage($from_id, $user['Processing_value']);
-    rx_walletChargeAmountAccepted($from_id, $user, $text);
+    $__promptMessageId = (int) ($user['Processing_value'] ?? 0);
+    if (!empty($message_id)) { deletemessage($from_id, $message_id); }
+    rx_walletChargeAmountAccepted($from_id, $user, $text, $__promptMessageId);
 } elseif ($datain == "chargenodiscount") {
     update("user", "Processing_value_four", "", "id", $from_id);
     Editmessagetext($from_id, $message_id, $textbotlang['users']['Balance']['selectPatment'], $step_payment);
@@ -3664,16 +3765,31 @@ $textonebuy
             'preserve_invoice_key' => $_cc_keep_invoice,
         ]);
 
-        $_stmt = $connect->prepare("SELECT id FROM Payment_report WHERE id_user = ? AND (payment_Status = 'Unpaid' OR payment_Status = 'waiting' OR payment_Status = 'pending') AND Payment_Method = 'cart to cart' LIMIT 1");
-        $_stmt->bind_param("s", $from_id_sql);
-        $_stmt->execute();
-        $checkpay = $_stmt->get_result();
-        $_stmt->close();
-        if (mysqli_num_rows($checkpay) != 0) {
-            sendmessage($from_id, $textbotlang['Admin']['SettingPayment']['issetpay'], null, 'HTML');
+        // Soft lock: only a submitted receipt for THIS invoice/marker blocks a
+        // new card payment. Old Unpaid rows and receipts for other invoices must
+        // never freeze the whole account.
+        $_sameInvoiceMarker = trim((string) $_cc_keep_invoice);
+        $_pendingReceiptOrder = '';
+        if ($_sameInvoiceMarker !== '' && $_sameInvoiceMarker !== '|' && $_sameInvoiceMarker !== '0|0') {
+            $_stmt = $connect->prepare("SELECT id_order FROM Payment_report WHERE id_user = ? AND id_invoice = ? AND payment_Status IN ('waiting','pending') ORDER BY id DESC LIMIT 1");
+            $_stmt->bind_param("ss", $from_id_sql, $_sameInvoiceMarker);
+            $_stmt->execute();
+            $_checkpay = $_stmt->get_result();
+            $_stmt->close();
+            if ($_checkpay && mysqli_num_rows($_checkpay) != 0) {
+                $_pendingReceiptOrder = (string) (mysqli_fetch_assoc($_checkpay)['id_order'] ?? '');
+            }
+        }
+        if ($_pendingReceiptOrder !== '') {
+            $_pendingReceiptKb = json_encode(['inline_keyboard' => [
+                [["text" => "❌ لغو پرداخت قبلی و سفارش جدید", 'callback_data' => 'fx_cancel_receipt_' . $_pendingReceiptOrder]],
+                [["text" => "🏠 بازگشت به منوی اصلی", 'callback_data' => 'fx_nav_home']],
+            ]], JSON_UNESCAPED_UNICODE);
+            sendmessage($from_id, $textbotlang['Admin']['SettingPayment']['issetpay'], $_pendingReceiptKb, 'HTML');
             return;
         }
         $mainbalance = rx_gatewayDepositLimit("minbalancecart");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalance = 0; }
         $maxbalance = rx_gatewayDepositLimit("maxbalancecart");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);
@@ -3736,16 +3852,33 @@ $textonebuy
         $randomString = bin2hex(random_bytes(5));
         $payment_Status = "Unpaid";
         $Payment_Method = "cart to cart";
+        // FX-RESELLER-RECEIPT-GUARD: stamp the reseller bot token on receipts
+        // created in a reseller bot so tenant scoping (rxReceiptRowInTenant /
+        // rxReceiptScopeSql) recognizes them even when the buyer's user row
+        // belongs to another bot (shared users). Main bot: unchanged (NULL).
+        $_cc_fx_tok = (defined('FX_RESELLER_ID') && defined('FX_RESELLER_TOKEN') && FX_RESELLER_TOKEN !== '') ? (string) FX_RESELLER_TOKEN : '';
         $_cc_insert_ok = false;
         try {
-            $stmt = $connect->prepare("INSERT INTO Payment_report (id_user,id_order,time,price,payment_Status,Payment_Method,id_invoice) VALUES (?,?,?,?,?,?,?)");
-            if ($stmt) {
-                $stmt->bind_param("sssssss", $from_id, $randomString, $dateacc, $user['Processing_value'], $payment_Status, $Payment_Method, $invoice);
-                $_cc_insert_ok = $stmt->execute() && $stmt->affected_rows === 1;
-                $_cc_insert_err = $stmt->error;
-                $stmt->close();
+            if ($_cc_fx_tok !== '') {
+                $stmt = $connect->prepare("INSERT INTO Payment_report (id_user,id_order,time,price,payment_Status,Payment_Method,id_invoice,bottype) VALUES (?,?,?,?,?,?,?,?)");
+                if ($stmt) {
+                    $stmt->bind_param("ssssssss", $from_id, $randomString, $dateacc, $user['Processing_value'], $payment_Status, $Payment_Method, $invoice, $_cc_fx_tok);
+                    $_cc_insert_ok = $stmt->execute() && $stmt->affected_rows === 1;
+                    $_cc_insert_err = $stmt->error;
+                    $stmt->close();
+                } else {
+                    $_cc_insert_err = $connect->error;
+                }
             } else {
-                $_cc_insert_err = $connect->error;
+                $stmt = $connect->prepare("INSERT INTO Payment_report (id_user,id_order,time,price,payment_Status,Payment_Method,id_invoice) VALUES (?,?,?,?,?,?,?)");
+                if ($stmt) {
+                    $stmt->bind_param("sssssss", $from_id, $randomString, $dateacc, $user['Processing_value'], $payment_Status, $Payment_Method, $invoice);
+                    $_cc_insert_ok = $stmt->execute() && $stmt->affected_rows === 1;
+                    $_cc_insert_err = $stmt->error;
+                    $stmt->close();
+                } else {
+                    $_cc_insert_err = $connect->error;
+                }
             }
         } catch (Throwable $_cc_insert_e) {
             $_cc_insert_ok = false;
@@ -3842,6 +3975,7 @@ $textonebuy
         $message_id = rx_send_banner_message($from_id, 'cart', $textcart, $sendresidcart, "html");
         updatePaymentMessageId($message_id, $randomString);
     } elseif (preg_match('/^rxpgw_cancel_(zarinpal|plisio|nowpayment|iranpay2|tonpay|blupal|atlaspay|cubepay|variza|abangateway)_(\w+)$/', (string) $datain, $rxPgwMatch)) {
+        if (function_exists('rx_flow_message_clear_all')) { rx_flow_message_clear_all($from_id); }
         $rxPgwGatewayKey = $rxPgwMatch[1];
         $rxPgwOrderId = $rxPgwMatch[2];
         $rxPgwMethodMap = rx_gateway_payment_method_map();
@@ -3873,6 +4007,7 @@ $textonebuy
             return;
         }
         $mainbalance = rx_gatewayDepositLimit("minbalancezarinpal");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalance = 0; }
         $maxbalance = rx_gatewayDepositLimit("maxbalancezarinpal");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);
@@ -3968,6 +4103,7 @@ $textonebuy
             return;
         }
         $mainbalanceplisio = rx_gatewayDepositLimit("minbalanceplisio");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceplisio = 0; }
         $maxbalanceplisio = rx_gatewayDepositLimit("maxbalanceplisio");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
@@ -4070,6 +4206,7 @@ $textonebuy
         $trxprice = round(((float) $user['Processing_value']) / (float) $trx, 2);
         $usdprice = round(((float) $user['Processing_value']) / (float) $usd, 2);
         $mainbalanceplisio = rx_gatewayDepositLimit("minbalancenowpayment");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceplisio = 0; }
         $maxbalanceplisio = rx_gatewayDepositLimit("maxbalancenowpayment");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
@@ -4159,6 +4296,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "iranpay2") {
         $mainbalanceplisio = rx_gatewayDepositLimit("minbalanceiranpay2");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceplisio = 0; }
         $maxbalanceplisio = rx_gatewayDepositLimit("maxbalanceiranpay2");
         if ($user['Processing_value'] < $mainbalanceplisio || $user['Processing_value'] > $maxbalanceplisio) {
             $mainbalanceplisio = number_format($mainbalanceplisio);
@@ -4297,6 +4435,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "tonpay") {
         $mainbalancetonpay = rx_gatewayDepositLimit("minbalancetonpay");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalancetonpay = 0; }
         $maxbalancetonpay = rx_gatewayDepositLimit("maxbalancetonpay");
         if ($user['Processing_value'] < $mainbalancetonpay || $user['Processing_value'] > $maxbalancetonpay) {
             $mainbalancetonpay = number_format($mainbalancetonpay);
@@ -4424,6 +4563,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "blupal") {
         $mainbalanceblupal = rx_gatewayDepositLimit("minbalanceblupal");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceblupal = 0; }
         $maxbalanceblupal = rx_gatewayDepositLimit("maxbalanceblupal");
         if ($user['Processing_value'] < $mainbalanceblupal || $user['Processing_value'] > $maxbalanceblupal) {
             $mainbalanceblupal = number_format($mainbalanceblupal);
@@ -4549,6 +4689,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "atlaspay") {
         $mainbalanceatlaspay = rx_gatewayDepositLimit("minbalanceatlaspay");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceatlaspay = 0; }
         $maxbalanceatlaspay = rx_gatewayDepositLimit("maxbalanceatlaspay");
         if ($user['Processing_value'] < $mainbalanceatlaspay || $user['Processing_value'] > $maxbalanceatlaspay) {
             $mainbalanceatlaspay = number_format($mainbalanceatlaspay);
@@ -4678,6 +4819,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "cubepay") {
         $mainbalancecubepay = rx_gatewayDepositLimit("minbalancecubepay");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalancecubepay = 0; }
         $maxbalancecubepay = rx_gatewayDepositLimit("maxbalancecubepay");
         if ($user['Processing_value'] < $mainbalancecubepay || $user['Processing_value'] > $maxbalancecubepay) {
             $mainbalancecubepay = number_format($mainbalancecubepay);
@@ -4821,6 +4963,7 @@ $textonebuy
         }
     } elseif ($datain == "variza") {
         $mainbalancevariza = rx_gatewayDepositLimit("minbalancevariza");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalancevariza = 0; }
         $maxbalancevariza = rx_gatewayDepositLimit("maxbalancevariza");
         if ($user['Processing_value'] < $mainbalancevariza || $user['Processing_value'] > $maxbalancevariza) {
             $mainbalancevariza = number_format($mainbalancevariza);
@@ -4945,6 +5088,7 @@ $textonebuy
         updatePaymentMessageId($message_id, $randomString);
     } elseif ($datain == "abangateway") {
         $mainbalanceabangateway = rx_gatewayDepositLimit("minbalanceabangateway");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalanceabangateway = 0; }
         $maxbalanceabangateway = rx_gatewayDepositLimit("maxbalanceabangateway");
         if ($user['Processing_value'] < $mainbalanceabangateway || $user['Processing_value'] > $maxbalanceabangateway) {
             $mainbalanceabangateway = number_format($mainbalanceabangateway);
@@ -5037,6 +5181,8 @@ $textonebuy
     } elseif ($datain == "digitaltron") {
 
         $mainbalancedigitaltron = rx_gatewayDepositLimit("minbalancedigitaltron");
+
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalancedigitaltron = 0; }
         $maxbalancedigitaltron = rx_gatewayDepositLimit("maxbalancedigitaltron");
         if ($user['Processing_value'] < $mainbalancedigitaltron || $user['Processing_value'] > $maxbalancedigitaltron) {
             $minF = number_format($mainbalancedigitaltron);
@@ -5249,6 +5395,7 @@ $textonebuy
         }
         updatePaymentMessageId($resp, $result['order_id']);
     } elseif (preg_match('/^crypto_cancel_([A-Za-z0-9_\-]+)$/', (string) $datain, $dcm)) {
+        if (function_exists('rx_flow_message_clear_all')) { rx_flow_message_clear_all($from_id); }
 
         $orderId = $dcm[1];
         if (function_exists('getDatabaseConnection')) {
@@ -5339,6 +5486,7 @@ $textonebuy
             $starAmount = 1;
         }
         $mainbalance = rx_gatewayDepositLimit("minbalancestar");
+        if (function_exists("rx_pending_purchase_deficiency_due") && rx_pending_purchase_deficiency_due($user) > 0) { $mainbalance = 0; }
         $maxbalance = rx_gatewayDepositLimit("maxbalancestar");
         if ($user['Processing_value'] < $mainbalance || $user['Processing_value'] > $maxbalance) {
             $mainbalance = number_format($mainbalance);

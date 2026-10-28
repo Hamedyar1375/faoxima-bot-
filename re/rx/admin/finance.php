@@ -1337,6 +1337,10 @@ if (false) {
     Editmessagetext($from_id, $message_id, $textbotlang['Admin']['ManageUser']['mangebtnuserdec'], $keyboard_json);
 } elseif (preg_match('/addbalanceuser_(\w+)/', $datain, $dataget)) {
     $iduser = $dataget[1];
+    if (function_exists('rx_admin_target_user_allowed') && !rx_admin_target_user_allowed($iduser)) {
+        nm_adminInstantReply($from_id, "❌ این کاربر متعلق به ربات نمایندگی شما نیست.", $backadmin, 'HTML');
+        return;
+    }
     update("user", "Processing_value", $iduser, "id", $from_id);
     telegram('sendmessage', [
         'chat_id' => $from_id,
@@ -1348,6 +1352,11 @@ if (false) {
     step('addbalanceusercurrent', $from_id);
 } elseif ($user['step'] == "addbalanceusercurrent") {
     if (!isset($update['message']) && empty($text)) { return; }
+    if (function_exists('rx_admin_target_user_allowed') && !rx_admin_target_user_allowed($user['Processing_value'] ?? '')) {
+        step('home', $from_id);
+        nm_adminInstantReply($from_id, "❌ این کاربر متعلق به ربات نمایندگی شما نیست.", $backadmin, 'HTML');
+        return;
+    }
     if (!ctype_digit($text) || intval($text) <= 0) {
         nm_adminInstantReply($from_id, $textbotlang['Admin']['Balance']['Invalidprice'], $backadmin, 'HTML');
         return;
@@ -1424,6 +1433,10 @@ if (false) {
     }
 } elseif (preg_match('/lowbalanceuser_(\w+)/', $datain, $dataget)) {
     $iduser = $dataget[1];
+    if (function_exists('rx_admin_target_user_allowed') && !rx_admin_target_user_allowed($iduser)) {
+        nm_adminInstantReply($from_id, "❌ این کاربر متعلق به ربات نمایندگی شما نیست.", $backadmin, 'HTML');
+        return;
+    }
     update("user", "Processing_value", $iduser, "id", $from_id);
     telegram('sendmessage', [
         'chat_id' => $from_id,
@@ -1434,6 +1447,11 @@ if (false) {
     ]);
     step('addbalanceuser', $from_id);
 } elseif ($user['step'] == "addbalanceuser") {
+    if (function_exists('rx_admin_target_user_allowed') && !rx_admin_target_user_allowed($user['Processing_value'] ?? '')) {
+        step('home', $from_id);
+        nm_adminInstantReply($from_id, "❌ این کاربر متعلق به ربات نمایندگی شما نیست.", $backadmin, 'HTML');
+        return;
+    }
     if (!ctype_digit($text) || intval($text) <= 0) {
         nm_adminInstantReply($from_id, $textbotlang['Admin']['Balance']['Invalidprice'], $backadmin, 'HTML');
         return;
@@ -1785,6 +1803,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/removeservice-(.*)/', $datain, $dataget)) {
     $username = $dataget[1];
     $info_product = select("invoice", "*", "id_invoice", $username, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($info_product)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     $DataUserOut = $ManagePanel->DataUser($info_product['Service_location'], $info_product['username']);
     $ManagePanel->RemoveUser($info_product['Service_location'], $info_product['username']);
     update('invoice', 'status', 'removebyadmin', 'id_invoice', $username);
@@ -1794,6 +1817,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/removeserviceandback-(\w+)/', $datain, $dataget)) {
     $username = $dataget[1];
     $info_product = select("invoice", "*", "id_invoice", $username, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($info_product)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if ($info_product['Status'] == "removebyadmin") {
         nm_adminInstantReply($from_id, "❌ سرویس از قبل حذف شده است", $keyboardadmin, 'HTML');
         return;
@@ -1807,15 +1835,43 @@ $iduser  در ربات  رفع مسدود گردید
         }
     }
     $ManagePanel->RemoveUser($info_product['Service_location'], $info_product['username']);
-    update('invoice', 'status', 'removebyadmin', 'id_invoice', $username);
-    $Balance_user = select("user", "*", "id", $info_product['id_user'], "select");
-    $Balance_add_user = $Balance_user['Balance'] + $info_product['price_product'];
-    update("user", "Balance", $Balance_add_user, "id", $info_product['id_user']);
-    $textadd = "💎 کاربر عزیز مبلغ " . rxFormatToman($info_product['price_product']) . " تومان به موجودی کیف پول تان اضافه گردید.";
-    sendmessage($info_product['id_user'], $textadd, null, 'HTML');
-    nm_adminInstantReply($from_id, $textbotlang['Admin']['ManageUser']['RemovedService'], $keyboardadmin, 'HTML');
-    Editmessagetext($from_id, $message_id, $text_inline, json_encode(['inline_keyboard' => []]));
-    step('home', $from_id);
+    $rxRefundAmount = (int) round((float)($info_product['price_product'] ?? 0));
+    $rxRefundOk = false;
+    try {
+        $pdo->beginTransaction();
+        $rxRefundClaim = $pdo->prepare("UPDATE invoice SET Status = 'removebyadmin' WHERE id_invoice = :inv AND id_user = :uid AND Status <> 'removebyadmin'");
+        $rxRefundClaim->execute([':inv' => $username, ':uid' => $info_product['id_user']]);
+        if ($rxRefundClaim->rowCount() < 1) {
+            $pdo->rollBack();
+            nm_adminInstantReply($from_id, "❌ این سرویس قبلاً حذف/بازپرداخت شده است.", $keyboardadmin, 'HTML');
+            return;
+        }
+        if ($rxRefundAmount > 0) {
+            if (!function_exists('balance_atomic_credit') || !balance_atomic_credit($info_product['id_user'], $rxRefundAmount)) {
+                throw new RuntimeException('atomic credit failed');
+            }
+            if (!function_exists('wallet_ledger_record') || !wallet_ledger_record($info_product['id_user'], 'credit', $rxRefundAmount, 'refund', 'بازگشت وجه حذف سرویس توسط ادمین', (string)$username, 'invoice', (string)$username)) {
+                throw new RuntimeException('wallet ledger failed');
+            }
+        }
+        $pdo->commit();
+        $rxRefundOk = true;
+    } catch (Throwable $rxRefundErr) {
+        if ($pdo->inTransaction()) { $pdo->rollBack(); }
+        error_log('[admin_service_refund] ' . $rxRefundErr->getMessage());
+        if (function_exists('rx_log_event')) {
+            rx_log_event('ADMIN_SERVICE_REFUND_FAILED', $rxRefundErr->getMessage(), ['invoice' => $username, 'user' => $info_product['id_user'], 'amount' => $rxRefundAmount]);
+        }
+        nm_adminInstantReply($from_id, "❌ بازگشت وجه انجام نشد؛ وضعیت مالی تغییر نکرد.", $keyboardadmin, 'HTML');
+        return;
+    }
+    if ($rxRefundOk) {
+        $textadd = "💎 کاربر عزیز مبلغ " . rxFormatToman($rxRefundAmount) . " تومان به موجودی کیف پول تان اضافه گردید.";
+        sendmessage($info_product['id_user'], $textadd, null, 'HTML');
+        nm_adminInstantReply($from_id, $textbotlang['Admin']['ManageUser']['RemovedService'], $keyboardadmin, 'HTML');
+        Editmessagetext($from_id, $message_id, $text_inline, json_encode(['inline_keyboard' => []]));
+        step('home', $from_id);
+    }
 } elseif ($text == "🎁 ساخت کد تخفیف" && $adminrulecheck['rule'] == "administrator") {
     nm_adminInstantReply($from_id, "🌐 ساخت و مدیریت کد تخفیف و کد هدیه از طریق ربات غیرفعال شده است.\n\nلطفاً برای ساخت یا مدیریت کدهای تخفیف و هدیه به پنل تحت وب مراجعه کنید.", $shopkeyboard, 'HTML');
     step('home', $from_id);
@@ -2094,7 +2150,7 @@ $iduser  در ربات  رفع مسدود گردید
         ]
     ]);
     Editmessagetext($from_id, $message_id, $textbotlang['Admin']['Status']['cardStatusonpv'], $card_Statuspv);
-} elseif (preg_match('/addbalamceuser_(\w+)/', $datain, $datagetr) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
+} elseif (preg_match('/addbalamceuser_(\w+)/', $datain, $datagetr) && fx_res_svc_receipt_admin_ok($adminrulecheck, $from_id)) {
     $id_order = $datagetr[1];
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
     if (!is_array($Payment_report) || (function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report))) {
@@ -3387,6 +3443,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/rejectremoceserviceadmin-(\w+)/', $datain, $dataget)) {
     $id_invoice = $dataget[1];
     $invoice = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     $requestcheck = select("cancel_service", "*", "username", $invoice['username'], "select");
     if ($requestcheck['status'] == "accept" || $requestcheck['status'] == "reject") {
         telegram('answerCallbackQuery', array(
@@ -3413,6 +3474,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/remoceserviceadmin-(\w+)/', $datain, $dataget)) {
     $id_invoice = $dataget[1];
     $invoice = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     $requestcheck = select("cancel_service", "*", "username", $invoice['username'], "select");
     if ($requestcheck['status'] == "accept" || $requestcheck['status'] == "reject") {
         telegram('answerCallbackQuery', array(
@@ -3565,6 +3631,11 @@ $iduser  در ربات  رفع مسدود گردید
     $id_invoice = $dataget[1];
     update("user", "Processing_value", $id_invoice, "id", $from_id);
     $invoice = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     $requestcheck = select("cancel_service", "*", "username", $invoice['username'], "select");
     if ($requestcheck['status'] == "accept" || $requestcheck['status'] == "reject") {
         telegram('answerCallbackQuery', array(
@@ -3592,6 +3663,11 @@ $iduser  در ربات  رفع مسدود گردید
     if (!is_array($invoice) || empty($invoice['id_user'])) {
         step('home', $from_id);
         nm_adminInstantReply($from_id, "❌ فاکتور پیدا نشد.", $keyboardadmin, 'HTML');
+        return;
+    }
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($invoice)) {
+        step('home', $from_id);
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $keyboardadmin, 'HTML');
         return;
     }
     $rxManualRefundAmount = intval($text);
@@ -3659,6 +3735,11 @@ $iduser  در ربات  رفع مسدود گردید
 
     $mafu_inv_id = $dataget[1];
     $mafu_invoice = select("invoice", "*", "id_invoice", $mafu_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($mafu_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($mafu_invoice)) {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
@@ -3757,6 +3838,11 @@ $iduser  در ربات  رفع مسدود گردید
 
     $mafu_inv_id = $dataget[1];
     $mafu_invoice = select("invoice", "*", "id_invoice", $mafu_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($mafu_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($mafu_invoice)) {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
@@ -3801,6 +3887,11 @@ $iduser  در ربات  رفع مسدود گردید
 
     $mafu_inv_id = (string)$user['Processing_value'];
     $mafu_invoice = select("invoice", "*", "id_invoice", $mafu_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($mafu_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($mafu_invoice)) {
         nm_adminInstantReply($from_id, "❌ فاکتور پیدا نشد.", $keyboardadmin ?? null, 'HTML');
         step("home", $from_id);
@@ -3871,6 +3962,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/^nmrefokdef_([A-Za-z0-9_\-]+)$/', $datain, $dataget) && $adminrulecheck['rule'] == "administrator") {
     $nmref_inv_id = $dataget[1];
     $nmref_invoice = select("invoice", "*", "id_invoice", $nmref_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($nmref_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($nmref_invoice)) {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور پیدا نشد.', 'show_alert' => true, 'cache_time' => 0]);
         return;
@@ -3928,6 +4024,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/^nmrefcustom_([A-Za-z0-9_\-]+)$/', $datain, $dataget) && $adminrulecheck['rule'] == "administrator") {
     $nmref_inv_id = $dataget[1];
     $nmref_invoice = select("invoice", "*", "id_invoice", $nmref_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($nmref_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($nmref_invoice)) {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور پیدا نشد.', 'show_alert' => true, 'cache_time' => 0]);
         return;
@@ -3949,6 +4050,11 @@ $iduser  در ربات  رفع مسدود گردید
     }
     $nmref_inv_id = (string)$user['Processing_value'];
     $nmref_invoice = select("invoice", "*", "id_invoice", $nmref_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($nmref_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($nmref_invoice)) {
         nm_adminInstantReply($from_id, "❌ فاکتور پیدا نشد.", $keyboardadmin ?? null, 'HTML');
         step("home", $from_id);
@@ -4008,6 +4114,11 @@ $iduser  در ربات  رفع مسدود گردید
 } elseif (preg_match('/^nmrefreject_([A-Za-z0-9_\-]+)$/', $datain, $dataget) && $adminrulecheck['rule'] == "administrator") {
     $nmref_inv_id = $dataget[1];
     $nmref_invoice = select("invoice", "*", "id_invoice", $nmref_inv_id, "select");
+    if (function_exists('rx_admin_invoice_allowed') && !rx_admin_invoice_allowed($nmref_invoice)) {
+        if (!empty($callback_query_id)) { @telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی به این فاکتور مجاز نیست.', 'show_alert' => true, 'cache_time' => 0]); }
+        nm_adminInstantReply($from_id, "❌ این فاکتور متعلق به ربات نمایندگی شما نیست.", $backadmin ?? ($keyboardadmin ?? null), 'HTML');
+        return;
+    }
     if (!is_array($nmref_invoice)) {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'فاکتور پیدا نشد.', 'show_alert' => true, 'cache_time' => 0]);
         return;

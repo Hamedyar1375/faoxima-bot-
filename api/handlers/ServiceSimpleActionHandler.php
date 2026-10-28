@@ -94,22 +94,18 @@ final class ServiceSimpleActionHandler extends BaseHandler
             FaoximaResponse::fail(502, '❌ ارتباط با پنل برقرار نشد');
         }
         $remoteStatus = (string)($remote['status'] ?? '');
-        if ($remoteStatus === 'active' && !$managePanel->HasLiveConnectionHistory($panel, $remote)) {
-            FaoximaResponse::fail(409, 'ابتدا به کانفیگ متصل شوید و سپس مجدداً تلاش کنید.');
-        }
-        if ($remoteStatus === 'on_hold') {
-            FaoximaResponse::fail(409, 'ابتدا به کانفیگ متصل شوید و سپس مجدداً تلاش کنید.');
-        }
         if ($remoteStatus === 'Unsuccessful') {
-            FaoximaResponse::fail(502, '❌ خطایی در دریافت وضعیت سرویس از پنل رخ داده است');
+            $reason = (string)($remote['msg'] ?? ($remote['detail'] ?? 'خطای نامشخص'));
+            FaoximaResponse::fail(502, '❌ خطا در دریافت وضعیت سرویس از پنل: ' . $reason);
         }
 
         $output = $managePanel->Change_status((string)$invoice['username'], (string)$invoice['Service_location']);
         if (!is_array($output) || (string)($output['status'] ?? '') === 'Unsuccessful') {
-            if (($output['code'] ?? '') === 'not_connected') {
-                FaoximaResponse::fail(409, (string)$output['msg']);
+            $reason = is_array($output) ? (string)($output['msg'] ?? 'خطای نامشخص') : 'پاسخ نامعتبر از پنل';
+            if (function_exists('rx_panel_error_text')) {
+                $reason = rx_panel_error_text($reason, is_array($output) ? ($output['detail'] ?? null) : null, false);
             }
-            FaoximaResponse::fail(502, '❌ تغییر وضعیت سرویس انجام نشد. لطفاً دوباره تلاش کنید.');
+            FaoximaResponse::fail(502, '❌ تغییر وضعیت سرویس انجام نشد: ' . $reason);
         }
 
 

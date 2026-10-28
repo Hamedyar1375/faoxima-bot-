@@ -78,6 +78,7 @@ final class PhoneVerifyHandler
         }
 
         $setting = select('setting', '*', null, null, 'select');
+        if (defined('FX_RESELLER_ID') && function_exists('rx_reseller_apply_setting_overrides')) { $setting = rx_reseller_apply_setting_overrides($setting); }
         if (!is_array($setting)) {
             $setting = [];
         }

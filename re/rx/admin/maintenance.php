@@ -1442,8 +1442,12 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
         ]
     ]);
     $dataoutput = $ManagePanel->Change_status($nameloc['username'], $nameloc['Service_location']);
-    if ($dataoutput['status'] == "Unsuccessful") {
-        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['notchanged'], $bakinfos);
+    if (!is_array($dataoutput) || (string)($dataoutput['status'] ?? '') === 'Unsuccessful') {
+        $reason = is_array($dataoutput) ? (string)($dataoutput['msg'] ?? 'نامشخص') : 'پاسخ نامعتبر از پنل';
+        if (function_exists('rx_panel_error_text')) {
+            $reason = rx_panel_error_text($reason, is_array($dataoutput) ? ($dataoutput['detail'] ?? null) : null, false);
+        }
+        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['notchanged'] . "\n\n🔎 علت: <code>" . htmlspecialchars($reason, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . "</code>", $bakinfos);
         return;
     }
     $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
@@ -1766,7 +1770,9 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
         nm_adminInstantReply($from_id, $textbotlang['Admin']['agent']['invalidvlue'], $backadmin, 'HTML');
         return;
     }
-    update("setting", "timeauto_not_verify", $text);
+    if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('timeauto_not_verify', $text)) {
+        update("setting", "timeauto_not_verify", $text);
+    }
     nm_adminInstantReply($from_id, "✅ زمان با موفقیت ثبت گردید.", $CartManage, 'HTML');
     step("home", $from_id);
 } elseif ($text == "نمایش برای خرید اول") {

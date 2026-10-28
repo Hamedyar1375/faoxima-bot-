@@ -1,9 +1,11 @@
 const TOKEN_KEY = 'faoxima.token';
 const buyDraftKey = 'faoxima.buyDraft';
+const resellerKey = 'faoxima.reseller';
 
 const memory = {
     user: null,
     settings: null,
+    reseller: null,
 };
 
 export function getToken() {
@@ -31,5 +33,31 @@ export function setBuyDraft(draft) {
 }
 export function clearBuyDraft() {
     try { sessionStorage.removeItem(buyDraftKey); } catch (_) {}
+}
+
+// FX-RESELLER-SVCMGMT: reseller self-service session state.
+// { reseller_id: number, is_reseller_admin: boolean } or null for customers.
+export function getReseller() {
+    if (memory.reseller) return memory.reseller;
+    try {
+        const raw = sessionStorage.getItem(resellerKey);
+        memory.reseller = raw ? JSON.parse(raw) : null;
+    } catch (_) { memory.reseller = null; }
+    return memory.reseller;
+}
+export function setReseller(r) {
+    memory.reseller = r;
+    try {
+        if (r) sessionStorage.setItem(resellerKey, JSON.stringify(r));
+        else sessionStorage.removeItem(resellerKey);
+    } catch (_) {}
+}
+export function isResellerAdmin() {
+    const r = getReseller();
+    return !!(r && r.is_reseller_admin && Number(r.reseller_id) > 0);
+}
+export function getResellerId() {
+    const r = getReseller();
+    return r ? Number(r.reseller_id) || 0 : 0;
 }
 

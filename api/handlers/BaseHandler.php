@@ -34,6 +34,9 @@ abstract class BaseHandler
         $this->data = $data;
         $this->method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
         $this->setting = select('setting', '*');
+        if (defined('FX_RESELLER_ID') && function_exists('rx_reseller_apply_setting_overrides')) {
+            $this->setting = rx_reseller_apply_setting_overrides($this->setting);
+        }
     }
 
 
@@ -104,9 +107,13 @@ abstract class BaseHandler
         if (array_key_exists($uid, self::$adminLookupCache)) {
             return self::$adminLookupCache[$uid];
         }
-        $cnt = (int) select('admin', '*', 'id_admin', $uid, 'count');
-        self::$adminLookupCache[$uid] = $cnt > 0;
-        return self::$adminLookupCache[$uid];
+        // Main-bot admins only. Reseller owners are also present in the legacy
+        // admin table but must not be treated as main-bot administrators here.
+        $isAdmin = function_exists('rx_is_main_admin')
+            ? rx_is_main_admin($uid)
+            : ((int) select('admin', '*', 'id_admin', $uid, 'count') > 0);
+        self::$adminLookupCache[$uid] = $isAdmin;
+        return $isAdmin;
     }
 
 

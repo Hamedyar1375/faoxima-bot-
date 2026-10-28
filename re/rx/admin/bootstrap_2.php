@@ -1,5 +1,9 @@
 <?php
 
+// In the reseller bot admin panel, show/edit the per-bot forced mini-app mode.
+if (defined('FX_RESELLER_ID') && function_exists('rx_reseller_apply_setting_overrides') && isset($setting) && is_array($setting)) {
+    $setting = rx_reseller_apply_setting_overrides($setting);
+}
 
 if (!function_exists('rx_featCategoryRows')) {
     function rx_featCategoryRows($cat)
@@ -245,12 +249,26 @@ if (defined('FX_RESELLER_LOCK') && FX_RESELLER_LOCK && defined('FX_RESELLER_ID')
     unset($_fxLockedTexts, $_fxLockedCbExact, $_fxLockedCbPrefixes, $_fxLockedHit, $_fxLockedPrefix);
 }
 
+// Reply-mode support for the reseller forced-mini-app toggle. In non-inline
+// keyboard mode callback_data is stripped by Telegram, so the button arrives as
+// plain text and must be translated back to the editstsuts callback.
+if (defined('FX_RESELLER_ID') && isset($text) && is_string($text)
+    && (strpos($text, 'هدایت کاربران به مینی‌اپ') !== false
+        || strpos($text, 'مینی‌اپ اجباری') !== false
+        || strpos($text, 'مینی اپ اجباری') !== false)) {
+    $rxForcedModeNow = (string)($setting['forced_miniapp_mode'] ?? '0') === '1' ? '1' : '0';
+    $datain = 'editstsuts-forced_miniapp-' . $rxForcedModeNow;
+    $text = $datain;
+    unset($rxForcedModeNow);
+}
+
 // FX-TENANT (2026-10-24): reseller administrators may manage their own payment
 // gateways, cards, forced channels, retail prices and users, but shared/main-only
 // configuration (categories, technical settings, webhook, backup, base products)
 // must never be reachable from a reseller bot — including by forged callbacks.
 if (defined('FX_RESELLER_ID') && FX_RESELLER_ID
     && ($adminrulecheck['rule'] ?? '') === 'administrator'
+    && (string)$from_id !== (string)FX_RESELLER_ID
     && fx_reseller_main_only_hit($text ?? '', $datain ?? '', (string) ($user['step'] ?? ''))) {
     nm_adminInstantReply($from_id, "⛔️ <b>این بخش فقط از ربات اصلی قابل مدیریت است.</b>\n\nدسته‌بندی‌ها، تنظیمات فنی، وب‌هوک، بکاپ و تعریف پایه محصولات برای ربات نمایندگی غیرفعال است. از «🏷️ قیمت‌های من» برای قیمت و نمایش محصول استفاده کنید.", $backadmin, 'HTML');
     return;
@@ -1191,78 +1209,28 @@ if (in_array($text, $textadmin) || $datain == "admin") {
         rxNavSetState($from_id, 'channel');
     }
     nm_adminInstantReply($from_id, $textbotlang['Admin']['channel']['description'], $channelkeyboard, 'HTML');
-} elseif (defined('FX_RESELLER_ID') && FX_RESELLER_ID && (
-    in_array((string) $datain, [
-        'hoursago_stat', 'yesterday_stat', 'today_stat', 'month_old_stat',
-        'month_current_stat', 'view_stat_time',
-    ], true)
-    || in_array((string) ($user['step'] ?? ''), ['get_time_start', 'get_time_end'], true)
-)) {
-    nm_adminInstantReply($from_id, "📊 گزارش تفکیکی زمانی برای ربات نمایندگی فعال نیست. از «آمار کلی» همین بخش استفاده کنید.", $keyboardadmin, 'HTML');
+} elseif (defined('FX_RESELLER_ID') && FX_RESELLER_ID && function_exists('fx_res_stats_handle')
+    && fx_res_stats_is_active((string) ($datain ?? ''), (string) ($user['step'] ?? ''))
+) {
+    fx_res_stats_handle(
+        (string) ($datain ?? ''),
+        (string) ($user['step'] ?? ''),
+        $from_id,
+        (int) ($message_id ?? 0),
+        (array) $user,
+        (string) ($text ?? ''),
+        $pdo,
+        $FXU_SCOPE,
+        $FXI_SCOPE,
+        $backadmin
+    );
     return;
 } elseif ($text == $textbotlang['Admin']['Status']['btn'] || $datain == "stat_all_bot") {
     if (defined('FX_RESELLER_ID') && FX_RESELLER_ID) {
-        $fxStats = $pdo->query("SELECT COUNT(*) AS users_count, COALESCE(SUM(Balance),0) AS balance_sum FROM user WHERE {$FXU_SCOPE}")->fetch(PDO::FETCH_ASSOC);
-        $fxUsers = (int) ($fxStats['users_count'] ?? 0);
-        $fxBalance = (float) ($fxStats['balance_sum'] ?? 0);
-
-        $fxSales = $pdo->query("SELECT COUNT(*) AS sales_count, COALESCE(SUM(price_product),0) AS sales_sum FROM invoice WHERE {$FXI_SCOPE}")->fetch(PDO::FETCH_ASSOC);
-        $fxSalesCount = (int) ($fxSales['sales_count'] ?? 0);
-        $fxSalesSum = (float) ($fxSales['sales_sum'] ?? 0);
-
-        $fxActive = (int) $pdo->query("SELECT COUNT(*) FROM invoice WHERE " . rx_stats_operational_service_predicate() . " AND {$FXI_SCOPE}")->fetchColumn();
-        $fxBuyers = (int) $pdo->query("SELECT COUNT(DISTINCT id_user) FROM invoice WHERE {$FXI_SCOPE}")->fetchColumn();
-        $fxTests = (int) $pdo->query("SELECT COUNT(*) FROM invoice WHERE name_product = 'سرویس تست' AND {$FXI_SCOPE}")->fetchColumn();
-
-        $fxTodayStart = (int) strtotime(date('Y-m-d 00:00:00'));
-        $fxTodayStmt = $pdo->prepare("SELECT COALESCE(SUM(price_product),0) FROM invoice WHERE time_sell >= :start AND {$FXI_SCOPE}");
-        $fxTodayStmt->execute([':start' => $fxTodayStart]);
-        $fxTodaySum = (float) $fxTodayStmt->fetchColumn();
-
-        $fxExtendStmt = $pdo->query("SELECT COUNT(*) AS c, COALESCE(SUM(CAST(price AS DECIMAL(20,2))),0) AS s FROM service_other WHERE status = 'paid' AND type IN ('extend_user','extend_user_by_admin') AND id_user IN (SELECT id FROM user WHERE {$FXU_SCOPE})");
-        $fxExtend = $fxExtendStmt ? $fxExtendStmt->fetch(PDO::FETCH_ASSOC) : ['c' => 0, 's' => 0];
-        $fxExtendCount = (int) ($fxExtend['c'] ?? 0);
-        $fxExtendSum = (float) ($fxExtend['s'] ?? 0);
-
-        $fxPanels = (int) $pdo->query("SELECT COUNT(*) FROM marzban_panel WHERE agent = " . (int) FX_RESELLER_ID)->fetchColumn();
-        $fxCards = (int) $pdo->query("SELECT COUNT(*) FROM card_number WHERE " . fx_tenant_sql_agent())->fetchColumn();
-        $fxChannels = (int) $pdo->query("SELECT COUNT(*) FROM channels WHERE " . fx_tenant_sql_agent())->fetchColumn();
-
-        $fxDebtRow = select("botsaz", "current_debt, debt_ceiling", "id_user", FX_RESELLER_ID, "select", ['cache' => false]);
-        $fxDebt = (float) ($fxDebtRow['current_debt'] ?? 0);
-        $fxCeiling = (float) ($fxDebtRow['debt_ceiling'] ?? 0);
-
-        $fxPayLines = '';
-        $fxPayStmt = $pdo->query("SELECT Payment_Method, COUNT(*) AS c, COALESCE(SUM(CAST(price AS DECIMAL(20,2))),0) AS s FROM Payment_report WHERE payment_Status = 'paid' AND id_user IN (SELECT id FROM user WHERE {$FXU_SCOPE}) GROUP BY Payment_Method ORDER BY c DESC LIMIT 8");
-        if ($fxPayStmt) {
-            foreach ($fxPayStmt->fetchAll(PDO::FETCH_ASSOC) as $fxPayRow) {
-                $fxPayLines .= "\n📌 " . htmlspecialchars((string) ($fxPayRow['Payment_Method'] ?? '—'), ENT_QUOTES, 'UTF-8')
-                    . ": <code>" . number_format((int) $fxPayRow['c']) . "</code> پرداخت | <code>" . number_format((float) $fxPayRow['s']) . "</code> تومان";
-            }
-        }
-
-        $fxStatsText = "📊 <b>آمار ربات نمایندگی</b>\n"
-            . "━━━━━━━━━━━━━━━━━━\n"
-            . "👥 <b>کاربران این ربات:</b> <code>" . number_format($fxUsers) . "</code> نفر\n"
-            . "💰 <b>موجودی کاربران:</b> <code>" . number_format($fxBalance) . "</code> تومان\n"
-            . "🛒 <b>کاربران دارای خرید:</b> <code>" . number_format($fxBuyers) . "</code> نفر\n"
-            . "🧪 <b>اکانت‌های تست:</b> <code>" . number_format($fxTests) . "</code> عدد\n\n"
-            . "🧾 <b>تعداد فروش:</b> <code>" . number_format($fxSalesCount) . "</code> عدد\n"
-            . "🧾 <b>سرویس‌های فعال:</b> <code>" . number_format($fxActive) . "</code> عدد\n"
-            . "💵 <b>جمع فروش:</b> <code>" . number_format($fxSalesSum) . "</code> تومان\n"
-            . "📅 <b>فروش امروز:</b> <code>" . number_format($fxTodaySum) . "</code> تومان\n"
-            . "🔄 <b>تمدیدها:</b> <code>" . number_format($fxExtendCount) . "</code> عدد | <code>" . number_format($fxExtendSum) . "</code> تومان\n\n"
-            . "🧩 <b>پنل‌های شما:</b> <code>" . number_format($fxPanels) . "</code> عدد\n"
-            . "💳 <b>کارت‌های شما:</b> <code>" . number_format($fxCards) . "</code> عدد\n"
-            . "📯 <b>کانال‌های اجباری:</b> <code>" . number_format($fxChannels) . "</code> عدد\n"
-            . "🏦 <b>بدهی ربات:</b> <code>" . number_format($fxDebt) . "</code> / سقف <code>" . number_format($fxCeiling) . "</code> تومان\n"
-            . ($fxPayLines !== '' ? "\n<b>پرداخت‌های موفق:</b>" . $fxPayLines : '')
-            . "\n\n<i>این آمار فقط داده‌های همین ربات نمایندگی است.</i>";
-
-        $fxStatsKb = json_encode(['inline_keyboard' => [
-            [['text' => "⏱️ آمار کل", 'callback_data' => 'stat_all_bot']],
-            [['text' => "❌ بستن", 'callback_data' => 'close_stat']],
-        ]], JSON_UNESCAPED_UNICODE);
+        $fxStatsText = function_exists('fx_res_stats_all_time_text')
+            ? fx_res_stats_all_time_text($pdo, $FXU_SCOPE, $FXI_SCOPE)
+            : "❌ آمار در دسترس نیست.";
+        $fxStatsKb = function_exists('fx_res_stats_keyboard') ? fx_res_stats_keyboard() : json_encode(['inline_keyboard' => []]);
         if ($datain == "stat_all_bot") {
             Editmessagetext($from_id, $message_id, $fxStatsText, $fxStatsKb, 'HTML');
         } else {
@@ -1271,7 +1239,15 @@ if (in_array($text, $textadmin) || $datain == "admin") {
         return;
     }
 
-    $Balanceall = select("user", "SUM(Balance)", null, null, "select")['SUM(Balance)'];
+    // FX-ACCOUNT: the global wallet line is the ALGEBRAIC sum of EVERY user
+    // wallet (user.Balance), positives + negatives. It is NOT bot cash, NOT a
+    // payment-provider balance and NOT any single reseller's account balance:
+    //   net = SUM(Balance); positive part = credit users hold at the bot;
+    //   negative part = net debt users/agents owe the bot (NM signed model).
+    $fxWalletBreak = function_exists('rx_stats_wallet_balance_breakdown')
+        ? rx_stats_wallet_balance_breakdown($pdo)
+        : ['net' => 0, 'positive' => 0, 'negative' => 0, 'positive_users' => 0, 'negative_users' => 0, 'users' => 0];
+    $Balanceall = $fxWalletBreak['net'];
     $statistics = rx_stats_total_users($pdo);
     $sumpanel = select("marzban_panel", "*", null, null, "count");
     $sql1 = "SELECT COUNT(id) AS count FROM user WHERE agent != 'f' AND {$FXU_SCOPE}";
@@ -1362,7 +1338,10 @@ if (in_array($text, $textadmin) || $datain == "admin") {
 👥 <b>تعداد کل کاربران:</b> <code>$statistics</code> نفر
 💳 <b>کاربران دارای خرید:</b> <code>$statisticsorder</code> نفر
 🧪 <b>اکانت‌های تست:</b> <code>$count_usertest</code> نفر
-💰 <b>موجودی کل کاربران:</b> <code>$Balanceall</code> تومان
+💰 <b>خالص کیف‌پول کاربران (جمع جبری Balance):</b> <code>" . number_format((int)$Balanceall) . "</code> تومان
+   ↳ مجموع موجودی مثبت کاربران: <code>" . number_format((int)$fxWalletBreak['positive']) . "</code> تومان (<code>" . number_format((int)$fxWalletBreak['positive_users']) . "</code> کاربر)
+   ↳ مجموع مانده منفی (بدهی کاربران/نمایندگان): <code>" . number_format((int)$fxWalletBreak['negative']) . "</code> تومان (<code>" . number_format((int)$fxWalletBreak['negative_users']) . "</code> کاربر)
+   <i>این عدد نقدینگی ربات یا بدهی یک نماینده نیست؛ مجموع جبری کیف‌پول همهٔ کاربران است.</i>
 
 🧾 <b>تعداد کل فروش:</b> <code>$invoice</code> عدد
 🧾 <b>تعداد کل فروش سرویس های فعال:</b> <code>$invoiceactive</code> عدد
@@ -4408,12 +4387,12 @@ $caption";
     } elseif ($type == "get_number") {
         $current = $setting['get_number'] ?? 'offAuthenticationphone';
         $valuenew = ($current === "onAuthenticationphone") ? "offAuthenticationphone" : "onAuthenticationphone";
-        update("setting", "get_number", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('get_number', $valuenew)) { update("setting", "get_number", $valuenew); }
         $setting['get_number'] = $valuenew;
     } elseif ($type == "Authenticationiran") {
         $current = $setting['iran_number'] ?? 'offAuthenticationiran';
         $valuenew = ($current === "onAuthenticationiran") ? "offAuthenticationiran" : "onAuthenticationiran";
-        update("setting", "iran_number", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('iran_number', $valuenew)) { update("setting", "iran_number", $valuenew); }
         $setting['iran_number'] = $valuenew;
     } elseif ($type == "inlinebtnmain") {
         if ($value == "oninline") {
@@ -4421,20 +4400,20 @@ $caption";
         } else {
             $valuenew = "oninline";
         }
-        update("setting", "inlinebtnmain", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('inlinebtnmain', $valuenew)) { update("setting", "inlinebtnmain", $valuenew); }
         $setting['inlinebtnmain'] = $valuenew;
         rxRenderFeatureStatus('glass_mode', $from_id);
         return;
     } elseif ($type == "auto_remove_kb") {
         $valuenew = ($value === "on") ? "off" : "on";
-        update("setting", "auto_remove_reply_keyboard", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('auto_remove_reply_keyboard', $valuenew)) { update("setting", "auto_remove_reply_keyboard", $valuenew); }
         $setting['auto_remove_reply_keyboard'] = $valuenew;
         rxRenderFeatureStatus('glass_mode', $from_id);
         return;
     } elseif ($type == "verifystart") {
         $current = $setting['verifystart'] ?? 'offverify';
         $valuenew = ($current === "onverify") ? "offverify" : "onverify";
-        update("setting", "verifystart", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('verifystart', $valuenew)) { update("setting", "verifystart", $valuenew); }
         $setting['verifystart'] = $valuenew;
     } elseif ($type == "statussupportpv") {
         if ($value == "onpvsupport") {
@@ -4463,22 +4442,24 @@ $caption";
         } else {
             $valuenew = "onverify";
         }
-        update("setting", "verifybucodeuser", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('verifybucodeuser', $valuenew)) { update("setting", "verifybucodeuser", $valuenew); }
     } elseif ($type == "authscope") {
         if ($value == "newonly") {
             $valuenew = "all";
         } else {
             $valuenew = "newonly";
         }
-        update("setting", "auth_scope", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('auth_scope', $valuenew)) { update("setting", "auth_scope", $valuenew); }
     } elseif ($type == "cardverify") {
         $current = $setting['card_verify_status'] ?? 'offcardverify';
         $valuenew = ($current === 'oncardverify') ? 'offcardverify' : 'oncardverify';
-        update("setting", "card_verify_status", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('card_verify_status', $valuenew)) { update("setting", "card_verify_status", $valuenew); }
         $setting['card_verify_status'] = $valuenew;
     } elseif ($type == "forced_miniapp") {
         $valuenew = ($value === '1') ? '0' : '1';
-        update("setting", "forced_miniapp_mode", $valuenew);
+        if (!function_exists('rx_reseller_store_setting') || !rx_reseller_store_setting('forced_miniapp_mode', $valuenew)) {
+            update("setting", "forced_miniapp_mode", $valuenew);
+        }
         $setting['forced_miniapp_mode'] = $valuenew;
     } elseif ($type == "miniappticket") {
         $valuenew = ($value === '1') ? '0' : '1';
@@ -4737,6 +4718,9 @@ $caption";
         if (function_exists('getPremiumEmojiMap')) { getPremiumEmojiMap(true); }
     }
     $setting = select("setting", "*");
+    if (defined('FX_RESELLER_ID') && function_exists('rx_reseller_apply_setting_overrides')) {
+        $setting = rx_reseller_apply_setting_overrides($setting);
+    }
     $status_cron = normalizeCronStatus($setting['cron_status'] ?? null, true);
     $_rxOn  = (string)($textbotlang['Admin']['Status']['statuson']  ?? 'فعال');
     $_rxOff = (string)($textbotlang['Admin']['Status']['statusoff'] ?? 'غیرفعال');
@@ -5316,7 +5300,7 @@ $caption";
     nm_adminInstantReply($from_id, $textbotlang['users']['selectoption'], $setting_panel, 'HTML');
 } elseif ($text == "🤙 بخش پشتیبانی" && $adminrulecheck['rule'] == "administrator") {
     nm_adminInstantReply($from_id, $textbotlang['users']['selectoption'], $supportcenter, 'HTML');
-} elseif (preg_match('/Confirm_pay_(\w+)/', $datain, $dataget) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
+} elseif (preg_match('/Confirm_pay_(\w+)/', $datain, $dataget) && fx_res_svc_receipt_admin_ok($adminrulecheck, $from_id)) {
     $order_id = $dataget[1];
     $Payment_report = select("Payment_report", "*", "id_order", $order_id, "select");
     if (is_array($Payment_report) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report)) {
@@ -5368,7 +5352,13 @@ $caption";
             'show_alert' => true,
             'cache_time' => 0,
         ));
+        $rxReviewActorRow = select("user", "username", "id", $from_id, "select", ['cache' => false]);
+        $rxReviewActorUsername = is_array($rxReviewActorRow) ? trim((string)($rxReviewActorRow['username'] ?? '')) : '';
+        $rxReviewActorDisplay = ($rxReviewActorUsername !== '' && !in_array(strtolower($rxReviewActorUsername), ['none','null','0'], true))
+            ? '@' . ltrim($rxReviewActorUsername, '@')
+            : (string)$from_id;
         $textconfrom = "✅. پرداخت توسط ادمین دیگری تایید شده
+👤 بررسی کننده: " . htmlspecialchars($rxReviewActorDisplay, ENT_QUOTES, 'UTF-8') . "
 👤 شناسه کاربر: <code>{$Balance_id['id']}</code>
 🛒 کد پیگیری پرداخت: {$Payment_report['id_order']}
 ⚜️ نام کاربری: @{$Balance_id['username']}
@@ -5400,7 +5390,20 @@ $caption";
         ));
         return;
     }
-} elseif (preg_match('/reject_pay_(\w+)/', $datain, $datagetr) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
+    // FX-RESELLER-RECEIPT-GUARD: acknowledge the callback on success so the
+    // button never stays in the "checking..." state. Reseller-only addition;
+    // the main bot keeps its existing behaviour.
+    if (defined('FX_RESELLER_ID') && !empty($callback_query_id) && function_exists('telegram')) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => 'رسید با موفقیت بررسی شد.',
+            'cache_time' => 1,
+        ));
+    }
+} elseif (preg_match('/reject_pay_(?!cancel_)(\w+)/', $datain, $datagetr) && fx_res_svc_receipt_admin_ok($adminrulecheck, $from_id)) {
+    // (?!cancel_) — without the guard this branch would swallow the
+    // "reject_pay_cancel_<order>" callback (regex matches it first in the
+    // chain) and the cancel would never reach its own branch below.
     $id_order = $datagetr[1];
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
     if (is_array($Payment_report) && function_exists('rxReceiptRowInTenant') && !rxReceiptRowInTenant($Payment_report)) {
@@ -5462,7 +5465,7 @@ $caption";
     }
     update("user", "Processing_value_four", $_receipt_chat_id . ':' . $_receipt_msg_id . ':' . $_receipt_thread_id, "id", $from_id);
     step('reject-dec', $from_id);
-} elseif (preg_match('/reject_pay_cancel_(\w+)/', $datain, $datagetc) && ($adminrulecheck['rule'] == "administrator" || $adminrulecheck['rule'] == "Seller")) {
+} elseif (preg_match('/reject_pay_cancel_(\w+)/', $datain, $datagetc) && fx_res_svc_receipt_admin_ok($adminrulecheck, $from_id)) {
     $id_order = $datagetc[1];
     $_receipt_chat_id = $update['callback_query']['message']['chat']['id'] ?? $from_id;
     $Payment_report = select("Payment_report", "*", "id_order", $id_order, "select");
@@ -5505,6 +5508,17 @@ $caption";
 💰 مبلغ پرداخت : " . rxFormatToman($Payment_report['price']) . "
 👤 ایدی عددی کاربر: {$Payment_report['id_user']}";
     Editmessagetext($_receipt_chat_id, $message_id, $_reject_cancel_text, $_reject_cancel_kb);
+} elseif (preg_match('/^confirmpaid$/', $datain) && defined('FX_RESELLER_ID') && fx_res_svc_is_reseller_admin($from_id)) {
+    // FX-RESELLER-RECEIPT-GUARD: the "تایید شده" badge button on processed
+    // receipt messages — acknowledge the click so it never stays in the
+    // "checking..." state. Reseller-only; the main bot is unchanged.
+    if (!empty($callback_query_id) && function_exists('telegram')) {
+        telegram('answerCallbackQuery', array(
+            'callback_query_id' => $callback_query_id,
+            'text' => 'این رسید قبلاً بررسی شده است.',
+            'cache_time' => 1,
+        ));
+    }
 } elseif ($user['step'] == "reject-dec") {
     if (!isset($update['message']) && empty($text)) { return; }
     $Payment_report = select("Payment_report", "*", "id_order", $user['Processing_value_one'], "select");
@@ -5768,11 +5782,15 @@ $caption";
     update("Payment_report", "dec_not_confirmed", $cmReason, "id_order", $cmOrderId);
     update("Payment_report", "at_updated", date('Y/m/d H:i:s'), "id_order", $cmOrderId);
 
+    $cmRejectActorDisplay = function_exists('rxReceiptActorDisplay')
+        ? rxReceiptActorDisplay($from_id, (string)($username ?? ''))
+        : ((string)$from_id);
     sendmessage(
         $cmUserId,
         "❌ <b>درخواست بررسی دستی پرداخت کریپتوی شما رد شد.</b>\n\n"
         . "🛒 کد پیگیری: <code>{$cmOrderId}</code>\n"
-        . "📝 دلیل: " . htmlspecialchars($cmReason) . "\n\n"
+        . "📝 دلیل: " . htmlspecialchars($cmReason) . "\n"
+        . "👤 رد کننده: " . htmlspecialchars($cmRejectActorDisplay, ENT_QUOTES, 'HTML') . "\n\n"
         . "در صورت اعتراض با پشتیبانی در ارتباط باشید.",
         null,
         'HTML'
@@ -5787,7 +5805,7 @@ $caption";
                 . "🛒 کد پیگیری: <code>{$cmOrderId}</code>\n"
                 . "👤 کاربر: <code>{$cmUserId}</code>\n"
                 . "📝 دلیل: " . htmlspecialchars($cmReason) . "\n"
-                . "👨‍💼 ادمین: <code>{$from_id}</code> (@{$username})",
+                . "👨‍💼 ادمین: " . htmlspecialchars($cmRejectActorDisplay, ENT_QUOTES, 'HTML'),
             'parse_mode' => 'HTML',
         ]);
     }

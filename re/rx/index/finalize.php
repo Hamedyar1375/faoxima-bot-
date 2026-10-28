@@ -463,8 +463,22 @@ if (isset($update['pre_checkout_query'])) {
         ], ['flow' => 'renewal', 'user_id' => (string) $from_id]);
     }
 }
-if (in_array($from_id, $admin_ids))
+ if (in_array($from_id, $admin_ids))
     require_once 'admin.php';
+
+// === FX-RESELLER-RECEIPT-GUARD (additive, reseller-only, NOT in any manifest) ===
+// In the reseller bot the admin section (which handles the receipt approve /
+// reject buttons) is only loaded for owner + botsaz.admin_ids. Any other user
+// who clicks a receipt button would otherwise see the button stuck in the
+// "checking..." state forever. Answer those callbacks with a permission alert.
+if (defined('FX_RESELLER_ID') && !defined('FX_RESELLER_SVCMGMT_LOADED')) {
+    $__fx_rgv = REFACTORED_LEGACY_ROOT . '/re/rx/index/fx_reseller_service_mgmt.php';
+    if (is_file($__fx_rgv)) require_once $__fx_rgv;
+    unset($__fx_rgv);
+}
+if (!in_array($from_id, $admin_ids) && function_exists('fx_res_svc_receipt_guard_answer')) {
+    fx_res_svc_receipt_guard_answer((string) ($datain ?? ''));
+}
 
 $pdo = null;
 $connect->close();

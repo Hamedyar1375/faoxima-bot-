@@ -302,11 +302,17 @@ if (!function_exists('rx_pf_set_payment_status')) {
 if (!function_exists('rx_pf_mark_paid_done')) {
     function rx_pf_mark_paid_done(PDO $pdo, string $orderId): int
     {
+        // A successful fulfillment is the source of truth: the receipt must no
+        // longer stay waiting/pending just because it was claimed through a
+        // different path. Keep refunds untouched (they never call this helper).
+        $doneStatuses = ['waiting', 'pending', 'processing', 'reconciling', 'manual_review'];
+        $placeholders = implode(',', array_fill(0, count($doneStatuses), '?'));
         $stmt = $pdo->prepare(
-            "UPDATE Payment_report SET direct_payment_done = 1, payment_Status = CASE WHEN payment_Status IN ('processing', 'reconciling') THEN 'paid' ELSE payment_Status END "
-            . "WHERE id_order = ? AND (COALESCE(direct_payment_done, 0) = 0 OR payment_Status IN ('processing', 'reconciling'))"
+            "UPDATE Payment_report SET direct_payment_done = 1, "
+            . "payment_Status = CASE WHEN payment_Status IN ($placeholders) THEN 'paid' ELSE payment_Status END "
+            . "WHERE id_order = ? AND (COALESCE(direct_payment_done, 0) = 0 OR payment_Status IN ($placeholders))"
         );
-        $stmt->execute([$orderId]);
+        $stmt->execute(array_merge($doneStatuses, [$orderId], $doneStatuses));
         return $stmt->rowCount();
     }
 }
@@ -1326,6 +1332,7 @@ if (!function_exists('rx_pf_wallet_credit')) {
                 if ((int) ($payment['direct_payment_done'] ?? 0) === 1) {
                     $stmt = $pdo->prepare("UPDATE payment_fulfillment SET state = 'completed', lease_expires_at = NULL, completed_at = ?, updated_at = ? WHERE id_order = ?");
                     $stmt->execute([$now, $now, $orderId]);
+                    rx_pf_mark_paid_done($pdo, $orderId);
                     return 'already_completed';
                 }
                 $credit = $pdo->prepare("UPDATE user SET Balance = Balance + ? WHERE id = ?");

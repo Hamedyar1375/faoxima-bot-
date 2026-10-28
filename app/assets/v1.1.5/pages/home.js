@@ -1,6 +1,6 @@
 import { call } from '../api.js?v=0.0.52';
 import { fmtPrice, escapeHtml, skeletonList, toast, serviceStatusBadge } from '../utils.js?v=0.0.52';
-import { setUser } from '../state.js';
+import { setUser, setReseller, isResellerAdmin, getResellerId } from '../state.js?v=0.0.53';
 import { icon } from '../icons.js?v=0.0.52';
 import { hapticImpact, showConfirm, getInitDataUnsafe } from '../telegram.js?v=0.0.52';
 import { mountHomeBell } from '../notifications.js?v=0.0.52';
@@ -81,6 +81,8 @@ export async function home(view) {
             </div>
         </div>
 
+        <div id="home-reseller-host"></div>
+
         <div class="action-grid mt-md">
             <a href="#/buy" class="action-tile">
                 ${icon('cart', 'class="ico ico-xl action-icon is-green"')}
@@ -117,7 +119,14 @@ export async function home(view) {
     try {
         const res = await call('user_info');
         info = res?.obj || null;
-        if (info) setUser(info);
+        if (info) {
+            setUser(info);
+            // FX-RESELLER-SVCMGMT: keep reseller context in sync with user_info so the
+            // self-service tile works even if the verify response was cached/stale.
+            setReseller(info.is_reseller_admin
+                ? { reseller_id: Number(info.reseller_id) || 0, is_reseller_admin: true }
+                : null);
+        }
         if (info && info.is_admin) {
             const gearHost = view.querySelector('#home-admin-gear-host');
             if (gearHost) {
@@ -145,9 +154,30 @@ export async function home(view) {
 
     loadActiveServices(view);
     loadUsertestBanner(view);
+    mountResellerEntry(view);
 
     const pendingCleanup = await loadPendingBanner(view).catch(() => () => {});
     return () => { try { pendingCleanup && pendingCleanup(); } catch (_) {} };
+}
+
+// FX-RESELLER-SVCMGMT: reseller self-service entry (shown only to reseller admins).
+function mountResellerEntry(view) {
+    try { if (window.__fxSyncResellerTab) window.__fxSyncResellerTab(); } catch (_) {}
+    const host = view.querySelector('#home-reseller-host');
+    if (!host) return;
+    if (!isResellerAdmin()) {
+        host.innerHTML = '';
+        return;
+    }
+    host.innerHTML = `
+        <a href="#/reseller" class="list-item mt-md" style="border-color:rgba(124,92,255,.35);background:rgba(124,92,255,.08)">
+            <div class="li-main">
+                <div class="li-title">${icon('wrench', 'class="ico ico-leading"')} مدیریت سرویس‌های من</div>
+                <div class="li-sub">رمز، نام کاربری، دامنه و روشن/خاموش کردن پنل‌های نمایندگی (ID: ${escapeHtml(String(getResellerId()))})</div>
+            </div>
+            <span class="li-action" aria-hidden="true">${icon('chevronLeft', 'class="ico"')}</span>
+        </a>
+    `;
 }
 
 

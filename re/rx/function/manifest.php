@@ -21,4 +21,7 @@ return array (
   18 => 'statistics_helpers.php',
   19 => 'receipt_actions.php',
   20 => 'test_account_policy.php',
+  21 => 'fx_reseller_stats.php',
+  22 => 'fx_reseller_service_mgmt.php',
+  23 => 'pending_purchase.php',
 );

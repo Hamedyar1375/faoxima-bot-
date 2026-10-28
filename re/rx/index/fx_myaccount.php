@@ -123,16 +123,55 @@ if (!defined('FX_MYACCOUNT_LOADED')) {
         $stopped = ((string)($set['bot_disabled'] ?? '0') === '1');
         $notifyOn = ((string)($set['sale_notify'] ?? '1') !== '0');
 
+        // Owner account summary: tenant stats + credit ceiling + net bot balance.
+        $acct = function_exists('fx_res_account_state') ? fx_res_account_state($rid) : null;
+        $netBalance = (is_array($acct) && !empty($acct['ok']))
+            ? (int) $acct['balance']
+            : ($bal - $cur);
+
+        $totalUsers = 0;
+        $buyerUsers = 0;
+        $totalAccounts = 0;
+        $testAccounts = 0;
+        $pdoAcct = $GLOBALS['pdo'] ?? null;
+        if ($pdoAcct instanceof PDO) {
+            try {
+                $q = $pdoAcct->prepare("SELECT COUNT(*) FROM user WHERE agent = :rid");
+                $q->execute([':rid' => (string) $rid]);
+                $totalUsers = (int) $q->fetchColumn();
+
+                $q = $pdoAcct->prepare("SELECT COUNT(*) FROM invoice WHERE COALESCE(name_product, '') <> 'سرویس تست' AND id_user IN (SELECT id FROM user WHERE agent = :rid)");
+                $q->execute([':rid' => (string) $rid]);
+                $totalAccounts = (int) $q->fetchColumn();
+
+                $q = $pdoAcct->prepare("SELECT COUNT(DISTINCT id_user) FROM invoice WHERE COALESCE(name_product, '') <> 'سرویس تست' AND id_user IN (SELECT id FROM user WHERE agent = :rid)");
+                $q->execute([':rid' => (string) $rid]);
+                $buyerUsers = (int) $q->fetchColumn();
+
+                $q = $pdoAcct->prepare("SELECT COUNT(*) FROM invoice WHERE name_product = 'سرویس تست' AND id_user IN (SELECT id FROM user WHERE agent = :rid)");
+                $q->execute([':rid' => (string) $rid]);
+                $testAccounts = (int) $q->fetchColumn();
+            } catch (Throwable $e) {
+                // Keep the account screen available even if a stats query fails.
+            }
+        }
+
+        $botVersion = '—';
+        $versionPath = defined('APP_ROOT_PATH') ? APP_ROOT_PATH . '/version' : dirname(__DIR__, 3) . '/version';
+        $versionRaw = @file_get_contents($versionPath);
+        if (is_string($versionRaw) && trim($versionRaw) !== '') {
+            $botVersion = trim($versionRaw);
+        }
+
         $msg = "🏦 <b>حساب من</b>\n"
             . "━━━━━━━━━━━━━━\n"
-            . "💰 موجودی کیف‌پول: " . number_format($bal) . " تومان\n"
-            . "💸 بدهی فعلی: " . number_format($cur) . " تومان\n";
-        if ($st['mode'] === 'debt' && $ceiling > 0) {
-            $msg .= "🏦 سقف اعتبار: " . number_format($ceiling) . " تومان\n"
-                . "🌟 اعتبار باقی‌مانده: " . number_format(max(0, $ceiling - $cur)) . " تومان\n";
-        } elseif ($st['mode'] === 'debt') {
-            $msg .= "🏦 حالت اعتباری — سقف تعیین نشده\n";
-        }
+            . "🔹 تعداد کل کاربران: " . number_format($totalUsers) . "\n"
+            . "🔹 تعداد کاربران با حداقل یک اکانت: " . number_format($buyerUsers) . "\n"
+            . "🔹 تعداد کل اکانت‌ها: " . number_format($totalAccounts) . "\n"
+            . "🔹 تعداد اکانت‌های تست: " . number_format($testAccounts) . "\n"
+            . "🔹 نسخه بات: " . htmlspecialchars($botVersion, ENT_QUOTES, 'UTF-8') . "\n\n"
+            . "💳 سقف بدهکاری: " . number_format($ceiling) . " تومان\n"
+            . "🏦 موجودی ربات: ‎" . fx_res_fmt_signed($netBalance) . " تومان\n";
         if ($stopped) {
             $msg .= "\n⏸ ربات شما توسط مدیریت موقتاً متوقف شده است.\n";
         }
@@ -158,8 +197,16 @@ if (!defined('FX_MYACCOUNT_LOADED')) {
         $rid = (int)FX_RESELLER_ID;
         $items = function_exists('fx_res_ledger_data') ? fx_res_ledger_data($rid, 15) : [];
         $st = fx_debt_state($rid);
-        $txt = "📒 <b>گردش حساب من</b>\n"
-            . "💸 بدهی فعلی: " . number_format((int)($st['current'] ?? 0)) . " تومان\n";
+        $acctL = function_exists('fx_res_account_state') ? fx_res_account_state($rid) : null;
+        if (is_array($acctL) && !empty($acctL['ok'])) {
+            $txt = "📒 <b>گردش حساب من</b>\n"
+                . "⚖️ مانده حساب: " . fx_res_fmt_signed((int)$acctL['balance']) . " تومان\n"
+                . "💸 بدهی شما به ربات اصلی: " . number_format((int)$acctL['debt']) . " تومان\n"
+                . "💰 طلب شما از ربات اصلی: " . number_format((int)$acctL['claim']) . " تومان\n";
+        } else {
+            $txt = "📒 <b>گردش حساب من</b>\n"
+                . "💸 بدهی شما به ربات اصلی: " . number_format((int)($st['current'] ?? 0)) . " تومان\n";
+        }
         if (empty($items)) {
             $txt .= "\n📭 هنوز گردشی ثبت نشده است.";
         } else {
@@ -193,11 +240,21 @@ if (!defined('FX_MYACCOUNT_LOADED')) {
         $set = fx_res_setting_get($rid);
         $mainBot = preg_replace('/[^A-Za-z0-9_]/', '', (string)($set['main_bot'] ?? ''));
 
-        $txt = "💳 <b>تسویه حساب</b>\n"
-            . "━━━━━━━━━━━━━━\n"
-            . "💸 بدهی فعلی: " . number_format($cur) . " تومان\n";
-        if ($ceiling > 0) {
-            $txt .= "🌟 اعتبار باقی‌مانده: " . number_format(max(0, $ceiling - $cur)) . " تومان\n";
+        $acctS = function_exists('fx_res_account_state') ? fx_res_account_state($rid) : null;
+        if (is_array($acctS) && !empty($acctS['ok'])) {
+            $txt = "💳 <b>تسویه حساب</b>\n"
+                . "━━━━━━━━━━━━━━\n"
+                . "⚖️ مانده حساب: " . fx_res_fmt_signed((int)$acctS['balance']) . " تومان\n"
+                . "💸 بدهی شما به ربات اصلی: " . number_format((int)$acctS['debt']) . " تومان\n"
+                . "💰 طلب شما از ربات اصلی: " . number_format((int)$acctS['claim']) . " تومان\n"
+                . "🌟 اعتبار بدهی باقی‌مانده: " . number_format((int)$acctS['remaining_credit']) . " تومان\n";
+        } else {
+            $txt = "💳 <b>تسویه حساب</b>\n"
+                . "━━━━━━━━━━━━━━\n"
+                . "💸 بدهی شما به ربات اصلی: " . number_format($cur) . " تومان\n";
+            if ($ceiling > 0) {
+                $txt .= "🌟 اعتبار باقی‌مانده: " . number_format(max(0, $ceiling - $cur)) . " تومان\n";
+            }
         }
 
         $cards = [];

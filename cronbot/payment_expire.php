@@ -14,6 +14,17 @@ if (!rx_cron_require_or_skip('payment_expire', [
 if (!rx_cron_db_ready('payment_expire')) {
     return;
 }
+
+// Expire abandoned unpaid purchase invoices after 24 hours. Invoices with an
+// active payment/receipt are intentionally preserved.
+if (function_exists('rx_pending_purchase_expire_stale')) {
+    $rxExpiredUnpaidInvoices = rx_pending_purchase_expire_stale(null, 86400, 200);
+    if ($rxExpiredUnpaidInvoices > 0 && function_exists('rx_log_event')) {
+        rx_log_event('UNPAID_INVOICE_AUTO_EXPIRE', 'Expired stale unpaid invoices', [
+            'count' => $rxExpiredUnpaidInvoices,
+        ]);
+    }
+}
 if (is_file(__DIR__ . '/../vendor/autoload.php')) {
     require __DIR__ . '/../vendor/autoload.php';
 }
@@ -82,6 +93,10 @@ if (function_exists('rxRecoverStaleReceiptUploads')) {
         rx_log_event('RECEIPT_UPLOAD_RECOVERY', 'Recovered stale receipt-uploading card payments', $rxReceiptRecovery);
     }
 }
+
+// Receipts are never time-expired. Every submitted receipt must be explicitly
+// approved or rejected by an admin. Only stale receipt-upload reservations
+// (pending, not yet submitted) are recovered above.
 
 foreach ($rows as $result) {
     if (function_exists('rx_cron_time_up') && rx_cron_time_up()) break;

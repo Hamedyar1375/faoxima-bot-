@@ -98,6 +98,7 @@ final class CardSelectHandler extends BaseHandler
                     OR (cn.is_active = 0 AND EXISTS (SELECT 1 FROM card_whitelist cw WHERE cw.card_id = cn.id AND cw.user_id = ?))
                 )
                 AND NOT EXISTS (SELECT 1 FROM user_card_block ucb WHERE ucb.card_id = cn.id AND ucb.user_id = ?)
+                AND " . (function_exists('fx_tenant_sql_agent') ? fx_tenant_sql_agent('cn') : '1=1') . "
                 ORDER BY RAND()
                 LIMIT 1
             ");

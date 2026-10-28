@@ -181,6 +181,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $fxFlash = "♻️ محصول {$pid} از نماینده {$uid} آزاد شد (agent: {$newAg}).";
                 }
             }
+        } elseif (in_array($action, ['svc_password', 'svc_username', 'svc_url', 'svc_sublink', 'svc_toggle_status', 'svc_toggle_extend'], true)) {
+            // FX-RESELLER-SVCMGMT: admin manages a chosen reseller's OWN panels.
+            // Every call is tenant-scoped by $uid through the shared core, so a
+            // panel that does not belong to this reseller is never touched.
+            $panId = (int)($_POST['panel_id'] ?? 0);
+            $rid = (int)$uid;
+            $panelName = function_exists('fx_res_svc_get_panel')
+                ? (function () use ($panId, $rid) {
+                    $r = fx_res_svc_get_panel(null, $rid, $panId);
+                    return is_array($r) ? (string) ($r['name_panel'] !== '' ? $r['name_panel'] : ('#' . $panId)) : ('#' . $panId);
+                })()
+                : ('#' . $panId);
+            if ($panId <= 0 || $rid <= 0) {
+                $fxFlash = '❌ پنل یا نماینده نامعتبر است.';
+            } elseif ($action === 'svc_password') {
+                $val = trim((string)($_POST['value'] ?? ''));
+                $fxFlash = fx_res_svc_set_password(null, $rid, $panId, $val)
+                    ? "✅ رمز عبور پنل «{$panelName}» با موفقیت تغییر کرد."
+                    : '❌ تغییر رمز ممکن نشد (مقدار نامعتبر است یا این پنل در اختیار همین نماینده نیست).';
+            } elseif ($action === 'svc_username') {
+                $val = trim((string)($_POST['value'] ?? ''));
+                $fxFlash = fx_res_svc_set_username(null, $rid, $panId, $val)
+                    ? "✅ نام کاربری پنل «{$panelName}» با موفقیت تغییر کرد."
+                    : '❌ تغییر نام کاربری ممکن نشد (مقدار نامعتبر است یا این پنل در اختیار همین نماینده نیست).';
+            } elseif ($action === 'svc_url') {
+                $val = trim((string)($_POST['value'] ?? ''));
+                if ($val !== '' && !preg_match('#^https?://#i', $val)) {
+                    $val = 'https://' . ltrim($val, '/');
+                }
+                $fxFlash = fx_res_svc_set_url(null, $rid, $panId, $val)
+                    ? "✅ آدرس/دامنه پنل «{$panelName}» با موفقیت تغییر کرد."
+                    : '❌ تغییر آدرس ممکن نشد (آدرس معتبر نیست یا این پنل در اختیار همین نماینده نیست).';
+            } elseif ($action === 'svc_sublink') {
+                $val = trim((string)($_POST['value'] ?? ''));
+                $fxFlash = fx_res_svc_set_sublink(null, $rid, $panId, $val)
+                    ? "✅ دامنه لینک ساب پنل «{$panelName}» با موفقیت تغییر کرد."
+                    : '❌ تغییر دامنه ساب ممکن نشد (مقدار نامعتبر است یا این پنل در اختیار همین نماینده نیست).';
+            } elseif ($action === 'svc_toggle_status') {
+                $next = fx_res_svc_toggle(null, $rid, $panId, 'status');
+                $fxFlash = ($next === null)
+                    ? '❌ تغییر وضعیت سرویس ممکن نشد (این پنل در اختیار همین نماینده نیست).'
+                    : "✅ سرویس پنل «{$panelName}» حالا: " . ($next === 'active' ? 'روشن' : 'خاموش');
+            } elseif ($action === 'svc_toggle_extend') {
+                $next = fx_res_svc_toggle(null, $rid, $panId, 'status_extend');
+                $fxFlash = ($next === null)
+                    ? '❌ تغییر وضعیت فروش/تمدید ممکن نشد (این پنل در اختیار همین نماینده نیست).'
+                    : "✅ فروش/تمدید پنل «{$panelName}» حالا: " . ($next === 'on_extend' ? 'روشن' : 'خاموش');
+            }
         } elseif ($action === 'del') {
             $res = fx_reseller_delete_bot($uid);
             $fxFlash = $res[1];
@@ -192,6 +240,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $fxRedir = 'reseller_bots.php?msg=' . rawurlencode($fxFlash);
     if (in_array($action, ['whprice', 'retail', 'vis', 'release'], true) && $uid > 0) {
         $fxRedir .= '&products=' . $uid;
+    }
+    if (in_array($action, ['svc_password', 'svc_username', 'svc_url', 'svc_sublink', 'svc_toggle_status', 'svc_toggle_extend'], true) && $uid > 0) {
+        $fxRedir .= '&panels=' . $uid;
     }
     header('Location: ' . $fxRedir, true, 302);
     exit;
@@ -243,6 +294,27 @@ if ($fxProdRid > 0) {
         $fxProdRows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
     } catch (\Throwable $e) {}
     $fxProdHidden = fx_res_visibility_hidden_ids($fxProdRid);
+}
+
+// FX-RESELLER-SVCMGMT: per-reseller service (panel) manager data — tenant-scoped
+// through the shared core so the admin only sees/edits panels owned by $rid.
+$fxSvcRid = isset($_GET['panels']) ? (int)$_GET['panels'] : 0;
+$fxSvcRows = [];
+if ($fxSvcRid > 0 && function_exists('fx_res_svc_list_panels')) {
+    $fxSvcRows = fx_res_svc_list_panels($pdo, $fxSvcRid, 100);
+}
+// per-reseller panel count for the badge (owned via agent list)
+$fxSvcCounts = [];
+foreach ($panels as $pp) {
+    $ppAg = str_replace(' ', '', (string)($pp['agent'] ?? ''));
+    if ($ppAg === '' || in_array($ppAg, ['all', 'allusers', 'f', 'n', 'n2'], true)) {
+        continue; // shared panel — not exclusive to a reseller
+    }
+    foreach (explode(',', $ppAg) as $oneAg) {
+        if ($oneAg !== '') {
+            $fxSvcCounts[$oneAg] = ($fxSvcCounts[$oneAg] ?? 0) + 1;
+        }
+    }
 }
 
 $fxMaskToken = static function ($t): string {
@@ -321,8 +393,10 @@ $fxMaskToken = static function ($t): string {
                                         <button type="button" class="btn btn-sm btn-soft-warning" title="کسر موجودی" onclick="fxOpenAmount('debit', <?php echo $rid; ?>)"><?php echo icon('arrow-down', 'svg-icon'); ?> کسر</button>
                                         <button type="button" class="btn btn-sm btn-soft-info" title="اختصاص محصول" onclick="fxOpenAssign('prod', <?php echo $rid; ?>)"><?php echo icon('package', 'svg-icon'); ?> محصول</button>
                                         <?php $fxCnt = (int)($fxAgentProdCounts[(string)$rid] ?? 0) + $fxSharedProdCount; ?>
-                                        <a class="btn btn-sm btn-soft-success" title="مدیریت محصولات این نماینده (قیمت عمده، قیمت فروش، نمایش، آزادسازی)" href="reseller_bots.php?products=<?php echo $rid; ?>"><?php echo icon('package', 'svg-icon'); ?> محصولات<?php echo $fxCnt > 0 ? ' (' . $fxCnt . ')' : ''; ?></a>
-                                        <button type="button" class="btn btn-sm btn-soft-info" title="اختصاص پنل" onclick="fxOpenAssign('panel', <?php echo $rid; ?>)"><?php echo icon('grid', 'svg-icon'); ?> پنل</button>
+                                         <a class="btn btn-sm btn-soft-success" title="مدیریت محصولات این نماینده (قیمت عمده، قیمت فروش، نمایش، آزادسازی)" href="reseller_bots.php?products=<?php echo $rid; ?>"><?php echo icon('package', 'svg-icon'); ?> محصولات<?php echo $fxCnt > 0 ? ' (' . $fxCnt . ')' : ''; ?></a>
+                                         <?php $fxSvcCnt = (int)($fxSvcCounts[(string)$rid] ?? 0); ?>
+                                         <a class="btn btn-sm btn-soft-purple" title="مدیریت سرویس‌های این نماینده (رمز، نام کاربری، دامنه، روشن/خاموش)" href="reseller_bots.php?panels=<?php echo $rid; ?>"><?php echo icon('grid', 'svg-icon'); ?> سرویس‌ها<?php echo $fxSvcCnt > 0 ? ' (' . $fxSvcCnt . ')' : ''; ?></a>
+                                         <button type="button" class="btn btn-sm btn-soft-info" title="اختصاص پنل" onclick="fxOpenAssign('panel', <?php echo $rid; ?>)"><?php echo icon('grid', 'svg-icon'); ?> پنل</button>
                                         <button type="button" class="btn btn-sm btn-soft-warning" title="اعتبار پنل پاسارگاد" onclick="fxOpenPasargad(<?php echo $rid; ?>)"><?php echo icon('key', 'svg-icon'); ?> پاسارگاد</button>
                                         <form method="POST" action="reseller_bots.php" style="display:inline;" onsubmit="return confirm('وبهوک ربات نماینده ریست شود؟');">
                                             <?php echo fx_csrf_field(); ?>
@@ -607,6 +681,109 @@ $fxMaskToken = static function ($t): string {
             💵 <strong>عمده‌فروشی</strong> = هزینه‌ای که با هر خرید مشتری، به حساب نماینده (بدهی/موجودی) ثبت می‌شود — باید بزرگ‌تر از صفر باشد؛ خالی/0 فروش محصول را مسدود می‌کند.<br>
             💰 <strong>فروش نماینده</strong> = قیمت اختصاصی همین نماینده برای مشتریان ربات خودش — خالی/0 یعنی قیمت پایه.<br>
             🚫 <strong>پنهان</strong> = محصول برای مشتریان این نماینده نمایش داده نمی‌شود (اثر روی بقیه ندارد). ♻️ <strong>آزادسازی</strong> = محصول از حالت اختصاصی خارج و به کاتالوگ مشترک برمی‌گردد.
+        </p>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php if ($fxSvcRid > 0): ?>
+<!-- Modal: reseller service (panel) manager (FX-RESELLER-SVCMGMT) -->
+<div id="modal-panels" class="modal-overlay" style="display:flex;overflow:auto;">
+    <div class="modal-box" style="max-width:1040px;width:96%;">
+        <div class="modal-head">
+            <span class="modal-head__title">🛠 سرویس‌های نماینده <?php echo $fxSvcRid; ?></span>
+            <a class="modal-close" href="reseller_bots.php" style="text-decoration:none;">&times;</a>
+        </div>
+        <?php if ($fxFlash !== ''): ?>
+            <div class="flash" style="padding:10px 12px;border-radius:10px;margin:0 0 12px;background:var(--accent-soft,#eef2ff);color:var(--text,#111);">
+                <?php echo htmlspecialchars($fxFlash, ENT_QUOTES, 'UTF-8'); ?>
+            </div>
+        <?php endif; ?>
+        <div style="max-height:70vh;overflow:auto;padding:4px 2px;">
+            <?php if (!$fxSvcRows): ?>
+                <p style="text-align:center;color:#888;padding:24px;">پنلی برای این نماینده تعریف نشده است.</p>
+            <?php endif; ?>
+            <?php foreach ($fxSvcRows as $sp):
+                $spId = (int) $sp['id'];
+                $spName = (string) ($sp['name_panel'] !== '' ? $sp['name_panel'] : ('#' . $spId));
+                $spSvcOn = ((string) ($sp['status'] ?? '') === 'active');
+                $spExtOn = ((string) ($sp['status_extend'] ?? '') === 'on_extend');
+                $spSub = (string) (($sp['linksubx'] !== '' && $sp['linksubx'] !== null) ? $sp['linksubx'] : ($sp['sublink'] ?? ''));
+            ?>
+                <div class="card" style="margin-bottom:14px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                        <div>
+                            <strong><?php echo htmlspecialchars($spName, ENT_QUOTES, 'UTF-8'); ?></strong>
+                            <span style="font-size:12px;color:#888;"> — ID: <?php echo $spId; ?> — <?php echo htmlspecialchars((string) ($sp['type'] ?: '—'), ENT_QUOTES, 'UTF-8'); ?></span>
+                        </div>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <form method="POST" action="reseller_bots.php" style="display:inline;">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_toggle_status">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <button type="submit" class="btn btn-sm <?php echo $spSvcOn ? 'btn-soft-danger' : 'btn-soft-success'; ?>"><?php echo $spSvcOn ? '⏸ سرویس: خاموش' : '▶️ سرویس: روشن'; ?></button>
+                            </form>
+                            <form method="POST" action="reseller_bots.php" style="display:inline;">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_toggle_extend">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <button type="submit" class="btn btn-sm <?php echo $spExtOn ? 'btn-soft-warning' : 'btn-soft-info'; ?>"><?php echo $spExtOn ? '⏸ فروش/تمدید: خاموش' : '▶️ فروش/تمدید: روشن'; ?></button>
+                            </form>
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px;">
+                        <div class="form-group">
+                            <label class="form-label">🔐 رمز عبور پنل (تغییر)</label>
+                            <form method="POST" action="reseller_bots.php">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_password">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <input type="password" name="value" class="form-control" dir="ltr" placeholder="رمز جدید" autocomplete="new-password">
+                                <button type="submit" class="btn btn-sm btn-soft-info" style="margin-top:6px;">💾 ذخیره رمز</button>
+                            </form>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">👤 نام کاربری پنل</label>
+                            <form method="POST" action="reseller_bots.php">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_username">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <input type="text" name="value" class="form-control" dir="ltr" value="<?php echo htmlspecialchars((string) ($sp['username_panel'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" placeholder="نام کاربری">
+                                <button type="submit" class="btn btn-sm btn-soft-info" style="margin-top:6px;">💾 ذخیره نام کاربری</button>
+                            </form>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">🔗 آدرس/دامنه پنل</label>
+                            <form method="POST" action="reseller_bots.php">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_url">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <input type="text" name="value" class="form-control" dir="ltr" value="<?php echo htmlspecialchars((string) ($sp['url_panel'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" placeholder="https://panel.example.com">
+                                <button type="submit" class="btn btn-sm btn-soft-info" style="margin-top:6px;">💾 ذخیره آدرس</button>
+                            </form>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">🔗 دامنه لینک ساب</label>
+                            <form method="POST" action="reseller_bots.php">
+                                <?php echo fx_csrf_field(); ?>
+                                <input type="hidden" name="action" value="svc_sublink">
+                                <input type="hidden" name="uid" value="<?php echo $fxSvcRid; ?>">
+                                <input type="hidden" name="panel_id" value="<?php echo $spId; ?>">
+                                <input type="text" name="value" class="form-control" dir="ltr" value="<?php echo htmlspecialchars($spSub, ENT_QUOTES, 'UTF-8'); ?>" placeholder="https://sub.example.com/sub">
+                                <button type="submit" class="btn btn-sm btn-soft-info" style="margin-top:6px;">💾 ذخیره ساب</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <p style="font-size:12px;color:#888;margin-top:10px;line-height:1.9;">
+            🔐 تغییر رمز / نام کاربری / آدرس، نشست‌های قدیمی پنل (datelogin) را باطل می‌کند. ▶️/⏸ <strong>سرویس</strong> = فعال بودن و نمایش پنل؛ <strong>فروش/تمدید</strong> = امکان تمدید توسط مشتریان. همه‌ی این عملیات فقط روی پنل‌های همین نماینده اعمال می‌شود.
         </p>
     </div>
 </div>

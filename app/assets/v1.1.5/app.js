@@ -1,9 +1,9 @@
 window.__FAOXIMA_APP_STARTED__ = true;
 
 import * as Telegram from './telegram.js?v=0.0.52';
-import { verify, submitPhone } from './api.js?v=0.0.52';
-import { start as startRouter } from './router.js?v=0.0.61';
-import { getToken, clearToken } from './state.js?v=0.0.52';
+import { verify, submitPhone } from './api.js?v=0.0.53';
+import { start as startRouter } from './router.js?v=0.0.62';
+import { getToken, clearToken, isResellerAdmin } from './state.js?v=0.0.53';
 import { loadSavedTheme } from './pages/settings.js?v=0.0.52';
 import { loadBrandFromServer } from './brand.js?v=0.0.52';
 import { icon } from './icons.js?v=0.0.52';
@@ -39,6 +39,18 @@ function postLog(level, msg, where, stack, extra) {
 
 window.__FAOXIMA__ = Object.assign({ postLog }, window.__FAOXIMA__ || {});
 const M = window.__FAOXIMA__;
+
+// FX-RESELLER-SVCMGMT: show/hide the reseller-only 5th tabbar entry.
+function syncResellerTab() {
+    try {
+        const on = isResellerAdmin();
+        const tab = document.querySelector('.tabbar .tab-reseller');
+        const bar = document.querySelector('.tabbar');
+        if (tab) tab.style.display = on ? '' : 'none';
+        if (bar) bar.classList.toggle('has-reseller-tab', on);
+    } catch (_) {  }
+}
+window.__fxSyncResellerTab = syncResellerTab;
 
 let __fxContentOverrides = [];
 let __fxApplyingContentOverrides = false;
@@ -435,6 +447,8 @@ async function bootstrap() {
             return;
         }
     }
+
+    syncResellerTab();
 
     try {
         startRouter();

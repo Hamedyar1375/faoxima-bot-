@@ -11,6 +11,10 @@ final class InvoicesHandler extends BaseHandler
     {
         $this->requireMethod('GET');
 
+        if (function_exists('rx_pending_purchase_expire_stale')) {
+            rx_pending_purchase_expire_stale($this->user['id'], 86400, 50);
+        }
+
         $limit = FaoximaInput::intRange($this->data, 'limit', 1, 10, 10);
         $page  = FaoximaInput::intMin($this->data, 'page', 1, 1);
         $offset = ($page - 1) * $limit;

@@ -1963,116 +1963,93 @@ class ManagePanel
     function Change_status($username, $name_panel)
     {
         $ManagePanel = new ManagePanel();
-        $DataUserOut = $ManagePanel->DataUser($name_panel, $username);
         $Get_Data_Panel = $this->loadPanel($name_panel, "name_panel");
-        if ($DataUserOut['status'] == "Unsuccessful") {
-            $Output = array(
-                'status' => 'Unsuccessful',
-                'msg' => $DataUserOut['detail']
-            );
-            return;
+        if (!is_array($Get_Data_Panel) || empty($Get_Data_Panel['type'])) {
+            return array('status' => 'Unsuccessful', 'msg' => 'Panel Not Found');
         }
-        if (!in_array($DataUserOut['status'], ["active", "disabled", "expired", "limited", "on_hold"])) {
-            $Output = array(
-                'status' => 'Unsuccessful',
-                'msg' => "status invalid"
-            );
-            return;
+
+        $DataUserOut = $ManagePanel->DataUser($name_panel, $username);
+        if (!is_array($DataUserOut)) {
+            return array('status' => 'Unsuccessful', 'msg' => 'پاسخ نامعتبر از پنل دریافت شد');
         }
-        if ($DataUserOut['status'] === 'active' && !$this->HasLiveConnectionHistory($Get_Data_Panel, $DataUserOut)) {
+        $currentStatus = (string)($DataUserOut['status'] ?? '');
+        if ($currentStatus === '' || $currentStatus === 'Unsuccessful') {
+            $detail = $DataUserOut['detail'] ?? ($DataUserOut['msg'] ?? 'خطا در دریافت وضعیت سرویس از پنل');
+            return array('status' => 'Unsuccessful', 'msg' => $detail, 'detail' => $detail);
+        }
+
+        $allowed = ['active', 'disabled', 'expired', 'limited', 'on_hold'];
+        if (!in_array($currentStatus, $allowed, true)) {
             return array(
                 'status' => 'Unsuccessful',
-                'code' => 'not_connected',
-                'msg' => 'ابتدا به کانفیگ متصل شوید و سپس مجدداً تلاش کنید.'
-            );
-        }
-        if ($Get_Data_Panel['type'] == "marzban") {
-            if ($DataUserOut['status'] == "active") {
-                $status = "disabled";
-            } else {
-                $status = "active";
-            }
-            $configs = array("status" => $status);
-            $ManagePanel->Modifyuser($username, $name_panel, $configs);
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
-            );
-        } elseif ($Get_Data_Panel['type'] == "pasarguard") {
-            if ($DataUserOut['status'] == "active") {
-                $status = "disabled";
-            } else {
-                $status = "active";
-            }
-            $configs = array("status" => $status);
-            $ManagePanel->Modifyuser($username, $name_panel, $configs);
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
-            );
-        } elseif ($Get_Data_Panel['type'] == "x-ui_single") {
-            if ($DataUserOut['status'] == "active") {
-                $status = false;
-            } else {
-                $status = true;
-            }
-            $configs = array(
-                'settings' => json_encode(array(
-                    'clients' => array(
-                        array(
-                            "enable" => $status,
-                        )
-                    ),
-                )),
-            );
-            $ManagePanel->Modifyuser($username, $name_panel, $configs);
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
-            );
-        } elseif ($Get_Data_Panel['type'] == "guard") {
-            $action = $DataUserOut['status'] == "active" ? "disable" : "enable";
-            $toggle = guardToggleSubscriptions($Get_Data_Panel['name_panel'], array($username), $action);
-            if ($toggle['status'] === false) {
-                return array(
-                    'status' => 'Unsuccessful',
-                    'msg' => $toggle['msg'] ?? 'Toggle failed'
-                );
-            }
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
-            );
-        } elseif ($Get_Data_Panel['type'] == "remnawave") {
-            $local = remnawave_find_user($username);
-            $isActive = is_array($local) ? ((string) ($local['status'] ?? 'active') === 'active') : true;
-            $res = remnawave_change_status($Get_Data_Panel['name_panel'], $username, !$isActive);
-            if (($res['status'] ?? '') !== 'successful') {
-                return array(
-                    'status' => 'Unsuccessful',
-                    'msg' => $res['msg'] ?? 'Toggle failed'
-                );
-            }
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
-            );
-        } elseif ($Get_Data_Panel['type'] == "rebecca") {
-            $wantEnable = $DataUserOut['status'] != "active";
-            $toggle = rebeccaChangeStatus($Get_Data_Panel['name_panel'], $username, $wantEnable);
-            if ($toggle['status'] === false) {
-                return array(
-                    'status' => 'Unsuccessful',
-                    'msg' => $toggle['msg'] ?? 'Toggle failed'
-                );
-            }
-            $Output = array(
-                'status' => 'successful',
-                'msg' => null
+                'msg' => 'وضعیت فعلی سرویس قابل تغییر نیست: ' . $currentStatus
             );
         }
 
-        return $Output;
+        // Changing an existing service status must not depend on whether the
+        // customer has ever connected. The previous live-connection gate blocked
+        // users from simply disabling an active service.
+        $type = (string)$Get_Data_Panel['type'];
+        $modifyResult = null;
+        $desiredStatus = null;
+
+        if ($type === 'marzban' || $type === 'pasarguard') {
+            $desiredStatus = $currentStatus === 'active' ? 'disabled' : 'active';
+            $modifyResult = $ManagePanel->Modifyuser($username, $name_panel, ['status' => $desiredStatus]);
+        } elseif ($type === 'x-ui_single') {
+            $desiredStatus = $currentStatus === 'active' ? 'disabled' : 'active';
+            $modifyResult = $ManagePanel->Modifyuser($username, $name_panel, [
+                'settings' => json_encode(array(
+                    'clients' => array(
+                        array('enable' => $currentStatus !== 'active')
+                    ),
+                )),
+            ]);
+        } elseif ($type === 'guard') {
+            $action = $currentStatus === 'active' ? 'disable' : 'enable';
+            $toggle = guardToggleSubscriptions($Get_Data_Panel['name_panel'], array($username), $action);
+            if (($toggle['status'] ?? false) === false) {
+                return array('status' => 'Unsuccessful', 'msg' => $toggle['msg'] ?? 'Toggle failed');
+            }
+            $desiredStatus = $action === 'disable' ? 'disabled' : 'active';
+            $modifyResult = array('status' => true);
+        } elseif ($type === 'remnawave') {
+            $local = remnawave_find_user($username);
+            $isActive = is_array($local) ? ((string)($local['status'] ?? 'active') === 'active') : ($currentStatus === 'active');
+            $res = remnawave_change_status($Get_Data_Panel['name_panel'], $username, !$isActive);
+            if (($res['status'] ?? '') !== 'successful') {
+                return array('status' => 'Unsuccessful', 'msg' => $res['msg'] ?? 'Toggle failed');
+            }
+            $desiredStatus = !$isActive ? 'active' : 'disabled';
+            $modifyResult = array('status' => true);
+        } elseif ($type === 'rebecca') {
+            $wantEnable = $currentStatus !== 'active';
+            $toggle = rebeccaChangeStatus($Get_Data_Panel['name_panel'], $username, $wantEnable);
+            if (($toggle['status'] ?? false) === false) {
+                return array('status' => 'Unsuccessful', 'msg' => $toggle['msg'] ?? 'Toggle failed');
+            }
+            $desiredStatus = $wantEnable ? 'active' : 'disabled';
+            $modifyResult = array('status' => true);
+        } else {
+            return array(
+                'status' => 'Unsuccessful',
+                'msg' => 'این نوع پنل از تغییر وضعیت سرویس پشتیبانی نمی‌کند: ' . $type
+            );
+        }
+
+        if ($modifyResult === false || (is_array($modifyResult) && (($modifyResult['status'] ?? null) === false || ($modifyResult['status'] ?? null) === 'Unsuccessful'))) {
+            $errMsg = is_array($modifyResult) ? ($modifyResult['msg'] ?? 'تغییر وضعیت در پنل انجام نشد') : 'تغییر وضعیت در پنل انجام نشد';
+            $errDetail = is_array($modifyResult) ? ($modifyResult['detail'] ?? null) : null;
+            error_log('[Change_status] panel rejected status change type=' . $type . ' panel=' . $name_panel . ' user=' . $username . ' msg=' . (is_scalar($errMsg) ? (string)$errMsg : json_encode($errMsg, JSON_UNESCAPED_UNICODE)));
+            return array('status' => 'Unsuccessful', 'msg' => $errMsg, 'detail' => $errDetail);
+        }
+
+        return array(
+            'status' => 'successful',
+            'msg' => null,
+            'previous_status' => $currentStatus,
+            'desired_status' => $desiredStatus
+        );
     }
     function ResetUserDataUsage($username, $name_panel)
     {

@@ -233,3 +233,110 @@ foreach ($rxCroncardQueue as $rxJob) {
         ]);
     }
 }
+
+/* ============================================================================
+ * FX-RESELLER AUTO-CONFIRM: run the same card-receipt approval flow for each
+ * reseller tenant, using that tenant's bot token and PaySetting rows.
+ * ========================================================================== */
+$rxResellerBots = [];
+try {
+    $rxResellerBots = $pdo->query("SELECT id_user, bot_token, setting FROM botsaz WHERE bot_token IS NOT NULL AND bot_token <> '' ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $rxResellerListErr) {
+    if (function_exists('rx_log_event')) {
+        rx_log_event('RESELLER_AUTOCONFIRM_LIST_FAILED', $rxResellerListErr->getMessage(), []);
+    }
+    $rxResellerBots = [];
+}
+foreach ($rxResellerBots as $rxResellerBot) {
+    if (function_exists('rx_cron_time_up') && rx_cron_time_up()) break;
+    $rxRid = (int)($rxResellerBot['id_user'] ?? 0);
+    $rxToken = trim((string)($rxResellerBot['bot_token'] ?? ''));
+    if ($rxRid <= 0 || $rxToken === '') continue;
+
+    try {
+        $rxAutoStmt = $pdo->prepare("SELECT ValuePay FROM PaySetting WHERE NamePay='autoconfirmcart' AND agent=:a LIMIT 1");
+        $rxAutoStmt->execute([':a' => $rxRid]);
+        $rxTenantAuto = (string)($rxAutoStmt->fetchColumn() ?: 'offauto');
+        if ($rxTenantAuto === 'offauto' || $rxTenantAuto === '') continue;
+
+        $GLOBALS['APIKEY'] = $rxToken;
+        $APIKEY = $rxToken;
+        if (function_exists('fx_set_tenant_agent_id')) {
+            fx_set_tenant_agent_id($rxRid);
+        }
+        $rxTenantSetting = function_exists('rx_reseller_apply_setting_overrides')
+            ? rx_reseller_apply_setting_overrides($setting)
+            : $setting;
+        $GLOBALS['setting'] = $rxTenantSetting;
+        $setting = $rxTenantSetting;
+
+        $rxTenantTimecheck = max(0, (int)($rxTenantSetting['timeauto_not_verify'] ?? 1)) * 60;
+        $rxTrustStmt = $pdo->prepare("SELECT ValuePay FROM PaySetting WHERE NamePay='trust_mode_active' AND agent=:a LIMIT 1");
+        $rxTrustStmt->execute([':a' => $rxRid]);
+        $rxTenantTrustOn = ((string)($rxTrustStmt->fetchColumn() ?: 'off') === 'on');
+        $rxExcStmt = $pdo->prepare("SELECT ValuePay FROM PaySetting WHERE NamePay='Exception_auto_cart' AND agent=:a LIMIT 1");
+        $rxExcStmt->execute([':a' => $rxRid]);
+        $rxTenantExceptions = json_decode((string)($rxExcStmt->fetchColumn() ?: '[]'), true);
+        $rxTenantExceptions = is_array($rxTenantExceptions) ? array_map('strval', $rxTenantExceptions) : [];
+        $rxTrusted = [];
+        if ($rxTenantTrustOn) {
+            $rxTrustedStmt = $pdo->prepare("SELECT ValuePay FROM PaySetting WHERE NamePay='Trust_auto_cart' AND agent=:a LIMIT 1");
+            $rxTrustedStmt->execute([':a' => $rxRid]);
+            $rxTrusted = json_decode((string)($rxTrustedStmt->fetchColumn() ?: '[]'), true);
+            $rxTrusted = is_array($rxTrusted) ? array_map('strval', $rxTrusted) : [];
+        }
+
+        $rxResellerReceiptSql = "SELECT * FROM Payment_report
+            WHERE payment_Status = 'waiting'
+              AND COALESCE(direct_payment_done, 0) = 0
+              AND (Payment_Method = 'cart to cart' OR Payment_Method = 'arze digital offline')
+              AND (bottype = :token OR (bottype IS NULL AND id_user IN (SELECT id FROM user WHERE agent = :rid)))
+              AND NOT EXISTS (SELECT 1 FROM payment_fulfillment pf WHERE pf.id_order = Payment_report.id_order AND pf.state IN ('completed','manual_review'))
+            ORDER BY id ASC LIMIT 20";
+        $rxResellerReceiptStmt = $pdo->prepare($rxResellerReceiptSql);
+        $rxResellerReceiptStmt->execute([':token' => $rxToken, ':rid' => (string)$rxRid]);
+        while ($rxResellerReceipt = $rxResellerReceiptStmt->fetch(PDO::FETCH_ASSOC)) {
+            if (function_exists('rx_cron_time_up') && rx_cron_time_up()) break;
+            $rxReceiptOrder = (string)($rxResellerReceipt['id_order'] ?? '');
+            $rxReceiptUser = (string)($rxResellerReceipt['id_user'] ?? '');
+            if ($rxReceiptOrder === '' || $rxReceiptUser === '') continue;
+            if (empty($rxResellerReceipt['at_updated'])) continue;
+            $rxReceiptAge = time() - (int)strtotime((string)$rxResellerReceipt['at_updated']);
+            if ($rxReceiptAge < 0 || $rxReceiptAge >= 3600) continue;
+            if ($rxTenantTrustOn) {
+                if (!in_array($rxReceiptUser, $rxTrusted, true)) continue;
+            } else {
+                if (in_array($rxReceiptUser, $rxTenantExceptions, true)) continue;
+                if ($rxReceiptAge < $rxTenantTimecheck) continue;
+            }
+
+            $rxAutoConfirm = rxReceiptConfirm($rxReceiptOrder, [
+                'actor_id' => 0,
+                'actor_label' => 'ربات (تایید خودکار)',
+            ]);
+            if (!empty($rxAutoConfirm['ok'])) {
+                if (function_exists('sendmessage')) {
+                    sendmessage($rxReceiptUser, "✅ پرداخت شما به‌صورت خودکار تایید شد.\n\n🛒 کد پیگیری: <code>{$rxReceiptOrder}</code>", null, 'HTML');
+                }
+                if (function_exists('rx_log_event')) {
+                    rx_log_event('RESELLER_RECEIPT_AUTO_CONFIRMED', 'Reseller receipt auto-confirmed', [
+                        'reseller_id' => $rxRid,
+                        'order_id' => $rxReceiptOrder,
+                        'user_id' => $rxReceiptUser,
+                    ]);
+                }
+            } elseif (function_exists('rx_log_event')) {
+                rx_log_event('RESELLER_RECEIPT_AUTO_CONFIRM_FAILED', 'Reseller receipt auto-confirm failed', [
+                    'reseller_id' => $rxRid,
+                    'order_id' => $rxReceiptOrder,
+                    'user_id' => $rxReceiptUser,
+                    'reason' => (string)($rxAutoConfirm['reason'] ?? 'unknown'),
+                ]);
+            }
+        }
+    } catch (Throwable $rxResellerAutoErr) {
+        if (function_exists('rx_log_event')) {
+            rx_log_event('RESELLER_AUTOCONFIRM_FAILED', $rxResellerAutoErr->getMessage(), ['reseller_id' => $rxRid]);
+        }
+    }
+}

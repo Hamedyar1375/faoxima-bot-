@@ -2,6 +2,13 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/lib/WebhookAuth.php';
 
+// FX-FINANCIAL-LOCK: abandoned/stuck callback locks must self-heal quickly.
+// 60s = 1 minute; /start and the explicit unlock button still release them
+// immediately without waiting for this TTL.
+if (!defined('RX_CALLBACK_LOCK_TTL')) {
+    define('RX_CALLBACK_LOCK_TTL', 60);
+}
+
 if (!function_exists('rx_releaseWebhookConnection')) {
     function rx_releaseWebhookConnection()
     {
@@ -35,6 +42,91 @@ if (!function_exists('rx_releaseWebhookConnection')) {
     }
 }
 
+if (!function_exists('rx_callback_lock_table_ready')) {
+    function rx_callback_lock_table_ready(PDO $pdo): bool
+    {
+        static $ready = [];
+        $key = spl_object_hash($pdo);
+        if (array_key_exists($key, $ready)) {
+            return $ready[$key];
+        }
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS rx_runtime_locks (
+                lock_name varchar(191) NOT NULL,
+                owner_token varchar(64) NOT NULL DEFAULT '',
+                acquired_at int unsigned NOT NULL DEFAULT 0,
+                expires_at int unsigned NOT NULL DEFAULT 0,
+                PRIMARY KEY (lock_name),
+                KEY idx_expires (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+            $ready[$key] = true;
+        } catch (Throwable $e) {
+            @error_log('[rx_callback_lock] runtime locks table unavailable: ' . $e->getMessage());
+            $ready[$key] = false;
+        }
+        return $ready[$key];
+    }
+}
+
+if (!function_exists('rx_callback_lock_cleanup_expired')) {
+    function rx_callback_lock_cleanup_expired(int $limit = 200): int
+    {
+        global $pdo;
+        if (!($pdo instanceof PDO) || !rx_callback_lock_table_ready($pdo)) {
+            return 0;
+        }
+        try {
+            $limit = max(1, min(1000, $limit));
+            $stmt = $pdo->prepare('DELETE FROM rx_runtime_locks WHERE expires_at < ? ORDER BY expires_at ASC LIMIT ' . $limit);
+            $stmt->execute([time()]);
+            return $stmt->rowCount();
+        } catch (Throwable $e) {
+            @error_log('[rx_callback_lock] cleanup failed: ' . $e->getMessage());
+            return 0;
+        }
+    }
+}
+
+if (!function_exists('rx_callback_lock_legacy_acquire')) {
+    function rx_callback_lock_legacy_acquire(PDO $pdo, string $name, $timeout)
+    {
+        try {
+            $stmt = $pdo->prepare('SELECT IS_USED_LOCK(?)');
+            $stmt->execute([$name]);
+            $heldBy = $stmt->fetchColumn();
+            if ($heldBy !== null && $heldBy !== false) {
+                $stmt = $pdo->prepare('SELECT CONNECTION_ID()');
+                $stmt->execute();
+                if ((string) $stmt->fetchColumn() === (string) $heldBy) {
+                    $pdo->prepare('SELECT RELEASE_LOCK(?)')->execute([$name]);
+                }
+            }
+            $stmt = $pdo->prepare('SELECT GET_LOCK(?, ?)');
+            $stmt->execute([$name, max(0.1, (float) $timeout)]);
+            $got = $stmt->fetchColumn();
+        } catch (Throwable $e) {
+            @error_log('[rx_callback_lock] legacy acquire failed: ' . $e->getMessage());
+            return true;
+        }
+        return ((string) $got === '1') ? $name : false;
+    }
+}
+
+if (!function_exists('rx_callback_lock_legacy_release')) {
+    function rx_callback_lock_legacy_release(PDO $pdo, string $name)
+    {
+        try {
+            $stmt = $pdo->prepare('SELECT RELEASE_LOCK(?)');
+            $stmt->execute([$name]);
+            $result = $stmt->fetchColumn();
+            return $result === null ? null : (string) $result;
+        } catch (Throwable $e) {
+            @error_log('[rx_callback_lock] legacy release failed: ' . $e->getMessage());
+            return 'error:' . $e->getMessage();
+        }
+    }
+}
+
 if (!function_exists('rx_callback_lock_acquire')) {
     function rx_callback_lock_acquire($ownerId, $scope = 'cb', $timeout = 2.5)
     {
@@ -50,29 +142,56 @@ if (!function_exists('rx_callback_lock_acquire')) {
         }
 
         $prefix = defined('_FX_SHARD') ? substr(_FX_SHARD, 0, 8) : 'fx';
-        $name = substr($prefix . ':' . preg_replace('/[^a-z0-9_]/i', '', $scope) . ':' . $ownerId, 0, 64);
+        $name = substr($prefix . ':' . preg_replace('/[^a-z0-9_]/i', '', $scope) . ':' . $ownerId, 0, 191);
 
-        try {
-            $stmt = $pdo->prepare('SELECT IS_USED_LOCK(?)');
-            $stmt->execute([$name]);
-            $heldBy = $stmt->fetchColumn();
-            if ($heldBy !== null && $heldBy !== false) {
-                $stmt = $pdo->prepare('SELECT CONNECTION_ID()');
-                $stmt->execute();
-                if ((string) $stmt->fetchColumn() === (string) $heldBy) {
-                    $pdo->prepare('SELECT RELEASE_LOCK(?)')->execute([$name]);
-                }
-            }
-
-            $stmt = $pdo->prepare('SELECT GET_LOCK(?, ?)');
-            $stmt->execute([$name, max(0.1, (float) $timeout)]);
-            $got = $stmt->fetchColumn();
-        } catch (Throwable $e) {
-            @error_log('[rx_callback_lock] acquire failed: ' . $e->getMessage());
-            return true;
+        if (!rx_callback_lock_table_ready($pdo)) {
+            return rx_callback_lock_legacy_acquire($pdo, $name, $timeout);
         }
 
-        return ((string) $got === '1') ? $name : false;
+        $token = bin2hex(random_bytes(16));
+        $ttl = defined('RX_CALLBACK_LOCK_TTL') ? max(10, (int) RX_CALLBACK_LOCK_TTL) : 60;
+        $deadline = microtime(true) + max(0.1, (float) $timeout);
+
+        do {
+            $now = time();
+            try {
+                if ($pdo->inTransaction()) {
+                    return rx_callback_lock_legacy_acquire($pdo, $name, $timeout);
+                }
+                $pdo->beginTransaction();
+                $pdo->prepare(
+                    'INSERT INTO rx_runtime_locks (lock_name, owner_token, acquired_at, expires_at) VALUES (?, \'\', 0, 0) '
+                    . 'ON DUPLICATE KEY UPDATE lock_name = VALUES(lock_name)'
+                )->execute([$name]);
+                $rowStmt = $pdo->prepare('SELECT owner_token, expires_at FROM rx_runtime_locks WHERE lock_name = ? FOR UPDATE');
+                $rowStmt->execute([$name]);
+                $row = $rowStmt->fetch(PDO::FETCH_ASSOC);
+                $expired = !is_array($row) || (int) ($row['expires_at'] ?? 0) <= $now || (string) ($row['owner_token'] ?? '') === '';
+                if ($expired) {
+                    $pdo->prepare(
+                        'UPDATE rx_runtime_locks SET owner_token = ?, acquired_at = ?, expires_at = ? WHERE lock_name = ?'
+                    )->execute([$token, $now, $now + $ttl, $name]);
+                }
+                $pdo->commit();
+
+                if ($expired) {
+                    $lockKey = spl_object_hash($pdo) . '|' . $name;
+                    $GLOBALS['rx_callback_lock_tokens'][$lockKey] = $token;
+                    return $name;
+                }
+            } catch (Throwable $e) {
+                try { if ($pdo->inTransaction()) $pdo->rollBack(); } catch (Throwable $_) {}
+                @error_log('[rx_callback_lock] acquire failed: ' . $e->getMessage());
+                return rx_callback_lock_legacy_acquire($pdo, $name, $timeout);
+            }
+
+            if (microtime(true) >= $deadline) {
+                break;
+            }
+            usleep(100000);
+        } while (true);
+
+        return false;
     }
 }
 
@@ -85,14 +204,78 @@ if (!function_exists('rx_callback_lock_release')) {
             return null;
         }
 
+        if (!rx_callback_lock_table_ready($pdo)) {
+            return rx_callback_lock_legacy_release($pdo, $name);
+        }
+
+        $lockKey = spl_object_hash($pdo) . '|' . $name;
+        $token = $GLOBALS['rx_callback_lock_tokens'][$lockKey] ?? null;
+        if (!is_string($token) || $token === '') {
+            return null;
+        }
+
         try {
-            $stmt = $pdo->prepare('SELECT RELEASE_LOCK(?)');
-            $stmt->execute([$name]);
-            $result = $stmt->fetchColumn();
-            return $result === null ? null : (string) $result;
+            $stmt = $pdo->prepare('DELETE FROM rx_runtime_locks WHERE lock_name = ? AND owner_token = ?');
+            $stmt->execute([$name, $token]);
+            unset($GLOBALS['rx_callback_lock_tokens'][$lockKey]);
+            return $stmt->rowCount() > 0 ? '1' : '0';
         } catch (Throwable $e) {
             @error_log('[rx_callback_lock] release failed: ' . $e->getMessage());
             return 'error:' . $e->getMessage();
+        }
+    }
+}
+
+if (!function_exists('rx_callback_lock_release_for_owner')) {
+    /**
+     * Force-release every runtime lock owned by a user. Used by /start, /cancel,
+     * back-to-main and the explicit "unlock & retry" button. Unlike
+     * rx_callback_lock_release() this does not need the original owner token.
+     */
+    function rx_callback_lock_release_for_owner($ownerId, array $scopes = []): int
+    {
+        global $pdo;
+        $ownerId = trim((string) $ownerId);
+        if ($ownerId === '' || !ctype_digit($ownerId) || !($pdo instanceof PDO)) {
+            return 0;
+        }
+
+        $prefix = defined('_FX_SHARD') ? substr(_FX_SHARD, 0, 8) : 'fx';
+        $names = [];
+        foreach ($scopes as $scope) {
+            $scope = preg_replace('/[^a-z0-9_]/i', '', (string) $scope);
+            if ($scope === '') continue;
+            $names[] = substr($prefix . ':' . $scope . ':' . $ownerId, 0, 191);
+        }
+
+        if (!rx_callback_lock_table_ready($pdo)) {
+            $released = 0;
+            foreach (($names ?: [$prefix . ':money:' . $ownerId]) as $name) {
+                $result = rx_callback_lock_legacy_release($pdo, $name);
+                if ((string) $result === '1') $released++;
+            }
+            return $released;
+        }
+
+        try {
+            if (!empty($names)) {
+                $ph = implode(',', array_fill(0, count($names), '?'));
+                $stmt = $pdo->prepare('DELETE FROM rx_runtime_locks WHERE lock_name IN (' . $ph . ')');
+                $stmt->execute($names);
+            } else {
+                $stmt = $pdo->prepare('DELETE FROM rx_runtime_locks WHERE lock_name LIKE ?');
+                $stmt->execute(['%:' . $ownerId]);
+            }
+            $count = $stmt->rowCount();
+            if (!empty($names)) {
+                foreach ($names as $name) {
+                    unset($GLOBALS['rx_callback_lock_tokens'][spl_object_hash($pdo) . '|' . $name]);
+                }
+            }
+            return $count;
+        } catch (Throwable $e) {
+            @error_log('[rx_callback_lock] force release failed: ' . $e->getMessage());
+            return 0;
         }
     }
 }
@@ -366,6 +549,21 @@ function telegram($method, $datas = [], $token = null)
         $datas['reply_markup'] = rx_sanitizeKeyboardButtons($datas['reply_markup']);
     }
 
+    // Keep the caller's keyboard separately: injected navigation must not turn
+    // purely informational messages (service credentials, reports) into flow
+    // messages that get deleted by /start.
+    $rxFlowTrackKeyboard = $datas['reply_markup'] ?? null;
+
+    // FX-NAV-GUARD (2026-10-18): every private-chat page gets navigation.
+    // Append missing "back" / "main menu" inline buttons; never replace the
+    // caller's own buttons. Reply keyboards are left untouched.
+    $rxNavGuardMethod = strtolower((string) $method);
+    if (function_exists('rx_nav_guard_keyboard')
+        && in_array($rxNavGuardMethod, ['sendmessage', 'editmessagetext', 'sendphoto', 'sendvideo', 'senddocument', 'sendanimation', 'sendaudio', 'sendvoice'], true)
+        && !empty($datas['chat_id']) && is_numeric($datas['chat_id']) && (int) $datas['chat_id'] > 0) {
+        $datas['reply_markup'] = rx_nav_guard_keyboard($datas['reply_markup'] ?? null, $datas['chat_id']);
+    }
+
     $rxSendMethod = strtolower((string) $method);
     if (($rxSendMethod === 'sendmessage' || $rxSendMethod === 'editmessagetext')
         && (!isset($datas['text']) || !is_string($datas['text']) || trim($datas['text']) === '')) {
@@ -473,7 +671,43 @@ function telegram($method, $datas = [], $token = null)
         error_log(sprintf('Slow Telegram response detected (method: %s, http_code: %d, duration: %.3fs)', $method, $httpCode, $duration));
     }
 
-    return rx_parse_telegram_response($rawResponse, $httpCode);
+    $rxTrackedResponse = rx_parse_telegram_response($rawResponse, $httpCode);
+
+    // FX-FLOW-CLEANUP: remember every successful interactive outgoing message
+    // (input prompt or message with keyboard) so /start and /cancel can delete
+    // stale receipts, invoices and payment menus. Informational messages are
+    // intentionally not tracked — service credentials must survive /start.
+    $rxTrackedMethod = strtolower((string) $method);
+    if (function_exists('rx_flow_message_track_outgoing')
+        && in_array($rxTrackedMethod, ['sendmessage', 'sendphoto', 'sendvideo', 'senddocument', 'sendanimation', 'sendaudio', 'editmessagetext', 'editmessagecaption'], true)
+        && is_array($rxTrackedResponse)
+        && !empty($rxTrackedResponse['ok'])) {
+        $rxTrackedMessageId = 0;
+        if (isset($rxTrackedResponse['result']['message_id'])) {
+            $rxTrackedMessageId = (int) $rxTrackedResponse['result']['message_id'];
+        } elseif (isset($rxTrackedResponse['result']) && is_array($rxTrackedResponse['result'])) {
+            foreach ($rxTrackedResponse['result'] as $rxTrackedItem) {
+                if (is_array($rxTrackedItem) && !empty($rxTrackedItem['message_id'])) {
+                    $rxTrackedMessageId = (int) $rxTrackedItem['message_id'];
+                    break;
+                }
+            }
+        }
+        if ($rxTrackedMessageId > 0) {
+            rx_flow_message_track_outgoing(
+                $datas['chat_id'] ?? 0,
+                $rxTrackedMessageId,
+                $datas['text'] ?? ($datas['caption'] ?? ''),
+                $rxFlowTrackKeyboard
+            );
+        }
+    }
+
+    if (function_exists('rx_trackReplyKeyboardSent')) {
+        rx_trackReplyKeyboardSent($datas, $rxTrackedResponse);
+    }
+
+    return $rxTrackedResponse;
 }
 
 function rx_parse_telegram_response($rawResponse, $httpCode)
@@ -1010,7 +1244,36 @@ if (!function_exists('rx_flushPendingReplyKeyboardCleanup')) {
     }
 }
 
+if (!function_exists('rx_trackReplyKeyboardSent')) {
+    /**
+     * Reference behaviour: if a real reply keyboard is sent again, clear the
+     * "removed" flag so the next /start does not think it is still hidden.
+     */
+    function rx_trackReplyKeyboardSent($datas, $result): void
+    {
+        try {
+            if (!is_array($datas) || !is_array($result) || empty($result['ok'])) return;
+            if (empty($datas['chat_id']) || !ctype_digit((string) $datas['chat_id'])) return;
+            $markup = $datas['reply_markup'] ?? null;
+            if (is_string($markup) && $markup !== '') $markup = json_decode($markup, true);
+            if (!is_array($markup) || empty($markup['keyboard'])) return;
+            if (!function_exists('select') || !function_exists('update')) return;
+            $chatId = (string) $datas['chat_id'];
+            $flag = select('user', 'reply_kb_cleared', 'id', $chatId, 'select', ['cache' => false]);
+            if (is_scalar($flag) && (string) $flag !== '0') {
+                update('user', 'reply_kb_cleared', '0', 'id', $chatId);
+            }
+        } catch (Throwable $e) {
+        }
+    }
+}
+
 if (!function_exists('removeReplyKeyboardOnStartIfNeeded')) {
+    /**
+     * Reference behaviour: keep the normal reply keyboard stable in reply mode.
+     * Only inline/glass mode hides it once on /start; it is never opened and
+     * closed dynamically for every step/message.
+     */
     function removeReplyKeyboardOnStartIfNeeded($chatId): void {
         $chatId = trim((string) $chatId);
         if ($chatId === '' || !ctype_digit($chatId)) return;
@@ -2922,6 +3185,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
     $keyboard = processKeyboardStyles($keyboard, function_exists('rx_isAdminChat') && rx_isAdminChat($chat_id));
     $keyboard = applyPremiumEmojiToKeyboard($keyboard);
 
+    $__isAdminChat = function_exists('rx_isAdminChat') && rx_isAdminChat($chat_id);
     $__isPhotoMsg = $__callbackMsg && (
         !empty($__callbackMsg['photo'])
         || !empty($__callbackMsg['video'])
@@ -2929,7 +3193,9 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
         || !empty($__callbackMsg['document'])
     );
     if ($__isPhotoMsg && $__callbackMsgId === (int)$message_id) {
-        if (function_exists('deletemessage')) {
+        // Never delete report-group messages. Confirming one receipt used to
+        // cascade through media fallbacks and wipe prior transaction messages.
+        if (!$__isAdminChat && function_exists('deletemessage')) {
             @deletemessage($chat_id, $message_id, $bot_token);
         }
         return $__sendFallback($chat_id, $text, $keyboard, strtolower($parse_mode));
@@ -2955,7 +3221,7 @@ function Editmessagetext($chat_id, $message_id, $text, $keyboard,$parse_mode = '
             || strpos($desc, 'keyboard expected') !== false
         );
         if ($needsFallback) {
-            if (function_exists('deletemessage')) {
+            if (!$__isAdminChat && function_exists('deletemessage')) {
                 @deletemessage($chat_id, $message_id, $bot_token);
             }
             return $__sendFallback($chat_id, $text, $keyboard, strtolower($parse_mode));

@@ -121,7 +121,7 @@ function fx_res_owner_balance_contract(int $rid): array {
 
 function fx_reseller_get_all(): array {
     global $pdo;
-    $stmt = $pdo->query("SELECT b.id_user, b.username, b.bot_token, b.debt_mode, b.current_debt, u.Balance, u.agent, u.username AS u_username,
+    $stmt = $pdo->query("SELECT b.id_user, b.username, b.bot_token, b.debt_mode, b.current_debt, b.debt_ceiling, u.Balance, u.agent, u.username AS u_username,
             (SELECT COUNT(*) FROM invoice i JOIN user uz ON uz.id = i.id_user
               WHERE (uz.agent = b.id_user OR uz.bottype = b.bot_token)
                 AND i.Status IN ('active','sendedwarn','send_on_hold')
@@ -768,14 +768,19 @@ function fx_res_render_report(int $from_id, int $message_id, string $rid): void 
     $lines[] = "";
     $lines[] = "🧩 کانفیگ‌ها: " . $fmt($d['configs']['active']) . " فعال | " . $fmt($d['configs']['expired']) . " منقضی (مجموع " . $fmt($d['configs']['total']) . ")";
     $lines[] = "";
-    $modeLabel = $c['mode'] === 'debt' ? 'اعتباری (بدهی)' : 'پیش‌پرداخت (موجودی)';
-    $lines[] = "🏦 حالت: " . $modeLabel;
-    $lines[] = "📏 سقف بدهی (Debt_Ceiling): " . $fmt($c['ceiling']);
-    $lines[] = "💸 بدهی فعلی (Current_Debt): " . $fmt($c['current']);
-    $lines[] = "✅ اعتبار باقی‌مانده (مجاز برای ساخت کانفیگ جدید): " . $fmt($c['remaining']);
-    $__fxBalCtr = fx_res_owner_balance_contract((int)$rid);
-    $lines[] = $__fxBalCtr['balance_line'];
-    $lines[] = $__fxBalCtr['state_line'];
+    // FX-ACCOUNT: signed account block (single formula; no ambiguous "debt").
+    $__fxAcctR = function_exists('fx_res_account_state') ? fx_res_account_state((int)$rid) : null;
+    if (is_array($__fxAcctR) && !empty($__fxAcctR['ok'])) {
+        foreach (fx_res_account_lines($__fxAcctR) as $__fxL) {
+            $lines[] = $__fxL;
+        }
+    } else {
+        $modeLabel = $c['mode'] === 'debt' ? 'اعتباری (بدهی)' : 'پیش‌پرداخت (موجودی)';
+        $lines[] = "🏦 حالت: " . $modeLabel;
+        $lines[] = "📏 سقف اعتبار: " . $fmt($c['ceiling']);
+        $lines[] = "💸 بدهی نماینده به ربات اصلی: " . $fmt($c['current']);
+        $lines[] = "✅ اعتبار بدهی باقی‌مانده: " . $fmt($c['remaining']);
+    }
     $lines[] = "";
     $lines[] = "همه مبالغ به تومان است.";
     $kb = fx_res_inline_kb([
@@ -854,11 +859,14 @@ function fx_res_render_ledger(int $from_id, int $message_id, string $rid): void 
     update("user", "Processing_value", $rid, "id", $from_id);
     $items = fx_res_ledger_data((int)$rid, 20);
     $st = function_exists('fx_debt_state') ? fx_debt_state((int)$rid) : ['mode' => 'balance', 'current' => 0, 'ceiling' => 0];
-    $__fxBalCtr = fx_res_owner_balance_contract((int)$rid);
-    $txt = "📒 <b>دفتر حساب نماینده {$rid}</b>\n"
-        . $__fxBalCtr['balance_line'] . "\n"
-        . $__fxBalCtr['state_line'] . "\n"
-        . "💸 بدهی ربات: " . number_format((int)($st['current'] ?? 0)) . " تومان\n";
+    $__fxAcctL = function_exists('fx_res_account_state') ? fx_res_account_state((int)$rid) : null;
+    if (is_array($__fxAcctL) && !empty($__fxAcctL['ok'])) {
+        $txt = "📒 <b>دفتر حساب نماینده {$rid}</b>\n"
+            . implode("\n", fx_res_account_lines($__fxAcctL)) . "\n";
+    } else {
+        $txt = "📒 <b>دفتر حساب نماینده {$rid}</b>\n"
+            . "💸 بدهی نماینده به ربات اصلی: " . number_format((int)($st['current'] ?? 0)) . " تومان\n";
+    }
     if (empty($items)) {
         $txt .= "\n📭 هنوز گردشی ثبت نشده است.";
     } else {
@@ -939,11 +947,14 @@ function fx_res_bot_detail_view(int $rid): array {
     if (!$rUser) {
         return ['ok' => false, 'txt' => "❌ نماینده یافت نشد.", 'rows' => [fx_res_back_admin_row()]];
     }
-    $__fxBalCtr = fx_res_owner_balance_contract($rid);
+    // FX-ACCOUNT: unified signed account block (ceiling / B / debt / claim /
+    // remaining / wallet / reserved). Replaces the ambiguous separate lines.
+    $__fxAcct = function_exists('fx_res_account_state') ? fx_res_account_state($rid) : null;
     $__fxDebtSt = fx_debt_state($rid);
-    $__fxDebtLine = $__fxDebtSt['mode'] === 'debt'
-        ? "\n🏦 حالت: اعتباری (بدهی) — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی فعلی: " . number_format($__fxDebtSt['current']) . " تومان"
-        : "\n🏦 حالت: پیش‌پرداخت (موجودی)";
+    $__fxAcctLine = (is_array($__fxAcct) && !empty($__fxAcct['ok']))
+        ? "\n" . implode("\n", fx_res_account_lines($__fxAcct))
+        : "\n🏦 حالت: " . ($__fxDebtSt['mode'] === 'debt' ? 'اعتباری (بدهی)' : 'پیش‌پرداخت (موجودی)')
+            . " — سقف: " . number_format($__fxDebtSt['ceiling']) . " | بدهی: " . number_format($__fxDebtSt['current']) . " تومان";
     $__fxNameG = (isset($rUser['username']) && $rUser['username'] !== '' && $rUser['username'] !== 'none' && $rUser['username'] !== 'NOT_USERNAME') ? ('@' . $rUser['username'] . ' (ID: ' . $rid . ')') : ('ID ' . $rid);
     $__fxBot = select("botsaz", "*", "id_user", $rid, "select", ['cache' => false]);
     $__fxBotLine = (is_array($__fxBot) && !empty($__fxBot['username']))
@@ -970,11 +981,12 @@ function fx_res_bot_detail_view(int $rid): array {
          ['text' => '💳 ثبت تسویه‌حساب', 'callback_data' => "fx_res_settle_{$rid}"]],
         [['text' => '📊 گزارش مالی و اعتباری', 'callback_data' => "fx_res_report_{$rid}"],
          ['text' => '📒 دفتر حساب', 'callback_data' => "fx_res_ledger_{$rid}"]],
+        [['text' => '⚖️ اصلاح حساب (اصلاحیه مستند)', 'callback_data' => "fx_res_adj_{$rid}"]],
         [['text' => '👥 مدیران ربات', 'callback_data' => "fx_res_admins_{$rid}"],
          ['text' => ($__fxBotStopped ? '▶️ فعال‌سازی ربات' : '⏸ توقف ربات'), 'callback_data' => "fx_res_bottoggle_{$rid}"]],
         [['text' => '⬅️ بازگشت به فهرست نمایندگان', 'callback_data' => 'fx_reseller_mgmt_menu']],
     ];
-    $txt = "👤 {$__fxNameG}\n{$__fxBalCtr['balance_line']}\n{$__fxBalCtr['state_line']}" . $__fxBotLine . $__fxDebtLine;
+    $txt = "👤 {$__fxNameG}" . $__fxBotLine . $__fxAcctLine;
     return ['ok' => true, 'txt' => $txt, 'rows' => $rows];
 }
 
@@ -1653,6 +1665,24 @@ function fx_reseller_mgmt_dispatch(string $datain, int $from_id, int $message_id
         return true;
     }
 
+    // --- documented signed adjustment (FX-ACCOUNT) ---
+    if (preg_match('/^fx_res_adj_(\d+)$/', $datain, $m)) {
+        $rid = (int)$m[1];
+        step('fx_res_do_adjust', $from_id);
+        update("user", "Processing_value", $rid, "id", $from_id);
+        Editmessagetext($from_id, $message_id,
+            "⚖️ <b>اصلاح حساب نماینده {$rid}</b>\n\n"
+            . "فرمت ورودی:\n<code>±مبلغ|دلیل</code>\n\n"
+            . "مثال‌ها:\n"
+            . "<code>+50000|پرداخت نقدی دریافت شد</code> → به نفع نماینده (کاهش بدهی / افزایش طلب)\n"
+            . "<code>-250000|برگشت خرید تکراری</code> → به ضرر نماینده (افزایش بدهی)\n\n"
+            . "هر اصلاح با عامل، زمان، دلیل و مانده قبل/بعد در دفتر ثبت می‌شود.\n"
+            . "انصراف: /cancel",
+            fx_res_inline_kb([['text' => '⬅️ بازگشت', 'callback_data' => "fx_res_sel_{$rid}"]]), 'HTML');
+        fx_res_answer_cb();
+        return true;
+    }
+
     // --- account ledger (debt movements + admin wallet ops) ---
     if (preg_match('/^fx_res_ledger_(\d+)$/', $datain, $m)) {
         fx_res_render_ledger($from_id, $message_id, $m[1]);
@@ -1727,40 +1757,25 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         if (!ctype_digit($text)) { sendmessage($from_id, "❌ فقط عدد وارد کنید.", $backuser, 'html'); return true; }
         $rid = intval($user['Processing_value']);
         $amt = intval($text);
-        $debtUsed = 0;
-        try {
-            $pdo->beginTransaction();
-            $dbt = fx_debt_state($rid);
-            if ($dbt['mode'] === 'debt' && $dbt['current'] > 0) {
-                $debtUsed = min($amt, $dbt['current']);
-                $pdo->prepare("UPDATE botsaz SET current_debt = GREATEST(0, current_debt - :amt) WHERE id_user = :rid")
-                    ->execute([':amt' => $debtUsed, ':rid' => (string)$rid]);
-                $after = fx_debt_state($rid)['current'];
-                $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, invoice_ref, debt_after, time) VALUES (:rid, :amt, 'out', :m, NULL, :after, NOW())")
-                    ->execute([':rid' => $rid, ':amt' => $debtUsed, ':m' => 'settlement', ':after' => $after]);
-                if ($after * 100 < $dbt['ceiling'] * 80) {
-                    @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
-                    @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
-                }
-            }
-            $creditRemainder = $amt - $debtUsed;
-            if ($creditRemainder > 0 && !fx_reseller_db_credit($rid, $creditRemainder, 'admin_credit', $ApiToken)) {
-                throw new \RuntimeException('wallet credit failed');
-            }
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            error_log('[FX_RES] credit step failed rid=' . $rid . ': ' . $e->getMessage());
-            sendmessage($from_id, "❌ خطا در شارژ. عملیات انجام نشد.", $backuser, 'html');
+        if ($amt <= 0) { sendmessage($from_id, "❌ مبلغ باید بزرگ‌تر از صفر باشد.", $backuser, 'html'); return true; }
+        // FX-ACCOUNT: this button is a WALLET CHARGE. It only changes the wallet
+        // and is never recorded as debt settlement (use «ثبت تسویه‌حساب» for a
+        // received payment, which settles the debt first).
+        if (!fx_reseller_db_credit($rid, $amt, 'admin_credit', $ApiToken)) {
+            sendmessage($from_id, "❌ خطا در شارژ کیف پول. عملیات انجام نشد.", $backuser, 'html');
             fx_res_send_bot_detail($from_id, $rid);
             return true;
         }
-        $msg = $debtUsed > 0
-            ? "✅ تسویه شد: " . number_format($debtUsed) . " تومان بدهی نماینده {$rid} کسر شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")
-            : "✅ مبلغ " . number_format($amt) . " تومان به نماینده {$rid} شارژ شد.";
+        $acctC = function_exists('fx_res_account_state') ? fx_res_account_state($rid) : null;
+        $msg = "✅ " . number_format($amt) . " تومان به کیف پول نماینده {$rid} اضافه شد.\n"
+            . "ℹ️ این عملیات «شارژ کیف پول» است و بدهی را تسویه نمی‌کند؛ برای تسویه از «ثبت تسویه‌حساب» استفاده کنید.";
+        if (is_array($acctC) && !empty($acctC['ok'])) {
+            $msg .= "\n⚖️ مانده حساب: " . fx_res_fmt_signed((int)$acctC['balance']) . " تومان"
+                . "\n💸 بدهی نماینده به ربات اصلی: " . number_format((int)$acctC['debt']) . " تومان";
+        }
         sendmessage($from_id, $msg, $backuser, 'html');
         // FX-ROUTE: notify the agent through the RESELLER bot's own token
-        sendmessage($rid, "💎 " . (($debtUsed > 0) ? (number_format($debtUsed) . " تومان بدهی شما تسویه شد" . (($amt - $debtUsed) > 0 ? " و " . number_format($amt - $debtUsed) . " تومان به موجودی اضافه شد." : ".")) : (number_format($amt) . " تومان به موجودی شما اضافه شد.")), null, 'HTML', fx_reseller_bot_token($rid));
+        sendmessage($rid, "💰 " . number_format($amt) . " تومان به کیف پول شما اضافه شد.", null, 'HTML', fx_reseller_bot_token($rid));
         fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
@@ -1837,6 +1852,40 @@ function fx_reseller_text_handler(string $text, array $user, int $from_id, strin
         } else {
             sendmessage($from_id, "❌ موجودی کافی نیست یا خطا رخ داد.", $backuser, 'html');
         }
+        fx_res_send_bot_detail($from_id, $rid);
+        return true;
+    }
+
+    if ($user['step'] === 'fx_res_do_adjust') {
+        if (trim($text) === '/cancel') { fx_res_send_bot_detail($from_id, intval($user['Processing_value'])); return true; }
+        if (!preg_match('/^\s*([+-]?\d+)\s*\|\s*(.+)$/u', $text, $m)) {
+            sendmessage($from_id, "❌ فرمت نامعتبر. نمونه: <code>+50000|دلیل</code> یا <code>-250000|دلیل</code>", $backuser, 'html');
+            return true;
+        }
+        $delta = (int)$m[1];
+        $reason = trim($m[2]);
+        if ($delta === 0 || $reason === '') {
+            sendmessage($from_id, "❌ مبلغ نباید صفر باشد و دلیل الزامی است.", $backuser, 'html');
+            return true;
+        }
+        $rid = intval($user['Processing_value']);
+        $ref = 'ADJ-' . date('YmdHis') . '-' . bin2hex(random_bytes(3));
+        $r = fx_res_account_apply($rid, $delta, 'adjustment', $ref, $reason, (int)$from_id, ['with_payment_report' => true]);
+        if (empty($r['ok'])) {
+            $whyMap = ['ceiling' => 'سقف اعتبار اجازه نمی‌دهد', 'no_ceiling' => 'سقف اعتبار تنظیم نشده', 'insufficient_wallet' => 'موجودی کیف پول کافی نیست', 'no_reseller' => 'نماینده یافت نشد', 'no_user' => 'کاربر یافت نشد', 'db' => 'خطای دیتابیس'];
+            $why = $whyMap[$r['reason'] ?? ''] ?? ('خطا: ' . ($r['reason'] ?? ''));
+            sendmessage($from_id, "❌ اصلاح حساب انجام نشد — " . $why, $backuser, 'html');
+            fx_res_send_bot_detail($from_id, $rid);
+            return true;
+        }
+        $msgAdj = "✅ اصلاح حساب ثبت شد.\n"
+            . "⚖️ مانده قبل: " . fx_res_fmt_signed((int)$r['before']) . " → بعد: " . fx_res_fmt_signed((int)$r['after']) . " تومان\n"
+            . "💸 بدهی نماینده به ربات اصلی: " . number_format((int)$r['debt_after']) . " تومان\n"
+            . "💰 طلب نماینده از ربات اصلی: " . number_format(max(0, (int)$r['after'])) . " تومان\n"
+            . "🏦 اعتبار بدهی باقی‌مانده: " . number_format((int)$r['remaining_credit']) . " تومان\n"
+            . "📝 دلیل: " . $reason . "\n🔖 مرجع: " . $ref;
+        sendmessage($from_id, $msgAdj, $backuser, 'html');
+        sendmessage($rid, "⚖️ اصلاح حساب توسط مدیریت: " . fx_res_fmt_signed($delta) . " تومان\n📝 " . $reason . "\n⚖️ مانده حساب جدید: " . fx_res_fmt_signed((int)$r['after']) . " تومان", null, 'HTML', fx_reseller_bot_token($rid));
         fx_res_send_bot_detail($from_id, $rid);
         return true;
     }
@@ -2082,7 +2131,7 @@ function fx_res_mgmt_text_entry(string $text, array $user, int $from_id, string 
 
     // --- text-entry steps (primary consumer: bootstrap_1 gate; this is a net) ---
     // (fx_res_my_do_retail is consumed by fx_myprices_gate in fx_myprices.php)
-    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend', 'fx_res_do_addadmin'], true)) {
+    if (in_array($step, ['fx_res_do_credit', 'fx_res_do_debit', 'fx_res_do_pasargad', 'fx_res_do_create', 'fx_res_do_debt_ceiling', 'fx_res_do_settle', 'fx_res_do_whprice_val', 'fx_res_buyer_extend', 'fx_res_do_addadmin', 'fx_res_do_adjust'], true)) {
         if (fx_reseller_text_handler($text, (array)$user, $from_id, $backadmin)) {
             return true;
         }

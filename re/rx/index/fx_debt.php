@@ -1864,3 +1864,380 @@ if (!function_exists('fx_reseller_statement_send')) {
         return $ok;
     }
 }
+
+/* ============================================================================
+ * FX-ACCOUNT (2026-10-27) — signed reseller account model (single source of truth)
+ * ============================================================================
+ * Three DISTINCT financial concepts (never conflate them):
+ *   1) credit ceiling  L = botsaz.debt_ceiling          (independent setting)
+ *   2) account balance B = wallet - current_debt        (signed: + claim / - debt)
+ *   3) wallet          = user.Balance of the reseller   (cash held by the bot)
+ *
+ * Signs (B):
+ *   B > 0  => the MAIN BOT owes the reseller  (claim = B)
+ *   B = 0  => settled
+ *   B < 0  => the RESELLER owes the main bot  (debt = -B)
+ *
+ * Derived:
+ *   debt             = max(0, -B)
+ *   claim            = max(0,  B)
+ *   remaining_credit = max(0, L - debt)
+ *
+ * Every movement is a SIGNED delta applied to B:  B_new = B_old + delta
+ *   purchase / charge / payment to reseller : delta < 0
+ *   payment from reseller / settlement      : delta > 0
+ * ------------------------------------------------------------------------- */
+
+if (!function_exists('fx_debt_audit_columns')) {
+    /** FX-ACCOUNT: true when the fx_debt_log audit columns exist (migration applied). */
+    function fx_debt_audit_columns(): bool {
+        static $has = null;
+        if ($has !== null) {
+            return $has;
+        }
+        global $pdo;
+        $has = false;
+        try {
+            if ($pdo instanceof PDO) {
+                $q = $pdo->query("SHOW COLUMNS FROM fx_debt_log LIKE 'balance_after'");
+                $has = ($q && $q->fetch(PDO::FETCH_ASSOC)) ? true : false;
+            }
+        } catch (\Throwable $e) {
+            $has = false;
+        }
+        return $has;
+    }
+}
+
+if (!function_exists('fx_res_fmt_signed')) {
+    /** FX-ACCOUNT: signed money display (explicit + / − prefix, 0 = no sign). */
+    function fx_res_fmt_signed($n): string {
+        $n = (int)$n;
+        $s = number_format(abs($n));
+        if ($n < 0) {
+            return '−' . $s;
+        }
+        return $n > 0 ? '+' . $s : $s;
+    }
+}
+
+if (!function_exists('fx_res_account_state')) {
+    /**
+     * FX-ACCOUNT: read-only signed account snapshot for a reseller.
+     * Never writes. Safe to call in any context (main bot admin or reseller bot).
+     */
+    function fx_res_account_state(int $rid): array {
+        $out = [
+            'ok' => false, 'rid' => $rid, 'mode' => 'balance',
+            'ceiling' => 0, 'wallet' => 0, 'current_debt' => 0,
+            'balance' => 0, 'debt' => 0, 'claim' => 0,
+            'remaining_credit' => 0, 'over_limit' => false,
+            'pending_count' => 0, 'pending_amount' => 0, 'pending_debt' => 0,
+            'bot' => null,
+        ];
+        if ($rid <= 0 || !function_exists('fx_debt_state')) {
+            return $out;
+        }
+        $st = fx_debt_state($rid);
+        if (!is_array($st['bot'])) {
+            return $out;
+        }
+        $wallet = function_exists('fx_debt_wallet_balance') ? fx_debt_wallet_balance($rid) : 0;
+        $ceiling = (int)($st['ceiling'] ?? 0);
+        $cur = (int)($st['current'] ?? 0);
+        $b = $wallet - $cur;
+        $debt = max(0, -$b);
+        $out['ok'] = true;
+        $out['mode'] = (string)($st['mode'] ?? 'balance');
+        $out['ceiling'] = $ceiling;
+        $out['wallet'] = $wallet;
+        $out['current_debt'] = $cur;
+        $out['balance'] = $b;
+        $out['debt'] = $debt;
+        $out['claim'] = max(0, $b);
+        $out['remaining_credit'] = max(0, $ceiling - $debt);
+        $out['over_limit'] = ($ceiling > 0 && $debt > $ceiling);
+        $out['bot'] = $st['bot'];
+
+        global $pdo;
+        if (($pdo instanceof PDO) && function_exists('fx_debt_res_table') && fx_debt_res_table()) {
+            try {
+                $cols = function_exists('fx_debt_wallet_column') && fx_debt_wallet_column()
+                    ? "COUNT(*) c, COALESCE(SUM(amount),0) a, COALESCE(SUM(amount - wallet_part),0) d"
+                    : "COUNT(*) c, COALESCE(SUM(amount),0) a, COALESCE(SUM(amount),0) d";
+                $q = $pdo->prepare("SELECT " . $cols . " FROM fx_debt_reservations WHERE reseller_id = :rid AND state = 'reserved'");
+                $q->execute([':rid' => (string)$rid]);
+                $r = $q->fetch(PDO::FETCH_ASSOC);
+                if (is_array($r)) {
+                    $out['pending_count'] = (int)($r['c'] ?? 0);
+                    $out['pending_amount'] = (int)($r['a'] ?? 0);
+                    $out['pending_debt'] = (int)($r['d'] ?? 0);
+                }
+            } catch (\Throwable $e) { /* display-only */ }
+        }
+        return $out;
+    }
+}
+
+if (!function_exists('fx_res_account_lines')) {
+    /** FX-ACCOUNT: Persian display lines for any UI (bot / panel / report). */
+    function fx_res_account_lines(array $a): array {
+        $out = [];
+        $out[] = '🏦 سقف اعتبار: ' . ((int)$a['ceiling'] > 0 ? number_format((int)$a['ceiling']) . ' تومان' : 'تنظیم نشده');
+        $out[] = '⚖️ مانده حساب: ' . fx_res_fmt_signed((int)$a['balance']) . ' تومان';
+        $out[] = '💸 بدهی نماینده به ربات اصلی: ' . number_format((int)$a['debt']) . ' تومان';
+        $out[] = '💰 طلب نماینده از ربات اصلی: ' . number_format((int)$a['claim']) . ' تومان';
+        if ((int)$a['ceiling'] > 0) {
+            $out[] = '🌟 اعتبار بدهی باقی‌مانده: ' . number_format((int)$a['remaining_credit']) . ' تومان';
+        }
+        $out[] = '👛 کیف پول (نقد نزد ربات): ' . number_format((int)$a['wallet']) . ' تومان';
+        if ((int)$a['pending_count'] > 0) {
+            $out[] = '⏳ سفارش‌های در انتظار: ' . number_format((int)$a['pending_count']) . ' مورد | مبلغ '
+                . number_format((int)$a['pending_amount']) . ' تومان (تعهد بدهی: ' . number_format((int)$a['pending_debt']) . ' تومان)';
+        }
+        $b = (int)$a['balance'];
+        $out[] = '📊 وضعیت: ' . ($b > 0
+            ? 'بستانکار — ربات اصلی به نماینده بدهکار است'
+            : ($b < 0 ? 'بدهکار — نماینده به ربات اصلی بدهکار است' : 'تسویه'));
+        if (!empty($a['over_limit'])) {
+            $out[] = '🚨 هشدار: بدهی ' . number_format((int)$a['debt'] - (int)$a['ceiling']) . ' تومان از سقف اعتبار فراتر رفته است.';
+        }
+        return $out;
+    }
+}
+
+if (!function_exists('fx_res_account_apply')) {
+    /**
+     * FX-ACCOUNT: the ONE writer for a signed reseller account movement.
+     *
+     *   B_new = B_old + delta        (delta > 0: reseller paid / granted credit)
+     *
+     * delta > 0 (incoming payment / credit):
+     *   settle debt first (current_debt -= min(delta, current_debt)), the
+     *   remainder is credited to the wallet (claim).
+     * delta < 0 (charge / payment FROM the main bot TO the reseller):
+     *   consume the wallet first, the remainder increases current_debt (gated
+     *   by the credit ceiling unless allow_over_ceiling).
+     *
+     * Atomic (row locks botsaz -> user), idempotent when a $ref is supplied
+     * (unique keys fx_debt_log.idempotency_key / wallet_ledger.fulfillment_key).
+     * Audit: fx_debt_log (debt part, with actor/reason/before/after when the
+     * audit columns exist), wallet_ledger (wallet part) and — for backward
+     * compatibility with existing reports — a Payment_report row for the
+     * wallet part.
+     *
+     * @return array{ok:bool,reason:string,before:int,after:int,wallet_before:int,wallet_after:int,debt_before:int,debt_after:int,ceiling:int,remaining_credit:int}
+     */
+    function fx_res_account_apply(int $rid, int $delta, string $method, string $ref = '', string $reason = '', ?int $actorId = null, array $opts = []): array {
+        global $pdo;
+        $snap = ['before' => 0, 'after' => 0, 'wallet_before' => 0, 'wallet_after' => 0, 'debt_before' => 0, 'debt_after' => 0, 'ceiling' => 0, 'remaining_credit' => 0];
+        $fail = function (string $why) use (&$snap) {
+            return array_merge(['ok' => false, 'reason' => $why], $snap);
+        };
+        if ($rid <= 0 || $delta === 0 || !($pdo instanceof PDO)) {
+            return $fail('invalid_input');
+        }
+        $walletMethod = (string)($opts['wallet_method'] ?? $method);
+        $walletOnly = !empty($opts['wallet_coverage_only']);
+        $overCeiling = !empty($opts['allow_over_ceiling']);
+        $withPayReport = !array_key_exists('with_payment_report', $opts) || !empty($opts['with_payment_report']);
+        $hasAudit = fx_debt_audit_columns();
+        $hasIdem = fx_debt_idem_column();
+        $ownTx = false;
+        try {
+            if (!$pdo->inTransaction()) {
+                $pdo->beginTransaction();
+                $ownTx = true;
+            }
+            // consistent lock order with reserve/settle: botsaz -> user
+            $lk = $pdo->prepare("SELECT * FROM botsaz WHERE id_user = :rid LIMIT 1 FOR UPDATE");
+            $lk->execute([':rid' => (string)$rid]);
+            $bot = $lk->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($bot)) {
+                if ($ownTx) { $pdo->rollBack(); }
+                return $fail('no_reseller');
+            }
+            $ceiling = (int)($bot['debt_ceiling'] ?? 0);
+            $cur = (int)($bot['current_debt'] ?? 0);
+            $lu = $pdo->prepare("SELECT Balance FROM user WHERE id = :rid LIMIT 1 FOR UPDATE");
+            $lu->execute([':rid' => (string)$rid]);
+            $balCol = $lu->fetchColumn();
+            if ($balCol === false) {
+                if ($ownTx) { $pdo->rollBack(); }
+                return $fail('no_user');
+            }
+            $wallet = (int)round((float)$balCol);
+            $before = $wallet - $cur;
+            $snap = [
+                'before' => $before, 'after' => $before,
+                'wallet_before' => $wallet, 'wallet_after' => $wallet,
+                'debt_before' => max(0, -$before), 'debt_after' => max(0, -$before),
+                'ceiling' => $ceiling, 'remaining_credit' => max(0, $ceiling - max(0, -$before)),
+            ];
+
+            // idempotency fast-path (unique keys remain the real arbiter)
+            if ($ref !== '') {
+                if ($hasIdem) {
+                    $chk = $pdo->prepare("SELECT 1 FROM fx_debt_log WHERE reseller_id = :rid AND invoice_ref = :ref AND method = :m LIMIT 1");
+                    $chk->execute([':rid' => $rid, ':ref' => $ref, ':m' => $method]);
+                    if ($chk->fetchColumn() !== false) {
+                        if ($ownTx) { $pdo->commit(); }
+                        return array_merge(['ok' => true, 'reason' => 'duplicate'], $snap);
+                    }
+                }
+                try {
+                    $chk2 = $pdo->prepare("SELECT 1 FROM wallet_ledger WHERE id_user = :uid AND fulfillment_key = :k LIMIT 1");
+                    $chk2->execute([':uid' => (string)$rid, ':k' => 'acct|' . $walletMethod . '|' . $ref]);
+                    if ($chk2->fetchColumn() !== false) {
+                        if ($ownTx) { $pdo->commit(); }
+                        return array_merge(['ok' => true, 'reason' => 'duplicate'], $snap);
+                    }
+                } catch (\Throwable $e) { /* wallet_ledger optional */ }
+            }
+
+            // split the signed delta into debt/wallet parts
+            $debtPart = 0;
+            $walletPart = 0;
+            if ($delta > 0) {
+                $debtPart = min($delta, $cur);
+                $walletPart = $delta - $debtPart;
+            } else {
+                $amount = -$delta;
+                $walletPart = min($amount, max(0, $wallet));
+                if ($walletOnly && $walletPart < $amount) {
+                    if ($ownTx) { $pdo->rollBack(); }
+                    return $fail('insufficient_wallet');
+                }
+                $debtPart = $amount - $walletPart;
+                if ($debtPart > 0 && !$overCeiling) {
+                    if ($ceiling <= 0 || $cur + $debtPart > $ceiling) {
+                        if ($ownTx) { $pdo->rollBack(); }
+                        return $fail($ceiling <= 0 ? 'no_ceiling' : 'ceiling');
+                    }
+                }
+            }
+
+            // apply under the locks (guarded UPDATEs)
+            if ($debtPart > 0) {
+                if ($delta > 0) {
+                    $u = $pdo->prepare("UPDATE botsaz SET current_debt = current_debt - :a WHERE id_user = :rid AND current_debt >= :a2");
+                    $u->execute([':a' => $debtPart, ':a2' => $debtPart, ':rid' => (string)$rid]);
+                } elseif ($overCeiling) {
+                    $u = $pdo->prepare("UPDATE botsaz SET current_debt = current_debt + :a WHERE id_user = :rid");
+                    $u->execute([':a' => $debtPart, ':rid' => (string)$rid]);
+                } else {
+                    $u = $pdo->prepare("UPDATE botsaz SET current_debt = current_debt + :a WHERE id_user = :rid AND debt_ceiling > 0 AND current_debt + :a2 <= :ceil");
+                    $u->execute([':a' => $debtPart, ':a2' => $debtPart, ':ceil' => $ceiling, ':rid' => (string)$rid]);
+                }
+                if ($u->rowCount() !== 1) {
+                    throw new \RuntimeException('debt update affected ' . $u->rowCount() . ' rows');
+                }
+            }
+            if ($walletPart > 0) {
+                if ($delta > 0) {
+                    $u = $pdo->prepare("UPDATE user SET Balance = Balance + :a WHERE id = :rid");
+                    $u->execute([':a' => $walletPart, ':rid' => (string)$rid]);
+                } else {
+                    $u = $pdo->prepare("UPDATE user SET Balance = Balance - :a WHERE id = :rid AND Balance >= :a2");
+                    $u->execute([':a' => $walletPart, ':a2' => $walletPart, ':rid' => (string)$rid]);
+                }
+                if ($u->rowCount() !== 1) {
+                    throw new \RuntimeException('wallet update affected ' . $u->rowCount() . ' rows');
+                }
+            }
+
+            // read the committed values under the locks
+            $ns = $pdo->prepare("SELECT current_debt FROM botsaz WHERE id_user = :rid LIMIT 1");
+            $ns->execute([':rid' => (string)$rid]);
+            $newCur = (int)$ns->fetchColumn();
+            $nw = $pdo->prepare("SELECT Balance FROM user WHERE id = :rid LIMIT 1");
+            $nw->execute([':rid' => (string)$rid]);
+            $newWallet = (int)round((float)$nw->fetchColumn());
+            $after = $newWallet - $newCur;
+            $snap = [
+                'before' => $before, 'after' => $after,
+                'wallet_before' => $wallet, 'wallet_after' => $newWallet,
+                'debt_before' => max(0, -$before), 'debt_after' => max(0, -$after),
+                'ceiling' => $ceiling, 'remaining_credit' => max(0, $ceiling - max(0, -$after)),
+            ];
+
+            // ledger rows
+            $idemKey = ($ref !== '' && $hasIdem) ? ('acct|' . $method . '|' . $ref) : null;
+            if ($debtPart > 0) {
+                if ($hasAudit) {
+                    $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, scope, invoice_ref, debt_after, time, idempotency_key, actor_id, reason, balance_before, balance_after, wallet_after) VALUES (:rid, :amt, :dir, :m, 'bot', :ref, :da, NOW(), :k, :actor, :reason, :bb, :ba, :wa)")
+                        ->execute([
+                            ':rid' => $rid, ':amt' => $debtPart,
+                            ':dir' => ($delta > 0 ? 'out' : 'in'), ':m' => $method,
+                            ':ref' => ($ref !== '' ? $ref : null), ':da' => $newCur,
+                            ':k' => $idemKey, ':actor' => $actorId,
+                            ':reason' => ($reason !== '' ? mb_substr($reason, 0, 191) : null),
+                            ':bb' => $before, ':ba' => $after, ':wa' => $newWallet,
+                        ]);
+                } else {
+                    if ($hasIdem && $idemKey !== null) {
+                        $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, scope, invoice_ref, debt_after, time, idempotency_key) VALUES (:rid, :amt, :dir, :m, 'bot', :ref, :da, NOW(), :k)")
+                            ->execute([':rid' => $rid, ':amt' => $debtPart, ':dir' => ($delta > 0 ? 'out' : 'in'), ':m' => $method, ':ref' => $ref, ':da' => $newCur, ':k' => $idemKey]);
+                    } else {
+                        $pdo->prepare("INSERT INTO fx_debt_log (reseller_id, amount, direction, method, scope, invoice_ref, debt_after, time) VALUES (:rid, :amt, :dir, :m, 'bot', :ref, :da, NOW())")
+                            ->execute([':rid' => $rid, ':amt' => $debtPart, ':dir' => ($delta > 0 ? 'out' : 'in'), ':m' => $method, ':ref' => ($ref !== '' ? $ref : null), ':da' => $newCur]);
+                    }
+                }
+            }
+            if ($walletPart > 0) {
+                $fk = ($ref !== '' ? ('acct|' . $walletMethod . '|' . $ref) : null);
+                try {
+                    $pdo->prepare("INSERT INTO wallet_ledger (id_user, direction, amount, balance_after, category, description, id_order, fulfillment_key) VALUES (:uid, :dir, :amt, :ba, :cat, :desc, :ord, :fk)")
+                        ->execute([
+                            ':uid' => (string)$rid,
+                            ':dir' => ($delta > 0 ? 'credit' : 'debit'),
+                            ':amt' => $walletPart,
+                            ':ba' => $newWallet,
+                            ':cat' => $walletMethod,
+                            ':desc' => ($reason !== '' ? mb_substr($reason, 0, 255) : $method),
+                            ':ord' => ($ref !== '' ? $ref : null),
+                            ':fk' => $fk,
+                        ]);
+                } catch (\Throwable $eWL) {
+                    if (!fx_debt_is_duplicate($eWL)) {
+                        throw $eWL;
+                    }
+                }
+                if ($withPayReport) {
+                    $orderId = bin2hex(random_bytes(5));
+                    $ins = $pdo->prepare("INSERT INTO Payment_report (id_user, id_order, time, price, payment_Status, Payment_Method, id_invoice, bottype) VALUES (?,?,?,?,?,?,?,?)");
+                    $ins->execute([(string)$rid, $orderId, date('Y/m/d H:i:s'), ($delta > 0 ? $walletPart : -$walletPart), 'paid', $walletMethod, null, null]);
+                }
+            }
+
+            if ($ownTx) {
+                $pdo->commit();
+                $ownTx = false;
+            }
+            // re-arm the 80/95% alerts after a debt reduction (same policy as settle)
+            if ($delta > 0 && $ceiling > 0 && $newCur * 100 < $ceiling * 80) {
+                @update("botsaz", "debt_alert_80", 0, "id_user", $rid);
+                @update("botsaz", "debt_alert_95", 0, "id_user", $rid);
+            }
+            if (function_exists('rx_log_event')) {
+                rx_log_event('FX_ACCOUNT_APPLY', 'signed account movement', [
+                    'rid' => $rid, 'delta' => $delta, 'method' => $method, 'ref' => $ref,
+                    'reason' => $reason, 'actor' => $actorId,
+                    'balance_before' => $before, 'balance_after' => $after,
+                    'wallet_before' => $wallet, 'wallet_after' => $newWallet,
+                    'debt_before' => max(0, -$before), 'debt_after' => max(0, -$after),
+                ]);
+            }
+            return array_merge(['ok' => true, 'reason' => ''], $snap);
+        } catch (\Throwable $e) {
+            if ($ownTx && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            if (fx_debt_is_duplicate($e)) {
+                return array_merge(['ok' => true, 'reason' => 'duplicate'], $snap);
+            }
+            error_log('[FX_ACCOUNT] apply failed rid=' . $rid . ' delta=' . $delta . ' method=' . $method . ' ref=' . $ref . ': ' . $e->getMessage());
+            return $fail('db');
+        }
+    }
+}

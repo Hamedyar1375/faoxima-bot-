@@ -3129,6 +3129,53 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
             $stmt->execute([':name' => $get_invoice['name_product'], ':loc' => $get_invoice['Service_location'], ':agent' => $userAgent]);
             $info_product = $stmt->fetch(PDO::FETCH_ASSOC);
         }
+        // A historical invoice may keep a product whose agent/location changed after
+        // the invoice was created. Never pass a boolean into wholesale/debt helpers.
+        if (!is_array($info_product) || empty($info_product['code_product'])) {
+            try {
+                $fbStmt = $pdo->prepare("SELECT * FROM product WHERE name_product = :name AND (FIND_IN_SET(:loc, Location) > 0 OR Location = '/all') ORDER BY id ASC");
+                $fbStmt->execute([':name' => $get_invoice['name_product'], ':loc' => $get_invoice['Service_location']]);
+                $fbRows = $fbStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                $fbChosen = null;
+                $rid = defined('FX_RESELLER_ID') ? (string)(int)FX_RESELLER_ID : '';
+                foreach ($fbRows as $fbRow) {
+                    $fbAgents = array_map('trim', explode(',', (string)($fbRow['agent'] ?? '')));
+                    if ($rid !== '' && in_array($rid, $fbAgents, true)) { $fbChosen = $fbRow; break; }
+                }
+                if ($fbChosen === null) {
+                    foreach ($fbRows as $fbRow) {
+                        $fbAgents = array_map('trim', explode(',', (string)($fbRow['agent'] ?? '')));
+                        if (in_array((string)$userAgent, $fbAgents, true)) { $fbChosen = $fbRow; break; }
+                    }
+                }
+                if ($fbChosen === null) {
+                    foreach ($fbRows as $fbRow) {
+                        $fbAgents = array_map('trim', explode(',', (string)($fbRow['agent'] ?? '')));
+                        if (array_intersect($fbAgents, ['all', 'allusers'])) { $fbChosen = $fbRow; break; }
+                    }
+                }
+                if (is_array($fbChosen)) {
+                    $info_product = $fbChosen;
+                    if (function_exists('rx_log_event')) {
+                        rx_log_event('DIRECT_PAYMENT_PRODUCT_FALLBACK', 'Product resolved by name/location fallback', [
+                            'order' => $order_id, 'invoice' => (string)($get_invoice['id_invoice'] ?? ''), 'product' => (string)($fbChosen['code_product'] ?? ''),
+                        ]);
+                    }
+                }
+            } catch (Throwable $__pfFallbackErr) { /* logged below */ }
+        }
+        if (!is_array($info_product) || empty($info_product['code_product'])) {
+            if (function_exists('rx_log_event')) {
+                rx_log_event('DIRECT_PAYMENT_PRODUCT_MISSING', 'No product matched invoice name/location/agent', [
+                    'order' => $order_id,
+                    'invoice' => (string)($get_invoice['id_invoice'] ?? ''),
+                    'product_name' => (string)($get_invoice['name_product'] ?? ''),
+                    'location' => (string)($get_invoice['Service_location'] ?? ''),
+                    'user_agent' => (string)$userAgent,
+                ]);
+            }
+            return rx_pf_abort($order_id, $rxToken, 'product_not_found', false);
+        }
         if (function_exists('fx_res_visibility_reject_if_blocked') && fx_res_visibility_reject_if_blocked($info_product, $Balance_id['id'], $keyboard)) {
             return rx_pf_abort($order_id, $rxToken, 'product_hidden_for_reseller', false);
         }
@@ -3161,6 +3208,20 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
             return rx_pf_abort($order_id, $rxToken, 'panel_not_found', true);
         }
 
+        // Pending/automatic fulfillment must use the same pricing preparation as
+        // the normal purchase flow. Without this, product.fx_wholesale_price may
+        // still be NULL in DB and debt-mode resellers get a false
+        // "wholesale price missing" error even though the base price is known.
+        if (function_exists('fx_reseller_load_retail_units')) {
+            fx_reseller_load_retail_units($marzban_list_get, (string) ($Balance_id['agent'] ?? 'f'));
+        }
+        if (is_array($info_product) && function_exists('fx_apply_to_product')) {
+            $info_product = fx_apply_to_product($info_product, $marzban_list_get);
+        }
+        if (is_array($info_product) && defined('FX_RESELLER_ID') && function_exists('fx_apply_reseller_retail')) {
+            fx_apply_reseller_retail($info_product, $marzban_list_get);
+        }
+
         // [idempotent-refund guard] اگر این فاکتور قبلاً refund خورده (نشانه auto-refund تو dec_not_confirmed)،
         // دیگه نباید دوباره کیف پول رو شارژ کنیم — همینجا برمی‌گردیم و فقط لاگ می‌زنیم.
         // این جلوی double/triple-credit موقع retry گیر کردن سرویس رو می‌گیره.
@@ -3174,6 +3235,87 @@ function DirectPayment($order_id, $image = 'images.jpg', $rxToken = null)
         } catch (Throwable $__e) { $__alreadyRefunded = false; }
         if ($__alreadyRefunded) {
             return rx_pf_abort($order_id, $rxToken, 'already_refunded', false);
+        }
+
+        // Pending-purchase guard: the paid amount is only the shortfall, and
+        // the old wallet balance must cover the rest of the invoice. If it does
+        // not, credit this payment to the wallet and keep the invoice pending
+        // instead of creating a service that would drive the wallet into debt.
+        $__pendingInvoicePrice = (float) ($get_invoice['price_product'] ?? 0);
+        $__pendingPaid = (float) ($Payment_report['price'] ?? 0);
+        $__pendingWalletPortion = max(0.0, $__pendingInvoicePrice - $__pendingPaid);
+        $__freshBalanceRow = select('user', 'Balance', 'id', $Balance_id['id'], 'select', ['cache' => false]);
+        $__freshBalance = is_array($__freshBalanceRow)
+            ? (float) ($__freshBalanceRow['Balance'] ?? 0)
+            : (float) ($Balance_id['Balance'] ?? 0);
+        if ($__pendingWalletPortion > 0 && ($__freshBalance + 0.01) < $__pendingWalletPortion) {
+            if (!function_exists('rx_pf_wallet_credit')) {
+                return rx_pf_abort($order_id, $rxToken, 'wallet_helper_unavailable', true);
+            }
+            $__pendingPm = (string) ($Payment_report['Payment_Method'] ?? '');
+            if (stripos($__pendingPm, 'crypto') !== false || stripos($__pendingPm, 'arze digital') !== false || stripos($__pendingPm, 'plisio') !== false || stripos($__pendingPm, 'nowpayment') !== false || stripos($__pendingPm, 'digitaltron') !== false) {
+                $__pendingWlCategory = 'topup_crypto';
+            } elseif (stripos($__pendingPm, 'cart to cart') !== false || stripos($__pendingPm, 'carttocart') !== false) {
+                $__pendingWlCategory = 'topup_card';
+            } else {
+                $__pendingWlCategory = 'topup_gateway';
+            }
+            $__pendingCredit = rx_pf_wallet_credit($order_id, $rxToken, $Payment_report['id_user'], $__pendingPaid, $__pendingWlCategory, $__pendingPm);
+            if ($__pendingCredit === 'already_completed') {
+                return rx_pf_result('already_completed', 'wallet_already_credited');
+            }
+            if ($__pendingCredit !== 'credited') {
+                if (function_exists('rx_log_event')) {
+                    rx_log_event('PENDING_PURCHASE_WALLET_CREDIT_FAILED', 'Could not credit shortfall payment to wallet', [
+                        'id_order' => $order_id,
+                        'id_user' => $Payment_report['id_user'],
+                        'amount' => $__pendingPaid,
+                        'outcome' => $__pendingCredit,
+                    ]);
+                }
+                return rx_pf_abort($order_id, $rxToken, 'pending_purchase_wallet_credit_failed', true);
+            }
+
+            if (function_exists('rx_pending_purchase_set_session')) {
+                rx_pending_purchase_set_session($Balance_id['id'], $get_invoice);
+            }
+            try {
+                $pdo->prepare(
+                    "UPDATE Payment_report
+                        SET dec_not_confirmed = CASE
+                            WHEN dec_not_confirmed IS NULL OR dec_not_confirmed = '' THEN :note
+                            ELSE CONCAT(dec_not_confirmed, ' | ', :note)
+                        END,
+                        at_updated = :at
+                      WHERE id_order = :order"
+                )->execute([
+                    ':note' => 'pending_purchase_waiting|' . (string) $get_invoice['id_invoice'],
+                    ':at' => date('Y/m/d H:i:s'),
+                    ':order' => $order_id,
+                ]);
+            } catch (Throwable $__pendingNoteErr) {
+                error_log('[PENDING_PURCHASE] note update failed order=' . $order_id . ': ' . $__pendingNoteErr->getMessage());
+            }
+
+            $__afterCreditRow = select('user', 'Balance', 'id', $Balance_id['id'], 'select', ['cache' => false]);
+            $__afterCreditBalance = is_array($__afterCreditRow)
+                ? (float) ($__afterCreditRow['Balance'] ?? 0)
+                : ($__freshBalance + $__pendingPaid);
+            $__stillDue = max(0, (int) ceil($__pendingInvoicePrice - $__afterCreditBalance));
+            $__stillDueFmt = number_format($__stillDue);
+            $__pendingName = htmlspecialchars((string) ($get_invoice['name_product'] ?? ''), ENT_QUOTES, 'UTF-8');
+            sendmessage(
+                $Payment_report['id_user'],
+                "💎 مبلغ <b>" . number_format($__pendingPaid) . "</b> تومان به کیف پول شما اضافه شد.\n\n"
+                . "🕒 سفارش «{$__pendingName}» همچنان در انتظار تکمیل است.\n"
+                . "💰 مبلغ سفارش: <b>" . number_format($__pendingInvoicePrice) . "</b> تومان\n"
+                . "👛 موجودی فعلی: <b>" . number_format($__afterCreditBalance) . "</b> تومان\n"
+                . "📉 مبلغ کسری دقیق: <b>{$__stillDueFmt}</b> تومان\n\n"
+                . "لطفاً دقیقاً مبلغ <b>{$__stillDueFmt} تومان</b> را پرداخت کنید تا سفارش پس از تأیید، خودکار تکمیل شود.",
+                function_exists('rx_pending_purchase_keyboard') ? rx_pending_purchase_keyboard($__stillDue) : null,
+                'HTML'
+            );
+            return rx_pf_result('completed', 'pending_purchase_waiting');
         }
 
         // [username normalize] اگر یوزرنیم فاکتور خالی/کوتاه‌تر از 3 کاراکتر بود، یکی معتبر بساز.

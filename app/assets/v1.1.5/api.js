@@ -1,8 +1,20 @@
 import { waitForSDK, waitForInitData, getInitData, diagnostics } from './telegram.js?v=0.0.52';
-import { getToken, setToken, clearToken } from './state.js';
+import { getToken, setToken, clearToken, setReseller } from './state.js?v=0.0.53';
 
 const cfg = window.__APP_CONFIG__ || {};
 const API_URL = cfg.apiUrl || '/api';
+
+function getTenantHint() {
+    try {
+        const fromCfg = Number(cfg.tenant || 0);
+        if (fromCfg > 0) return fromCfg;
+    } catch (_) {}
+    try {
+        const v = Number(new URLSearchParams(location.search).get('tenant') || 0);
+        if (v > 0) return v;
+    } catch (_) {}
+    return 0;
+}
 
 
 export async function configFileUrl(username, index = 0) {
@@ -81,15 +93,18 @@ export async function verify() {
     }
 
     const url = `${API_URL}/verify.php`;
+    const tenantHint = getTenantHint();
     let res;
     try {
+        const headers = {
+            'Content-Type': 'application/json',
+            'X-Telegram-Init-Data': initData,
+        };
+        if (tenantHint > 0) headers['X-FX-Tenant'] = String(tenantHint);
         res = await fetch(url, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Telegram-Init-Data': initData,
-            },
-            body: JSON.stringify({ initData }),
+            headers,
+            body: JSON.stringify(tenantHint > 0 ? { initData, tenant: tenantHint } : { initData }),
         });
     } catch (err) {
         console.error('[verify] network error', err);
@@ -100,6 +115,12 @@ export async function verify() {
 
     if (res.ok && body && body.status === true && body.token) {
         setToken(body.token);
+        // FX-RESELLER-SVCMGMT: remember reseller self-service context (if any).
+        try {
+            setReseller(body.is_reseller_admin
+                ? { reseller_id: Number(body.reseller_id) || 0, is_reseller_admin: true }
+                : null);
+        } catch (_) {}
         return body.token;
     }
 
@@ -206,6 +227,8 @@ export async function call(action, { method = 'GET', params = {}, body = null, r
     }
 
     const qs = new URLSearchParams({ actions: action, ...params });
+    const tenantHint = getTenantHint();
+    if (tenantHint > 0) qs.set('tenant', String(tenantHint));
     const url = `${API_URL}/miniapp.php?${qs.toString()}`;
 
     const init = {
@@ -215,9 +238,11 @@ export async function call(action, { method = 'GET', params = {}, body = null, r
             'Accept': 'application/json',
         },
     };
+    if (tenantHint > 0) init.headers['X-FX-Tenant'] = String(tenantHint);
 
     if (method !== 'GET' && method !== 'HEAD') {
         const payload = { actions: action, ...(body || {}) };
+        if (tenantHint > 0) payload.tenant = tenantHint;
         init.headers['Content-Type'] = 'application/json';
         init.body = JSON.stringify(payload);
     }
@@ -363,6 +388,18 @@ export async function callBlob(action, { params = {}, retry = true } = {}) {
     }
     return await res.blob();
 }
+
+// ==== FX-RESELLER-SVCMGMT: reseller self-service panel management ====
+export function resellerSvcPanels() {
+    return call('reseller_svc_panels', { method: 'GET' });
+}
+export function resellerSvcUpdate(panel, field, value) {
+    return call('reseller_svc_update', { method: 'POST', body: { panel: String(panel), field, value: String(value == null ? '' : value) } });
+}
+export function resellerSvcToggle(panel, field) {
+    return call('reseller_svc_toggle', { method: 'POST', body: { panel: String(panel), field } });
+}
+// ==== end FX-RESELLER-SVCMGMT ====
 
 export { ApiError };
 

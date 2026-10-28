@@ -1,4 +1,4 @@
-import { home } from './pages/home.js?v=0.0.59';
+import { home } from './pages/home.js?v=0.0.61';
 import { services as servicesPage } from './pages/services.js?v=0.0.53';
 
 import { buy as buyPage } from './pages/buy.js?v=0.0.55';
@@ -230,6 +230,17 @@ async function transferPage(view) {
     return mod.transfer(view);
 }
 
+let _resellerModulePromise = null;
+function loadResellerPage() {
+    if (_resellerModulePromise) return _resellerModulePromise;
+    _resellerModulePromise = import('./pages/reseller.js');
+    return _resellerModulePromise;
+}
+async function resellerPage(view) {
+    const mod = await loadResellerPage();
+    return mod.reseller(view);
+}
+
 const routes = [
     { pattern: /^\/?$/,                         render: home,              key: '/' },
     { pattern: /^\/services\/?$/,               render: servicesPage,      key: '/services' },
@@ -245,6 +256,7 @@ const routes = [
     { pattern: /^\/watch\/([^/]+)\/?$/,         render: watchResumePage,   key: '/account' },
     { pattern: /^\/history\/?$/,                render: historyPage,       key: '/account' },
     { pattern: /^\/transfer\/?$/,               render: transferPage,      key: '/account' },
+    { pattern: /^\/reseller\/?$/,               render: resellerPage,      key: '/reseller' },
 ];
 
 let currentCleanup = null;

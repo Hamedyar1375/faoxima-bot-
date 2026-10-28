@@ -4,6 +4,12 @@ if (!defined('REFACTORED_LEGACY_ROOT')) {
     define('REFACTORED_LEGACY_ROOT', __DIR__);
 }
 
+// A browser GET to /admin.php is the web-panel entry, not a Telegram update.
+if (PHP_SAPI !== 'cli' && strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'GET') {
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Location: /panel/login.php', true, 302);
+    exit;
+}
 
 $adminPath = __DIR__ . '/re/admin.php';
 if (is_file($adminPath)) {
